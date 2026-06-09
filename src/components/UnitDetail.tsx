@@ -1,14 +1,15 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { RealEstateUnit, Client, PaymentItem, User } from '../types';
-import { 
-  ArrowLeft, Save, Trash2, Building2, 
+import {
+  ArrowLeft, Save, Trash2, Building2,
   AlertTriangle, CreditCard, RefreshCw,
   Wallet, Sparkles, Coins, ExternalLink,
-  Calendar, Landmark, ClipboardList, Plus, 
+  Calendar, Landmark, ClipboardList, Plus,
   Ruler, Layers, Bed, Bath, Compass, Info,
   Banknote, Percent, CheckCircle2, FileText,
   Key, Target, FileCheck, Clock, Tag,
-  Car, Package, Scale, FileSignature, ChevronDown, Check, History, User as UserIcon
+  Car, Package, Scale, FileSignature, ChevronDown, Check, History, User as UserIcon,
+  Search, X, UserPlus, MoreVertical
 } from 'lucide-react';
 import { AssetTagInput } from './AssetTagInput';
 
@@ -20,6 +21,10 @@ interface UnitDetailProps {
   allUnits?: RealEstateUnit[];
   currentUser: User;
   onSelectClient?: (clientId: string) => void;
+  // Asignación desde UnitDetail
+  clients?: Client[];
+  onAssignClient?: (clientId: string, unitId: string) => void;
+  onUnassignClient?: (unitId: string) => void;
 }
 
 // Formateador estricto: Miles con punto, 1 decimal con coma (Ej: 4.565,0)
@@ -74,10 +79,58 @@ const FormattedInput = ({ value, onChange, className, placeholder, disabled, for
     );
 };
 
-export const UnitDetail: React.FC<UnitDetailProps> = ({ unit, client, onBack, onUpdate, allUnits = [], currentUser, onSelectClient }) => {
+export const UnitDetail: React.FC<UnitDetailProps> = ({
+  unit, client, onBack, onUpdate, allUnits = [], currentUser, onSelectClient,
+  clients = [], onAssignClient, onUnassignClient,
+}) => {
   const [formData, setFormData] = useState<RealEstateUnit>(unit);
-  
+  const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
+  const [assignSearch, setAssignSearch] = useState('');
+  const [clientMenuOpen, setClientMenuOpen] = useState(false);
+  const clientMenuRef = useRef<HTMLDivElement>(null);
+
   const isReadOnly = currentUser.role === 'Lectura';
+  const canAssign = currentUser.role !== 'Lectura';
+
+  // Cierra el menú al hacer clic fuera
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (clientMenuRef.current && !clientMenuRef.current.contains(e.target as Node)) {
+        setClientMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  // Clientes visibles según rol
+  const assignableClients = useMemo(() => {
+    if (!clients.length || !canAssign) return [];
+    const projectClients = clients.filter(c => c.projectId === unit.projectId);
+    switch (currentUser.role) {
+      case 'Admin':
+      case 'Supervisor':
+        return projectClients;
+      case 'JefeSala':
+        if (!currentUser.assignedProjectIds?.includes(unit.projectId)) return [];
+        return projectClients;
+      case 'Ventas':
+        return projectClients.filter(c => {
+          if (c.estado === 'Activo') return c.ejecutivoId === currentUser.id;
+          return ['Prospecto', 'Cerrado', 'Desistido'].includes(c.estado);
+        });
+      default:
+        return [];
+    }
+  }, [clients, unit.projectId, currentUser, canAssign]);
+
+  const searchedClients = useMemo(() => {
+    const term = assignSearch.trim().toLowerCase();
+    if (!term) return assignableClients;
+    return assignableClients.filter(c =>
+      c.nombre.toLowerCase().includes(term) || c.rut.toLowerCase().includes(term),
+    );
+  }, [assignableClients, assignSearch]);
   const hasClient = !!formData.clienteId;
 
   const linkedAssets = useMemo(() => {
@@ -251,23 +304,119 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({ unit, client, onBack, on
               <div>
                 <h3 className="text-xs font-bold text-gray-400 mb-4 flex items-center gap-2 uppercase tracking-widest"><Building2 className="w-4 h-4" /> Titular de Operación</h3>
                 {client ? (
-                    <div 
-                        onClick={() => onSelectClient && onSelectClient(client.id)}
-                        className="p-4 bg-gray-50 rounded-2xl border border-gray-100 flex items-center justify-between cursor-pointer hover:bg-gray-100 transition-all group"
+                  <div className="relative" ref={clientMenuRef}>
+                    <div
+                      className="p-4 bg-gray-50 rounded-2xl border border-gray-100 flex items-center justify-between cursor-pointer hover:border-blue-200 hover:bg-blue-50/30 transition-all group"
+                      title="Clic para gestionar"
+                      onClick={() => setClientMenuOpen(v => !v)}
                     >
-                        <div className="flex items-center gap-4">
-                            <div className="w-12 h-12 bg-blue-600 rounded-full flex items-center justify-center text-white font-bold text-xl shadow-sm">{client.nombre.charAt(0)}</div>
-                            <div>
-                                <div className="font-bold text-gray-900 flex items-center gap-2 text-base">{client.nombre} <ExternalLink className="w-3.5 h-3.5 text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity" /></div>
-                                <div className="text-xs text-gray-500 font-medium font-mono">{client.rut} • {client.email}</div>
-                            </div>
+                      <div className="flex items-center gap-4">
+                        <div className="w-12 h-12 bg-blue-600 rounded-full flex items-center justify-center text-white font-bold text-xl shadow-sm">{client.nombre.charAt(0)}</div>
+                        <div>
+                          <div className="font-bold text-gray-900 text-base">{client.nombre}</div>
+                          <div className="text-xs text-gray-500 font-mono">{client.rut} • {client.email}</div>
                         </div>
-                        <button className="px-4 py-2 text-xs font-bold text-blue-600 border border-blue-100 bg-white rounded-lg hover:bg-blue-50 transition-colors shadow-sm uppercase tracking-tighter">Ver Expediente</button>
+                      </div>
+                      <MoreVertical className="w-5 h-5 text-gray-400 group-hover:text-blue-600 transition-colors" />
                     </div>
+                    {clientMenuOpen && (
+                      <div className="absolute right-0 top-full mt-1 z-30 bg-white border border-gray-200 rounded-xl shadow-xl w-52 overflow-hidden animate-in fade-in slide-in-from-top-1 duration-150">
+                        <button
+                          onClick={() => { setClientMenuOpen(false); onSelectClient?.(client.id); }}
+                          className="w-full px-4 py-3 text-sm font-medium text-left hover:bg-gray-50 flex items-center gap-3"
+                        >
+                          <ExternalLink className="w-4 h-4 text-blue-500" /> Ver Expediente
+                        </button>
+                        {canAssign && onAssignClient && (
+                          <button
+                            onClick={() => { setClientMenuOpen(false); setAssignSearch(''); setIsAssignModalOpen(true); }}
+                            className="w-full px-4 py-3 text-sm font-medium text-left hover:bg-gray-50 flex items-center gap-3"
+                          >
+                            <UserPlus className="w-4 h-4 text-green-500" /> Cambiar Cliente
+                          </button>
+                        )}
+                        {canAssign && onUnassignClient && (
+                          <button
+                            onClick={() => { setClientMenuOpen(false); onUnassignClient(unit.id); }}
+                            className="w-full px-4 py-3 text-sm font-medium text-left hover:bg-red-50 text-red-600 flex items-center gap-3"
+                          >
+                            <X className="w-4 h-4" /> Desasignar
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 ) : (
-                    <div className="p-8 bg-gray-50 rounded-2xl border border-dashed border-gray-200 text-gray-400 text-sm font-medium italic flex items-center justify-center gap-2">
-                        <AlertTriangle className="w-5 h-5" /> Unidad sin Comprador Asignado
+                  <div
+                    onClick={() => canAssign && onAssignClient && (setAssignSearch(''), setIsAssignModalOpen(true))}
+                    title={canAssign ? 'Clic para asignar cliente' : ''}
+                    className={`p-8 bg-gray-50 rounded-2xl border border-dashed border-gray-200 text-gray-400 text-sm font-medium italic flex items-center justify-center gap-2 transition-all ${canAssign && onAssignClient ? 'cursor-pointer hover:border-blue-300 hover:bg-blue-50/30 hover:text-blue-500' : ''}`}
+                  >
+                    {canAssign && onAssignClient ? (
+                      <><UserPlus className="w-5 h-5" /> Clic para Asignar Cliente</>
+                    ) : (
+                      <><AlertTriangle className="w-5 h-5" /> Unidad sin Comprador Asignado</>
+                    )}
+                  </div>
+                )}
+
+                {/* Modal Asignar Cliente */}
+                {isAssignModalOpen && (
+                  <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col overflow-hidden">
+                      <div className="flex justify-between items-center p-5 border-b border-gray-100">
+                        <h3 className="text-lg font-bold text-gray-900">
+                          Asignar Cliente a {unit.type} {unit.numero}
+                        </h3>
+                        <button onClick={() => setIsAssignModalOpen(false)} className="p-1 hover:bg-gray-100 rounded-lg">
+                          <X className="w-5 h-5 text-gray-500" />
+                        </button>
+                      </div>
+                      <div className="p-4 border-b border-gray-100">
+                        <div className="relative">
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                          <input
+                            type="text"
+                            value={assignSearch}
+                            onChange={e => setAssignSearch(e.target.value)}
+                            placeholder="Buscar por nombre o RUT…"
+                            autoFocus
+                            className="w-full pl-9 pr-4 py-2.5 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-100"
+                          />
+                        </div>
+                      </div>
+                      <div className="overflow-y-auto flex-1 p-3 space-y-2">
+                        {searchedClients.length === 0 ? (
+                          <p className="text-center text-gray-400 italic text-sm py-8">
+                            {assignableClients.length === 0 ? 'Sin clientes disponibles para tu rol.' : 'Sin resultados.'}
+                          </p>
+                        ) : searchedClients.map(c => (
+                          <button
+                            key={c.id}
+                            onClick={() => { onAssignClient?.(c.id, unit.id); setIsAssignModalOpen(false); }}
+                            className="w-full p-3 text-left border border-gray-100 rounded-xl hover:border-blue-300 hover:bg-blue-50/30 transition-all flex items-center gap-3"
+                          >
+                            <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-sm shrink-0">
+                              {c.nombre.charAt(0)}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="font-bold text-gray-900 text-sm truncate">{c.nombre}</div>
+                              <div className="text-xs text-gray-500 font-mono">{c.rut}</div>
+                            </div>
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${c.estado === 'Activo' ? 'bg-green-100 text-green-700' : c.estado === 'Prospecto' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
+                              {c.estado}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                      <div className="p-4 border-t border-gray-100">
+                        <button onClick={() => setIsAssignModalOpen(false)}
+                          className="w-full py-2.5 border border-gray-200 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-50 transition-colors">
+                          Cancelar
+                        </button>
+                      </div>
                     </div>
+                  </div>
                 )}
               </div>
 

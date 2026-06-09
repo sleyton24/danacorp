@@ -350,20 +350,29 @@ const App: React.FC = () => {
 
   const handleAssignUnit = (clientId: string, unitId: string) => {
     const now = new Date().toLocaleDateString('es-CL');
-    setUnits(prev => prev.map(u => u.id === unitId ? { 
-        ...u, 
-        clienteId: clientId, 
+    setUnits(prev => prev.map(u => u.id === unitId ? {
+        ...u,
+        clienteId: clientId,
         estado: 'Reservado',
         asignadoPor: currentUser.name,
         fechaAsignacion: now
     } : u));
-
     setClients(prev => prev.map(c => c.id === clientId ? { ...c, ejecutivoId: currentUser.id } : c));
-
     const unit = units.find(u => u.id === unitId);
     const client = clients.find(c => c.id === clientId);
     if (unit && client) {
-      addAuditLog('Clientes', 'Asignación', client.nombre, `Asignación de unidad ${unit.numero}. Cliente ahora privado para ${currentUser.name}.`);
+      addAuditLog('Clientes', 'Asignación', client.nombre, `Asignación de unidad ${unit.numero}. Ejecutivo: ${currentUser.name}.`);
+    }
+  };
+
+  const handleUnassignUnit = (unitId: string) => {
+    const unit = units.find(u => u.id === unitId);
+    setUnits(prev => prev.map(u => u.id === unitId
+      ? { ...u, clienteId: undefined, estado: 'Disponible', asignadoPor: undefined, fechaAsignacion: undefined }
+      : u,
+    ));
+    if (unit) {
+      addAuditLog('Inventario', 'Desasignación', `${unit.type} ${unit.numero}`, `Cliente desasignado por ${currentUser.name}.`);
     }
   };
 
@@ -484,14 +493,17 @@ const App: React.FC = () => {
       
       <main className="flex-1 ml-64 p-8 bg-gray-50 dark:bg-gray-900 min-h-screen overflow-auto">
         {selectedUnit && currentView === 'inventory' ? (
-          <UnitDetail 
-            unit={selectedUnit} 
+          <UnitDetail
+            unit={selectedUnit}
             client={clients.find(c => c.id === selectedUnit.clienteId)}
             onBack={() => setSelectedUnit(null)}
             onUpdate={handleUpdateUnit}
             allUnits={currentProjectUnits}
             currentUser={currentUser}
+            clients={clients}
             onSelectClient={(id) => { setExpandedClientId(id); setCurrentView('clients'); setSelectedUnit(null); }}
+            onAssignClient={handleAssignUnit}
+            onUnassignClient={handleUnassignUnit}
           />
         ) : (
           <>

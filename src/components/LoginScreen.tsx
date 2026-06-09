@@ -41,21 +41,18 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-xl border border-gray-100 p-10 w-full max-w-md">
 
-        <div className="flex items-center gap-3 mb-8">
-          <div className="relative h-12">
-            <img
-              src="/Danacorp.png"
-              alt="Danacorp"
-              className="h-12 w-auto object-contain"
-              onError={(e) => {
-                const img = e.target as HTMLImageElement;
-                img.style.display = 'none';
-                const fallback = img.nextElementSibling as HTMLElement | null;
-                if (fallback) fallback.style.display = 'flex';
-              }}
-            />
-            <div className="w-12 h-12 bg-blue-600 rounded-xl items-center justify-center text-white font-bold text-lg shadow-md hidden">DW</div>
-          </div>
+        <div className="flex items-center justify-center mb-6">
+          <img
+            src="/Danacorp.png"
+            alt="Danacorp"
+            className="h-20 w-auto object-contain"
+            onError={(e) => {
+              const img = e.target as HTMLImageElement;
+              img.style.display = 'none';
+              img.insertAdjacentHTML('afterend',
+                '<span class="font-black text-blue-600 text-2xl">DANACORP</span>');
+            }}
+          />
         </div>
 
         <h2 className="text-2xl font-bold text-gray-800 mb-1">Iniciar Sesión</h2>

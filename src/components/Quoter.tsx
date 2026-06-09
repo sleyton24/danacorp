@@ -735,21 +735,33 @@ export const Quoter: React.FC<QuoterProps> = ({
     doc.setFillColor(37, 99, 235);
     doc.rect(0, 0, pageWidth, HEADER_H, 'F');
 
-    // Logo Danacorp a la izquierda — fondo blanco para visibilidad
+    // Logo Danacorp a la izquierda — fondo blanco, proporciones naturales
     doc.setFillColor(255, 255, 255);
     doc.rect(0, 0, LOGO_W + margin, HEADER_H, 'F');
     try {
       const logoB64 = await loadImgB64('/Danacorp.png');
-      if (logoB64) {
-        doc.addImage(logoB64, 'PNG', margin, (HEADER_H - 12) / 2, LOGO_W, 12);
-      } else {
-        throw new Error('logo null');
-      }
+      if (!logoB64) throw new Error('logo null');
+      // Obtener dimensiones reales para mantener proporción
+      const logoImg = new window.Image();
+      await new Promise<void>(resolve => {
+        logoImg.onload = logoImg.onerror = () => resolve();
+        logoImg.src = logoB64;
+      });
+      const ar = logoImg.naturalWidth > 0 ? logoImg.naturalWidth / logoImg.naturalHeight : 3;
+      const lgMg = 2; // margen interior del área blanca
+      const availW = LOGO_W - 2 * lgMg;
+      const availH = HEADER_H - 2 * lgMg;
+      let lw: number, lh: number;
+      if (ar > availW / availH) { lw = availW; lh = lw / ar; }
+      else { lh = availH; lw = lh * ar; }
+      const lx = lgMg + (availW - lw) / 2;
+      const ly = lgMg + (availH - lh) / 2;
+      doc.addImage(logoB64, 'PNG', lx, ly, lw, lh);
     } catch {
       doc.setTextColor(37, 99, 235);
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(13);
-      doc.text('DANACORP', margin + LOGO_W / 2, HEADER_H / 2 + 2, { align: 'center' });
+      doc.setFontSize(11);
+      doc.text('DANACORP', (LOGO_W + margin) / 2, HEADER_H / 2 + 2, { align: 'center' });
     }
 
     // Texto N° cotización sobre el área azul a la derecha
@@ -1883,20 +1895,18 @@ export const Quoter: React.FC<QuoterProps> = ({
 
             {/* HEADER: Logo izquierda (fondo blanco) + Área azul sólida derecha */}
             <div className="flex h-16 overflow-hidden">
-              {/* Área logo — fondo blanco */}
-              <div className="flex items-center justify-center px-4 bg-white shrink-0" style={{ minWidth: '130px' }}>
+              {/* Área logo — fondo blanco, proporciones naturales */}
+              <div className="w-[120px] h-[60px] bg-white flex items-center justify-center p-1 shrink-0 self-center ml-1">
                 <img
                   src="/Danacorp.png"
                   alt="Danacorp"
-                  className="h-10 object-contain max-w-[110px]"
+                  className="max-w-full max-h-full object-contain"
                   onError={e => {
                     const img = e.target as HTMLImageElement;
                     img.style.display = 'none';
-                    const fb = img.nextElementSibling as HTMLElement | null;
-                    if (fb) fb.style.display = 'block';
+                    img.parentElement!.innerHTML = '<span class="font-black text-blue-600 text-sm">DANACORP</span>';
                   }}
                 />
-                <span className="hidden font-black text-blue-600 text-lg">DANACORP</span>
               </div>
               {/* Área azul sólida derecha */}
               <div className="flex-1 bg-blue-600 flex items-end justify-end pb-2 pr-3">
