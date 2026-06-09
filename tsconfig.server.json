@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "node",
+    "lib": ["ES2022"],
+    "skipLibCheck": true,
+    "types": ["node"],
+    "allowJs": true,
+    "outDir": "dist-server",
+    "esModuleInterop": true
+  },
+  "include": ["server.ts"]
+}

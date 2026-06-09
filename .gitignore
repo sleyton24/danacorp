@@ -1,0 +1,33 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+
+node_modules
+dist
+dist-ssr
+dist-server
+
+# Secrets — NUNCA versionar
+.env
+.env.local
+*.local
+
+# Base de datos local
+danacorp.db
+danacorp.db-shm
+danacorp.db-wal
+
+# Uploads de usuarios
+uploads/
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
