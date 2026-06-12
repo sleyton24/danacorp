@@ -131,6 +131,11 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
       c.nombre.toLowerCase().includes(term) || c.rut.toLowerCase().includes(term),
     );
   }, [assignableClients, assignSearch]);
+  // Derivar cliente desde formData.clienteId (Fix C): se actualiza cuando formData sincroniza
+  const currentClient = useMemo(
+    () => clients.find(c => c.id === formData.clienteId) ?? client,
+    [clients, formData.clienteId, client],
+  );
   const hasClient = !!formData.clienteId;
 
   const linkedAssets = useMemo(() => {
@@ -152,9 +157,17 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     }
   }, [totalPrecioListaAcumulado]);
 
-  useEffect(() => { 
-    setFormData(unit); 
-  }, [unit.id]);
+  // Sincronizar formData cuando cambian datos clave de la unidad (Fix A)
+  useEffect(() => {
+    setFormData(unit);
+  }, [
+    unit.id,
+    unit.clienteId,
+    unit.estado,
+    unit.fechaAsignacion,
+    unit.asignadoPor,
+    unit.fechaReserva,
+  ]);
 
   const handleChange = (field: keyof RealEstateUnit, value: any) => {
     if (isReadOnly) return;
@@ -303,7 +316,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 space-y-6">
               <div>
                 <h3 className="text-xs font-bold text-gray-400 mb-4 flex items-center gap-2 uppercase tracking-widest"><Building2 className="w-4 h-4" /> Titular de Operación</h3>
-                {client ? (
+                {currentClient ? (
                   <div className="relative" ref={clientMenuRef}>
                     <div
                       className="p-4 bg-gray-50 rounded-2xl border border-gray-100 flex items-center justify-between cursor-pointer hover:border-blue-200 hover:bg-blue-50/30 transition-all group"
@@ -311,10 +324,10 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                       onClick={() => setClientMenuOpen(v => !v)}
                     >
                       <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 bg-blue-600 rounded-full flex items-center justify-center text-white font-bold text-xl shadow-sm">{client.nombre.charAt(0)}</div>
+                        <div className="w-12 h-12 bg-blue-600 rounded-full flex items-center justify-center text-white font-bold text-xl shadow-sm">{currentClient.nombre.charAt(0)}</div>
                         <div>
-                          <div className="font-bold text-gray-900 text-base">{client.nombre}</div>
-                          <div className="text-xs text-gray-500 font-mono">{client.rut} • {client.email}</div>
+                          <div className="font-bold text-gray-900 text-base">{currentClient.nombre}</div>
+                          <div className="text-xs text-gray-500 font-mono">{currentClient.rut} • {currentClient.email}</div>
                         </div>
                       </div>
                       <MoreVertical className="w-5 h-5 text-gray-400 group-hover:text-blue-600 transition-colors" />
@@ -322,7 +335,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                     {clientMenuOpen && (
                       <div className="absolute right-0 top-full mt-1 z-30 bg-white border border-gray-200 rounded-xl shadow-xl w-52 overflow-hidden animate-in fade-in slide-in-from-top-1 duration-150">
                         <button
-                          onClick={() => { setClientMenuOpen(false); onSelectClient?.(client.id); }}
+                          onClick={() => { setClientMenuOpen(false); onSelectClient?.(currentClient.id); }}
                           className="w-full px-4 py-3 text-sm font-medium text-left hover:bg-gray-50 flex items-center gap-3"
                         >
                           <ExternalLink className="w-4 h-4 text-blue-500" /> Ver Expediente

@@ -44,11 +44,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   return (
     <div className="w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 h-screen hidden md:flex flex-col fixed left-0 top-0 z-20">
       <div className="px-3 py-2 h-16 flex items-center">
-        <div className="flex items-center justify-center p-2 bg-white rounded-lg w-full">
+        <div className="flex items-center justify-center p-2 bg-white rounded-lg h-14 overflow-hidden w-full">
           <img
             src="/Danacorp.png"
             alt="Danacorp"
-            className="h-10 w-auto object-contain max-w-full"
+            className="max-h-full max-w-full object-contain"
             onError={(e) => {
               const img = e.target as HTMLImageElement;
               img.style.display = 'none';

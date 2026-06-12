@@ -41,11 +41,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-xl border border-gray-100 p-10 w-full max-w-md">
 
-        <div className="flex items-center justify-center mb-6">
+        <div className="flex items-center justify-center mb-6 h-24 overflow-hidden">
           <img
             src="/Danacorp.png"
             alt="Danacorp"
-            className="h-20 w-auto object-contain"
+            className="max-h-full max-w-full object-contain"
             onError={(e) => {
               const img = e.target as HTMLImageElement;
               img.style.display = 'none';

@@ -747,15 +747,30 @@ export const Quoter: React.FC<QuoterProps> = ({
         logoImg.onload = logoImg.onerror = () => resolve();
         logoImg.src = logoB64;
       });
+      const logoAreaWidth = LOGO_W;     // mm — ancho del área blanca
+      const logoAreaHeight = HEADER_H;  // mm — alto del área blanca
+      const lgMg = 2;                   // mm — margen alrededor
+
+      const availableW = logoAreaWidth - 2 * lgMg;
+      const availableH = logoAreaHeight - 2 * lgMg;
+
       const ar = logoImg.naturalWidth > 0 ? logoImg.naturalWidth / logoImg.naturalHeight : 3;
-      const lgMg = 2; // margen interior del área blanca
-      const availW = LOGO_W - 2 * lgMg;
-      const availH = HEADER_H - 2 * lgMg;
+      const containerRatio = availableW / availableH;
+
       let lw: number, lh: number;
-      if (ar > availW / availH) { lw = availW; lh = lw / ar; }
-      else { lh = availH; lw = lh * ar; }
-      const lx = lgMg + (availW - lw) / 2;
-      const ly = lgMg + (availH - lh) / 2;
+      if (ar > containerRatio) {
+        // Logo más ancho: restringir por ancho
+        lw = availableW;
+        lh = lw / ar;
+      } else {
+        // Logo más alto (o cuadrado): restringir por alto
+        lh = availableH;
+        lw = lh * ar;
+      }
+
+      // Centrar dentro del área blanca completa
+      const lx = lgMg + (availableW - lw) / 2;
+      const ly = lgMg + (availableH - lh) / 2;
       doc.addImage(logoB64, 'PNG', lx, ly, lw, lh);
     } catch {
       doc.setTextColor(37, 99, 235);
@@ -1896,7 +1911,7 @@ export const Quoter: React.FC<QuoterProps> = ({
             {/* HEADER: Logo izquierda (fondo blanco) + Área azul sólida derecha */}
             <div className="flex h-16 overflow-hidden">
               {/* Área logo — fondo blanco, proporciones naturales */}
-              <div className="w-[120px] h-[60px] bg-white flex items-center justify-center p-1 shrink-0 self-center ml-1">
+              <div className="w-[120px] h-[60px] bg-white flex items-center justify-center p-2 overflow-hidden shrink-0 self-center ml-1">
                 <img
                   src="/Danacorp.png"
                   alt="Danacorp"

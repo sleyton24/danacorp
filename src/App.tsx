@@ -349,15 +349,28 @@ const App: React.FC = () => {
   };
 
   const handleAssignUnit = (clientId: string, unitId: string) => {
-    const now = new Date().toLocaleDateString('es-CL');
-    setUnits(prev => prev.map(u => u.id === unitId ? {
-        ...u,
-        clienteId: clientId,
-        estado: 'Reservado',
-        asignadoPor: currentUser.name,
-        fechaAsignacion: now
-    } : u));
+    const nowDate = new Date();
+    const isoDate = nowDate.toISOString().split('T')[0];
+    const todayLocal = nowDate.toLocaleDateString('es-CL');
+
+    // Fix B: función pura para aplicar los cambios de asignación
+    const applyAssignment = (u: RealEstateUnit) => ({
+      ...u,
+      clienteId: clientId,
+      estado: 'Reservado' as const,
+      asignadoPor: currentUser.name,
+      fechaAsignacion: todayLocal,
+      fechaReserva: u.fechaReserva || isoDate,
+    });
+
+    setUnits(prev => prev.map(u => u.id === unitId ? applyAssignment(u) : u));
     setClients(prev => prev.map(c => c.id === clientId ? { ...c, ejecutivoId: currentUser.id } : c));
+
+    // Fix B: actualizar selectedUnit para que UnitDetail reciba props frescos inmediatamente
+    if (selectedUnit?.id === unitId) {
+      setSelectedUnit(prev => prev ? applyAssignment(prev) : null);
+    }
+
     const unit = units.find(u => u.id === unitId);
     const client = clients.find(c => c.id === clientId);
     if (unit && client) {
@@ -367,10 +380,14 @@ const App: React.FC = () => {
 
   const handleUnassignUnit = (unitId: string) => {
     const unit = units.find(u => u.id === unitId);
-    setUnits(prev => prev.map(u => u.id === unitId
-      ? { ...u, clienteId: undefined, estado: 'Disponible', asignadoPor: undefined, fechaAsignacion: undefined }
-      : u,
-    ));
+    const clearFields = (u: RealEstateUnit) => ({
+      ...u, clienteId: undefined, estado: 'Disponible' as const,
+      asignadoPor: undefined, fechaAsignacion: undefined,
+    });
+    setUnits(prev => prev.map(u => u.id === unitId ? clearFields(u) : u));
+    if (selectedUnit?.id === unitId) {
+      setSelectedUnit(prev => prev ? clearFields(prev) : null);
+    }
     if (unit) {
       addAuditLog('Inventario', 'Desasignación', `${unit.type} ${unit.numero}`, `Cliente desasignado por ${currentUser.name}.`);
     }
