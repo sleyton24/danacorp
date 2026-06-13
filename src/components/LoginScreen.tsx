@@ -103,33 +103,35 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
           </button>
         </form>
 
-        <div className="mt-8 pt-6 border-t border-gray-100">
-          <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest text-center mb-3">
-            Usuarios de prueba
-          </p>
-          <div className="grid grid-cols-2 gap-2 text-[11px] text-gray-500">
-            <div className="bg-gray-50 rounded-lg p-2">
-              <div className="font-bold text-gray-700">Admin</div>
-              <div className="font-mono">admin@danacorp.cl</div>
-              <div className="font-mono text-gray-400">admin123</div>
-            </div>
-            <div className="bg-gray-50 rounded-lg p-2">
-              <div className="font-bold text-gray-700">JefeSala</div>
-              <div className="font-mono">jefe@danacorp.cl</div>
-              <div className="font-mono text-gray-400">jefe123</div>
-            </div>
-            <div className="bg-gray-50 rounded-lg p-2">
-              <div className="font-bold text-gray-700">Supervisor</div>
-              <div className="font-mono">supervisor@danacorp.cl</div>
-              <div className="font-mono text-gray-400">supervisor123</div>
-            </div>
-            <div className="bg-gray-50 rounded-lg p-2">
-              <div className="font-bold text-gray-700">Ventas</div>
-              <div className="font-mono">vendedor@danacorp.cl</div>
-              <div className="font-mono text-gray-400">vendedor123</div>
+        {import.meta.env.DEV && (
+          <div className="mt-8 pt-6 border-t border-gray-100">
+            <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest text-center mb-3">
+              Usuarios de prueba
+            </p>
+            <div className="grid grid-cols-2 gap-2 text-[11px] text-gray-500">
+              <div className="bg-gray-50 rounded-lg p-2">
+                <div className="font-bold text-gray-700">Admin</div>
+                <div className="font-mono">admin@danacorp.cl</div>
+                <div className="font-mono text-gray-400">admin123</div>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-2">
+                <div className="font-bold text-gray-700">JefeSala</div>
+                <div className="font-mono">jefe@danacorp.cl</div>
+                <div className="font-mono text-gray-400">jefe123</div>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-2">
+                <div className="font-bold text-gray-700">Supervisor</div>
+                <div className="font-mono">supervisor@danacorp.cl</div>
+                <div className="font-mono text-gray-400">supervisor123</div>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-2">
+                <div className="font-bold text-gray-700">Ventas</div>
+                <div className="font-mono">vendedor@danacorp.cl</div>
+                <div className="font-mono text-gray-400">vendedor123</div>
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

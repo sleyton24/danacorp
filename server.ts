@@ -12,7 +12,15 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const JWT_SECRET = process.env.JWT_SECRET || 'danacorp_secret_local_2026';
+const JWT_SECRET: string = (() => {
+  const s = process.env.JWT_SECRET;
+  if (!s) {
+    console.error('[FATAL] JWT_SECRET no está definido en .env');
+    console.error('Agregar JWT_SECRET=<valor-secreto-32-chars-min> al archivo .env');
+    process.exit(1);
+  }
+  return s;
+})();
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 
 // ── Middleware ──────────────────────────────────────────────────────────────
@@ -21,7 +29,6 @@ app.use(cors({
   credentials: true,
 }));
 app.use(express.json({ limit: '10mb' }));
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // ── SQLite (node:sqlite — Node.js 22.5+, sin dependencias nativas) ─────────
 const db = new DatabaseSync(path.join(__dirname, 'danacorp.db'));
@@ -202,6 +209,19 @@ db.exec(`
     extras                     TEXT NOT NULL DEFAULT '{}',
     created_at                 DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at                 DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS audit_logs (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    user_name   TEXT,
+    user_role   TEXT,
+    action      TEXT NOT NULL,
+    entity_type TEXT,
+    entity_id   TEXT,
+    description TEXT,
+    ip_address  TEXT,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 `);
 
@@ -592,6 +612,30 @@ const requireAuth = (req: express.Request, res: express.Response, next: express.
   }
 };
 
+const requireRole = (...roles: string[]) => (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const userRole = (req as AuthenticatedRequest).userRole;
+  if (!userRole || !roles.includes(userRole)) {
+    res.status(403).json({ error: `Rol ${userRole ?? 'desconocido'} no tiene permiso para esta acción` });
+    return;
+  }
+  next();
+};
+
+// Protected uploads route (auth required, path traversal prevented)
+app.use('/uploads', requireAuth, (req: express.Request, res: express.Response) => {
+  const uploadsDir = path.resolve(path.join(__dirname, 'uploads'));
+  const filePath = path.resolve(path.join(uploadsDir, req.path));
+  if (!filePath.startsWith(uploadsDir + path.sep) && filePath !== uploadsDir) {
+    res.status(403).json({ error: 'Acceso denegado' });
+    return;
+  }
+  if (!fs.existsSync(filePath)) {
+    res.status(404).json({ error: 'Archivo no encontrado' });
+    return;
+  }
+  res.sendFile(filePath);
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ENDPOINTS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -795,16 +839,26 @@ function getProjectDiscountConfig(projectId: string): {
 // ── 5. Solicitudes de Descuento ──────────────────────────────────────────────
 
 // Create discount request
-app.post('/api/discount-requests', requireAuth, (req, res) => {
-  const {
-    projectId, unitId, unitNumero,
-    precioOriginal, precioSolicitado,
-    descuentoPct, descuentoMonto, cotizacionId,
-  } = req.body as Record<string, unknown>;
+app.post('/api/discount-requests', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), (req, res) => {
+  const { projectId, unitId, unitNumero, precioSolicitado, cotizacionId } = req.body as Record<string, unknown>;
   const userId = (req as AuthenticatedRequest).userId;
   const user = USERS.find(u => u.id === userId);
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
+
+  const unit = db.prepare('SELECT precio_lista FROM units WHERE id = ?').get(unitId as string) as { precio_lista: number } | undefined;
+  if (!unit) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
+
+  const precioOriginal = unit.precio_lista;
+  const precioSol = precioSolicitado as number;
+  const descuentoPct = Math.round(((precioOriginal - precioSol) / precioOriginal) * 10000) / 100;
+  const descuentoMonto = Math.round((precioOriginal - precioSol) * 100) / 100;
+
+  const config = getProjectDiscountConfig(projectId as string);
+  if (descuentoPct > config.supervisorMaxPct) {
+    res.status(403).json({ error: `Descuento ${descuentoPct}% supera el límite permitido (${config.supervisorMaxPct}%)` });
+    return;
+  }
 
   db.prepare(`
     INSERT INTO discount_requests
@@ -814,13 +868,13 @@ app.post('/api/discount-requests', requireAuth, (req, res) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pendiente', ?, ?)
   `).run(id, projectId, unitId, unitNumero, userId, user?.name || '',
          (cotizacionId as string) || null,
-         precioOriginal, precioSolicitado, descuentoPct, descuentoMonto, now, now);
+         precioOriginal, precioSol, descuentoPct, descuentoMonto, now, now);
 
   // Notify JefeSala
   createNotification({
     paraRol: 'JefeSala',
     titulo: 'Nueva solicitud de descuento',
-    mensaje: `${user?.name || 'Vendedor'} solicita ${(descuentoPct as number).toFixed(1)}% descuento en unidad ${unitNumero}`,
+    mensaje: `${user?.name || 'Vendedor'} solicita ${descuentoPct.toFixed(1)}% descuento en unidad ${unitNumero}`,
     tipo: 'warning',
     linkView: 'approvals',
     relatedId: id,
@@ -865,7 +919,7 @@ app.get('/api/discount-requests/:id', requireAuth, (req, res) => {
 });
 
 // Approve discount request
-app.post('/api/discount-requests/:id/approve', requireAuth, (req, res) => {
+app.post('/api/discount-requests/:id/approve', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor'), (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
   const { motivo } = req.body as { motivo?: string };
@@ -874,10 +928,6 @@ app.post('/api/discount-requests/:id/approve', requireAuth, (req, res) => {
   const dr = db.prepare('SELECT * FROM discount_requests WHERE id = ?')
     .get(req.params.id) as Record<string, unknown> | undefined;
   if (!dr) { res.status(404).json({ error: 'Solicitud no encontrada' }); return; }
-
-  if (!['JefeSala', 'Supervisor', 'Admin'].includes(userRole)) {
-    res.status(403).json({ error: 'Sin permisos para aprobar' }); return;
-  }
 
   const fullCfg = getProjectDiscountConfig(dr.project_id as string);
   const discountCfg = { jefeMaxPct: fullCfg.jefeMaxPct, supervisorMaxPct: fullCfg.supervisorMaxPct };
@@ -954,15 +1004,10 @@ app.post('/api/discount-requests/:id/approve', requireAuth, (req, res) => {
 });
 
 // Reject discount request
-app.post('/api/discount-requests/:id/reject', requireAuth, (req, res) => {
+app.post('/api/discount-requests/:id/reject', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor'), (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
-  const userRole = (req as AuthenticatedRequest).userRole;
   const { motivo } = req.body as { motivo?: string };
   const now = new Date().toISOString();
-
-  if (!['JefeSala', 'Supervisor', 'Admin'].includes(userRole)) {
-    res.status(403).json({ error: 'Sin permisos para rechazar' }); return;
-  }
 
   const dr = db.prepare('SELECT * FROM discount_requests WHERE id = ?')
     .get(req.params.id) as Record<string, unknown> | undefined;
@@ -1029,6 +1074,34 @@ app.post('/api/notifications/read-all', requireAuth, (req, res) => {
     WHERE para_user_id = ? OR para_rol = ? OR para_rol = 'All'
   `).run(userId, userRole);
   res.json({ ok: true });
+});
+
+// ── 5c. Audit Logs ───────────────────────────────────────────────────────────
+
+app.post('/api/audit-logs', requireAuth, (req, res) => {
+  const { action, entityType, entityId, description } = req.body as Record<string, string>;
+  const userId = (req as AuthenticatedRequest).userId;
+  const userRole = (req as AuthenticatedRequest).userRole;
+  const user = USERS.find(u => u.id === userId);
+  const id = crypto.randomUUID();
+  const ip = req.ip || req.socket.remoteAddress || null;
+  db.prepare(`
+    INSERT INTO audit_logs (id, user_id, user_name, user_role, action, entity_type, entity_id, description, ip_address)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, userId, user?.name || '', userRole, action || '', entityType || null, entityId || null, description || null, ip);
+  res.json({ ok: true, id });
+});
+
+app.get('/api/audit-logs', requireAuth, requireRole('Admin', 'Supervisor'), (req, res) => {
+  const { entityType, entityId, userId: filterUserId, limit = '100' } = req.query as Record<string, string>;
+  let sql = 'SELECT * FROM audit_logs WHERE 1=1';
+  const params: Array<string | number | null> = [];
+  if (entityType) { sql += ' AND entity_type = ?'; params.push(entityType); }
+  if (entityId) { sql += ' AND entity_id = ?'; params.push(entityId); }
+  if (filterUserId) { sql += ' AND user_id = ?'; params.push(filterUserId); }
+  sql += ' ORDER BY created_at DESC LIMIT ?';
+  params.push(parseInt(limit) || 100);
+  res.json(db.prepare(sql).all(...params));
 });
 
 // ── 6. Documentos de Cotización ──────────────────────────────────────────────
@@ -1103,9 +1176,7 @@ app.get('/api/projects', requireAuth, (_req, res) => {
   })));
 });
 
-app.post('/api/projects', requireAuth, (req, res) => {
-  const userRole = (req as AuthenticatedRequest).userRole;
-  if (userRole !== 'Admin') { res.status(403).json({ error: 'Solo Admin puede crear proyectos' }); return; }
+app.post('/api/projects', requireAuth, requireRole('Admin'), (req, res) => {
   const { id, nombre, fechaCreacion } = req.body as Record<string, string>;
   const now = new Date().toISOString();
   const pid = id || crypto.randomUUID();
@@ -1123,9 +1194,7 @@ app.post('/api/projects', requireAuth, (req, res) => {
   res.json({ id: pid, nombre, fechaCreacion: fechaCreacion || now });
 });
 
-app.patch('/api/projects/:id', requireAuth, (req, res) => {
-  const userRole = (req as AuthenticatedRequest).userRole;
-  if (userRole !== 'Admin') { res.status(403).json({ error: 'Solo Admin puede editar proyectos' }); return; }
+app.patch('/api/projects/:id', requireAuth, requireRole('Admin'), (req, res) => {
   const { nombre } = req.body as { nombre: string };
   const now = new Date().toISOString();
   db.prepare('UPDATE projects SET nombre = ?, updated_at = ? WHERE id = ?').run(nombre, now, req.params.id);
@@ -1153,9 +1222,7 @@ app.get('/api/projects/:id/config', requireAuth, (req, res) => {
   });
 });
 
-app.post('/api/projects/:id/config', requireAuth, (req, res) => {
-  const userRole = (req as AuthenticatedRequest).userRole;
-  if (userRole !== 'Admin') { res.status(403).json({ error: 'Solo Admin puede configurar proyectos' }); return; }
+app.post('/api/projects/:id/config', requireAuth, requireRole('Admin', 'Supervisor'), (req, res) => {
   const body = req.body as Record<string, unknown>;
   const now = new Date().toISOString();
   syncProjectConfigToTable(req.params.id, body, now);
@@ -1212,7 +1279,7 @@ app.get('/api/clients', requireAuth, (req, res) => {
   })));
 });
 
-app.post('/api/clients', requireAuth, (req, res) => {
+app.post('/api/clients', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), (req, res) => {
   const body = req.body as Record<string, unknown>;
   const now = new Date().toISOString();
   const id = (body.id as string | undefined) || crypto.randomUUID();
@@ -1280,9 +1347,7 @@ app.patch('/api/clients/:id', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.delete('/api/clients/:id', requireAuth, (req, res) => {
-  const userRole = (req as AuthenticatedRequest).userRole;
-  if (!['Admin', 'Supervisor'].includes(userRole)) { res.status(403).json({ error: 'Sin permisos' }); return; }
+app.delete('/api/clients/:id', requireAuth, requireRole('Admin', 'Supervisor'), (req, res) => {
   const result = db.prepare('DELETE FROM clients WHERE id = ?').run(req.params.id);
   if (result.changes === 0) { res.status(404).json({ error: 'Cliente no encontrado' }); return; }
   res.json({ ok: true });
@@ -1364,9 +1429,7 @@ app.get('/api/units', requireAuth, (req, res) => {
   })));
 });
 
-app.post('/api/units', requireAuth, (req, res) => {
-  const userRole = (req as AuthenticatedRequest).userRole;
-  if (!['Admin', 'Supervisor', 'JefeSala'].includes(userRole)) { res.status(403).json({ error: 'Sin permisos' }); return; }
+app.post('/api/units', requireAuth, requireRole('Admin'), (req, res) => {
   const body = req.body as Record<string, unknown>;
   const now = new Date().toISOString();
   const id = (body.id as string | undefined) || crypto.randomUUID();
@@ -1374,7 +1437,7 @@ app.post('/api/units', requireAuth, (req, res) => {
   res.json({ id, ...body });
 });
 
-app.patch('/api/units/:id', requireAuth, (req, res) => {
+app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor'), (req, res) => {
   const body = req.body as Record<string, unknown>;
   const now = new Date().toISOString();
   const existing = db.prepare('SELECT * FROM units WHERE id = ?').get(req.params.id) as Record<string, unknown> | undefined;
@@ -1420,7 +1483,7 @@ app.patch('/api/units/:id', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.patch('/api/units/:id/assign', requireAuth, (req, res) => {
+app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), (req, res) => {
   const { clienteId, asignadoPor } = req.body as { clienteId: string; asignadoPor?: string };
   const userId = (req as AuthenticatedRequest).userId;
   const now = new Date().toISOString();
@@ -1430,9 +1493,7 @@ app.patch('/api/units/:id/assign', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.patch('/api/units/:id/unassign', requireAuth, (req, res) => {
-  const userRole = (req as AuthenticatedRequest).userRole;
-  if (!['Admin', 'Supervisor', 'JefeSala'].includes(userRole)) { res.status(403).json({ error: 'Sin permisos' }); return; }
+app.patch('/api/units/:id/unassign', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), (req, res) => {
   const now = new Date().toISOString();
   const result = db.prepare(`UPDATE units SET cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, estado = 'Disponible', updated_at = ? WHERE id = ?`)
     .run(now, req.params.id);

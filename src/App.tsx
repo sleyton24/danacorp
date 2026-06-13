@@ -9,16 +9,29 @@ import { PriceManager } from './components/PriceManager';
 import { ProjectCreationWizard } from './components/ProjectCreationWizard';
 import { SummaryDashboard } from './components/SummaryDashboard';
 import { SettingsPanel } from './components/SettingsPanel';
-import { AuditLogView } from './components/AuditLogView';
-import { ProfileAdministration } from './components/ProfileAdministration';
 import { NotificationsView } from './components/NotificationsView';
-import { DownloadsView } from './components/DownloadsView';
-import { ApprovalsView } from './components/ApprovalsView';
-import { SalesPerformanceView } from './components/SalesPerformanceView';
+
+const AuditLogView = React.lazy(() =>
+  import('./components/AuditLogView').then(m => ({ default: m.AuditLogView })));
+const ProfileAdministration = React.lazy(() =>
+  import('./components/ProfileAdministration').then(m => ({ default: m.ProfileAdministration })));
+const DownloadsView = React.lazy(() =>
+  import('./components/DownloadsView').then(m => ({ default: m.DownloadsView })));
+const ApprovalsView = React.lazy(() =>
+  import('./components/ApprovalsView').then(m => ({ default: m.ApprovalsView })));
+const SalesPerformanceView = React.lazy(() =>
+  import('./components/SalesPerformanceView').then(m => ({ default: m.SalesPerformanceView })));
 import { Shield, User as UserIcon, ChevronUp, ChevronDown, RefreshCw } from 'lucide-react';
 
 // Lazy-loaded heavy module — jsPDF only downloads when user opens the Quoter
 const Quoter = React.lazy(() => import('./components/Quoter').then(m => ({ default: m.Quoter })));
+
+const LazyFallback = () => (
+  <div className="flex items-center justify-center h-64 gap-3 text-gray-400">
+    <div className="w-5 h-5 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin" />
+    <span>Cargando...</span>
+  </div>
+);
 
 const dummyPdfUrl = 'data:application/pdf;base64,JVBERi0xLjQKJdPr6eEKMSAwIG9iaiA8PC9UaXRsZSAoQ29udHJhdG8gRGVtbW8pL0NyZWF0b3IgKERhbmFXb3Jrcyk+PgplbmRvYmoKMiAwIG9iaiA8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMyAwIFI+PgplbmRvYmoKMyAwIG9iaiA8PC9UeXBlL1BhZ2VzL0tpZHNbNCAwIFJdL0NvdW50IDE+PgplbmRvYmoKNCAwIG9iaiA8PC9UeXBlL1BhZ2UvUGFyZW50IDMgMCBSL01lZGlhQm94WzAgMCA1OTUgODQyXS9Db250ZW50cyA1IDAgUj4+ZW5kb2JqCjUgMCBvYmogPDwvTGVuZ3RoIDY4Pj5zdHJlYW0KQlQKICAvRjEgMjQgVGYKICA3MiA3MjAgVGQKICAoRG9jdW1lbnRvIGRlIE11ZXN0cmEgLSBEYW5hV29ya3MpIFRqCkVUCmVuZHN0cmVhbQplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNjkgMDAwMDAgbiAKMDAwMDAwMDExNiAwMDAwMCBuIAowMDAwMDAwMTczIDAwMDAwIG4gCjAwMDAwMDAwMjkyIDAwMDAwIG4gCHRyYWlsZXIgPDwvU2l6ZSA2L1Jvb3QgMiAwIFIvSW5mbyAxIDAgUj4+CnN0YXJ0eHJlZgowIDM2MQolJUVPRg==';
 
@@ -264,6 +277,19 @@ const App: React.FC = () => {
           details
       };
       setAuditLogs(prev => [newLog, ...prev]);
+      const tok = tokenRef.current;
+      if (tok) {
+        fetch('/api/audit-logs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+          body: JSON.stringify({
+            action: `${section}:${action}`,
+            entityType: section,
+            entityId: target,
+            description: details,
+          }),
+        }).catch(() => {});
+      }
   };
 
   // ── Helpers de persistencia granular ────────────────────────────────────
@@ -638,9 +664,17 @@ const App: React.FC = () => {
             {currentView === 'inventory' && <UnitList units={currentProjectUnits} clients={currentProjectClients} onSelectUnit={setSelectedUnit} />}
             {currentView === 'prices' && <PriceManager units={currentProjectUnits} onUpdateUnit={handleUpdateUnit} currentUser={currentUser} />}
             {currentView === 'create_project' && <ProjectCreationWizard onSave={handleCreateProject} onCancel={() => setCurrentView('summary')} />}
-            {currentView === 'audit' && <AuditLogView logs={auditLogs} />}
+            {currentView === 'audit' && (
+              <React.Suspense fallback={<LazyFallback />}>
+                <AuditLogView logs={auditLogs} />
+              </React.Suspense>
+            )}
             {currentView === 'settings' && <SettingsPanel currentUser={currentUser} users={users} onAddUser={u => setUsers(p => [...p, u])} onDeleteUser={id => setUsers(p => p.filter(u => u.id !== id))} onUpdateUser={u => setUsers(p => p.map(x => x.id === u.id ? u : x))} darkMode={darkMode} toggleDarkMode={() => setDarkMode(!darkMode)} />}
-            {currentView === 'profile_admin' && <ProfileAdministration users={users} projects={projects} onAddUser={u => setUsers(p => [...p, u])} onUpdateUser={u => setUsers(p => p.map(x => x.id === u.id ? u : x))} onDeleteUser={id => setUsers(p => p.filter(u => u.id !== id))} currentUser={currentUser} />}
+            {currentView === 'profile_admin' && (
+              <React.Suspense fallback={<LazyFallback />}>
+                <ProfileAdministration users={users} projects={projects} onAddUser={u => setUsers(p => [...p, u])} onUpdateUser={u => setUsers(p => p.map(x => x.id === u.id ? u : x))} onDeleteUser={id => setUsers(p => p.filter(u => u.id !== id))} currentUser={currentUser} />
+              </React.Suspense>
+            )}
             {currentView === 'notifications' && <NotificationsView
                 notifications={notifications}
                 onMarkAsRead={id => {
@@ -654,7 +688,11 @@ const App: React.FC = () => {
                   setNotifications(p => p.map(n => ({ ...n, read: true })));
                 }}
               />}
-            {currentView === 'downloads' && <DownloadsView units={currentProjectUnits} clients={clients} project={projects.find(p => p.id === currentProjectId)} />}
+            {currentView === 'downloads' && (
+              <React.Suspense fallback={<LazyFallback />}>
+                <DownloadsView units={currentProjectUnits} clients={clients} project={projects.find(p => p.id === currentProjectId)} />
+              </React.Suspense>
+            )}
             {currentView === 'quoter' && (
               <React.Suspense fallback={
                 <div className="flex items-center justify-center h-64 gap-3 text-gray-400">
@@ -677,17 +715,21 @@ const App: React.FC = () => {
               </React.Suspense>
             )}
             {currentView === 'approvals' && (
-              <ApprovalsView currentUser={currentUser} />
+              <React.Suspense fallback={<LazyFallback />}>
+                <ApprovalsView currentUser={currentUser} />
+              </React.Suspense>
             )}
             {currentView === 'performance' && (
-              <SalesPerformanceView
-                currentUser={currentUser}
-                units={units}
-                clients={clients}
-                users={users}
-                projects={projects}
-                currentProjectId={currentProjectId}
-              />
+              <React.Suspense fallback={<LazyFallback />}>
+                <SalesPerformanceView
+                  currentUser={currentUser}
+                  units={units}
+                  clients={clients}
+                  users={users}
+                  projects={projects}
+                  currentProjectId={currentProjectId}
+                />
+              </React.Suspense>
             )}
           </>
         )}
