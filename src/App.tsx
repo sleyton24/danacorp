@@ -140,7 +140,6 @@ const App: React.FC = () => {
     const storedToken = localStorage.getItem('dw_token');
     if (!storedToken) { setAuthLoading(false); return; }
     tokenRef.current = storedToken;
-
     fetch('/api/me', { headers: { Authorization: `Bearer ${storedToken}` } })
       .then(r => r.ok ? r.json() : null)
       .then((data: { user: User } | null) => {
@@ -148,41 +147,36 @@ const App: React.FC = () => {
           localStorage.removeItem('dw_token');
           localStorage.removeItem('dw_user');
           tokenRef.current = '';
-          return null;
+          setAuthLoading(false);
+          return;
         }
         setCurrentUser(data.user);
-        return fetch('/api/sync/app_state', {
-          headers: { Authorization: `Bearer ${storedToken}` },
-        });
+        // data-loading effect handles setAuthLoading(false)
       })
-      .then(r => r?.ok ? r.json() : null)
-      .then((sync: { value: { clients?: Client[]; units?: RealEstateUnit[]; projects?: Project[] } } | null) => {
-        if (sync?.value) {
-          const { clients: c, units: u, projects: p } = sync.value;
-          if (Array.isArray(c) && c.length > 0) setClients(c);
-          if (Array.isArray(u) && u.length > 0) setUnits(u);
-          if (Array.isArray(p) && p.length > 0) setProjects(p);
-        }
-      })
-      .catch(() => {})
-      .finally(() => setAuthLoading(false));
+      .catch(() => { setAuthLoading(false); });
   }, []);
 
-  // ── Persistencia: Sincronizar estado con backend ─────────────────────────
+  // ── Carga inicial: endpoints granulares en paralelo ──────────────────────
   useEffect(() => {
-    if (!currentUser || !tokenRef.current) return;
-    const t = setTimeout(() => {
-      fetch('/api/sync', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${tokenRef.current}`,
-        },
-        body: JSON.stringify({ key: 'app_state', value: { clients, units, projects } }),
-      }).catch(() => {});
-    }, 1500);
-    return () => clearTimeout(t);
-  }, [clients, units, projects, currentUser]);
+    if (!currentUser) return;
+    const tok = localStorage.getItem('dw_token');
+    const headers = tok ? { Authorization: `Bearer ${tok}` } : {};
+    const loadData = async () => {
+      try {
+        setAuthLoading(true);
+        const [projRes, clientRes, unitRes] = await Promise.all([
+          fetch('/api/projects', { headers }),
+          fetch('/api/clients', { headers }),
+          fetch('/api/units', { headers }),
+        ]);
+        if (projRes.ok) setProjects(await projRes.json() as Project[]);
+        if (clientRes.ok) setClients(await clientRes.json() as Client[]);
+        if (unitRes.ok) setUnits(await unitRes.json() as RealEstateUnit[]);
+      } catch (err) { console.error('[App] Error cargando datos:', err); }
+      finally { setAuthLoading(false); }
+    };
+    loadData();
+  }, [currentUser]);
 
   // ── BUG 4: Draft navigation guard ─────────────────────────────────────────
   const [pendingNavigation, setPendingNavigation] = useState<string | null>(null);
@@ -272,6 +266,67 @@ const App: React.FC = () => {
       setAuditLogs(prev => [newLog, ...prev]);
   };
 
+  // ── Helpers de persistencia granular ────────────────────────────────────
+  const persistClient = async (client: Client) => {
+    const tok = tokenRef.current;
+    if (!tok) return;
+    await fetch(`/api/clients/${client.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+      body: JSON.stringify(client),
+    }).catch(() => {});
+  };
+
+  const createClient = async (client: Client) => {
+    const tok = tokenRef.current;
+    if (!tok) return;
+    await fetch('/api/clients', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+      body: JSON.stringify(client),
+    }).catch(() => {});
+  };
+
+  const persistUnit = async (unit: RealEstateUnit) => {
+    const tok = tokenRef.current;
+    if (!tok) return;
+    await fetch(`/api/units/${unit.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+      body: JSON.stringify(unit),
+    }).catch(() => {});
+  };
+
+  const createUnit = async (unit: RealEstateUnit) => {
+    const tok = tokenRef.current;
+    if (!tok) return;
+    await fetch('/api/units', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+      body: JSON.stringify(unit),
+    }).catch(() => {});
+  };
+
+  const persistProject = async (project: Project) => {
+    const tok = tokenRef.current;
+    if (!tok) return;
+    await fetch(`/api/projects/${project.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+      body: JSON.stringify(project),
+    }).catch(() => {});
+  };
+
+  const createProject = async (project: Project) => {
+    const tok = tokenRef.current;
+    if (!tok) return;
+    await fetch('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+      body: JSON.stringify(project),
+    }).catch(() => {});
+  };
+
   /**
    * Motor de Sincronización de Estados de Clientes
    */
@@ -315,7 +370,7 @@ const App: React.FC = () => {
     const oldUnit = units.find(u => u.id === updatedUnit.id);
     setUnits(prev => prev.map(u => u.id === updatedUnit.id ? updatedUnit : u));
     if (selectedUnit?.id === updatedUnit.id) setSelectedUnit(updatedUnit);
-    
+    persistUnit(updatedUnit);
     if (oldUnit && oldUnit.estado !== updatedUnit.estado) {
         addAuditLog('Inventario', 'Cambio Estado', `${updatedUnit.type} ${updatedUnit.numero}`, `Estado actualizado: ${oldUnit.estado} → ${updatedUnit.estado}`);
     } else {
@@ -324,28 +379,32 @@ const App: React.FC = () => {
   };
 
   const handleAddClient = (client: Client) => {
-      const existingClientIdx = clients.findIndex(c => c.id === client.id || c.rut === client.rut);
-      if (existingClientIdx > -1) {
-          setClients(prev => prev.map((c, i) => i === existingClientIdx ? { 
-              ...c, 
-              ...client, 
-              historial: [...(c.historial || []), ...(client.historial || [])],
-              documents: [...(c.documents || []), ...(client.documents || [])]
-          } : c));
+      const existingClient = clients.find(c => c.id === client.id || c.rut === client.rut);
+      if (existingClient) {
+          const merged = {
+            ...existingClient,
+            ...client,
+            historial: [...(existingClient.historial || []), ...(client.historial || [])],
+            documents: [...(existingClient.documents || []), ...(client.documents || [])],
+          };
+          setClients(prev => prev.map(c => c.id === existingClient.id ? merged : c));
+          persistClient(merged);
           addAuditLog('Clientes', 'Actualización', client.nombre, `Prospecto actualizado con nuevos datos/documentos.`);
       } else {
-          const clientWithProject = { 
-            ...client, 
+          const clientWithProject = {
+            ...client,
             projectId: currentProjectId || '',
-            ejecutivoId: client.estado === 'Activo' ? currentUser.id : client.ejecutivoId 
+            ejecutivoId: client.estado === 'Activo' ? currentUser.id : client.ejecutivoId
           };
           setClients(prev => [clientWithProject, ...prev]);
+          createClient(clientWithProject);
           addAuditLog('Clientes', 'Creación', client.nombre, `Nuevo prospecto registrado.`);
       }
   };
 
   const handleUpdateClient = (client: Client) => {
       setClients(prev => prev.map(c => c.id === client.id ? client : c));
+      persistClient(client);
       addAuditLog('Clientes', 'Actualización', client.nombre, `Ficha de cliente modificada.`);
   };
 
@@ -374,6 +433,18 @@ const App: React.FC = () => {
 
     const unit = units.find(u => u.id === unitId);
     const client = clients.find(c => c.id === clientId);
+
+    // persist
+    const tok = tokenRef.current;
+    if (tok) {
+      fetch(`/api/units/${unitId}/assign`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+        body: JSON.stringify({ clienteId: clientId, asignadoPor: currentUser.name }),
+      }).catch(() => {});
+      if (client) persistClient({ ...client, ejecutivoId: currentUser.id });
+    }
+
     if (unit && client) {
       addAuditLog('Clientes', 'Asignación', client.nombre, `Asignación de unidad ${unit.numero}. Ejecutivo: ${currentUser.name}.`);
     }
@@ -389,6 +460,13 @@ const App: React.FC = () => {
     if (selectedUnit?.id === unitId) {
       setSelectedUnit(prev => prev ? clearFields(prev) : null);
     }
+    const tok = tokenRef.current;
+    if (tok) {
+      fetch(`/api/units/${unitId}/unassign`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${tok}` },
+      }).catch(() => {});
+    }
     if (unit) {
       addAuditLog('Inventario', 'Desasignación', `${unit.type} ${unit.numero}`, `Cliente desasignado por ${currentUser.name}.`);
     }
@@ -397,12 +475,26 @@ const App: React.FC = () => {
   const handleProcessDesist = (clientId: string, unitIds: string[], reason: string) => {
     const client = clients.find(c => c.id === clientId);
     const affectedUnits = units.filter(u => unitIds.includes(u.id));
-    
+
     setUnits(prev => prev.map(u => unitIds.includes(u.id) ? { ...u, clienteId: undefined, estado: 'Disponible', asignadoPor: undefined, fechaAsignacion: undefined } : u));
-    setClients(prev => prev.map(c => c.id === clientId ? {
-      ...c,
-      historial: [...c.historial, { fecha: new Date().toLocaleDateString('es-CL'), tipo: 'Desistimiento', descripcion: `Motivo: ${reason}`, usuario: currentUser.name }]
-    } : c));
+
+    const updatedClient = client ? {
+      ...client,
+      historial: [...client.historial, { fecha: new Date().toLocaleDateString('es-CL'), tipo: 'Desistimiento' as const, descripcion: `Motivo: ${reason}`, usuario: currentUser.name }],
+    } : null;
+    setClients(prev => prev.map(c => c.id === clientId ? (updatedClient || c) : c));
+
+    // persist
+    const tok = tokenRef.current;
+    if (tok) {
+      for (const unitId of unitIds) {
+        fetch(`/api/units/${unitId}/unassign`, {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${tok}` },
+        }).catch(() => {});
+      }
+      if (updatedClient) persistClient(updatedClient);
+    }
 
     if (client) {
         addAuditLog('Ventas', 'Desistimiento', client.nombre, `Desistimiento de ${affectedUnits.length} unidad(es).`);
@@ -414,6 +506,8 @@ const App: React.FC = () => {
     setUnits(prev => [...prev, ...newUnits]);
     setCurrentProjectId(project.id);
     setCurrentView('summary');
+    createProject(project);
+    newUnits.forEach(u => createUnit(u));
     addAuditLog('Administración', 'Crear Proyecto', project.nombre, `Proyecto creado con ${newUnits.length} unidades.`);
   };
 

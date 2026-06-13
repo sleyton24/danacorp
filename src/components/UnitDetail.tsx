@@ -123,20 +123,20 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   useEffect(() => {
     const token = localStorage.getItem('dw_token');
     if (!token || !unit.projectId) return;
-    fetch(`/api/sync/project_config_${unit.projectId}`, { headers: { Authorization: `Bearer ${token}` } })
+    fetch(`/api/projects/${unit.projectId}/config`, { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.ok ? r.json() : null)
-      .then((d: { value: { discountConfig?: { jefeMaxPct?: number; supervisorMaxPct?: number; bonoPiePct?: number }; cantidadCuotasPie?: number } } | null) => {
-        if (d?.value?.discountConfig) {
+      .then((d: { discountConfig?: { jefeMaxPct?: number; supervisorMaxPct?: number; bonoPiePct?: number }; cantidadCuotasPie?: number } | null) => {
+        if (d?.discountConfig) {
           setDiscountCfg({
-            jefeMaxPct: d.value.discountConfig.jefeMaxPct ?? 3,
-            supervisorMaxPct: d.value.discountConfig.supervisorMaxPct ?? 7,
+            jefeMaxPct: d.discountConfig.jefeMaxPct ?? 3,
+            supervisorMaxPct: d.discountConfig.supervisorMaxPct ?? 7,
           });
-          setBonoPct(d.value.discountConfig.bonoPiePct ?? 10);
+          setBonoPct(d.discountConfig.bonoPiePct ?? 10);
         } else {
           setBonoPct(10);
         }
-        if (d?.value?.cantidadCuotasPie != null) {
-          setCantidadCuotasPie(d.value.cantidadCuotasPie);
+        if (d?.cantidadCuotasPie != null) {
+          setCantidadCuotasPie(d.cantidadCuotasPie);
         }
       })
       .catch(() => {});

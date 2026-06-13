@@ -265,16 +265,16 @@ export const Quoter: React.FC<QuoterProps> = ({
     if (!currentProjectId) return;
     const token = localStorage.getItem('dw_token');
     if (!token) return;
-    fetch(`/api/sync/project_config_${currentProjectId}`, {
+    fetch(`/api/projects/${currentProjectId}/config`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then(r => r.ok ? r.json() : null)
-      .then((d: { value: ProjectConfig } | null) => {
-        if (d?.value) {
-          setProjectConfig(d.value);
-          if (d.value.bonoPiePct != null) setBonoPct(d.value.bonoPiePct);
-          if (d.value.reservaCLP != null) setReservaCLP(d.value.reservaCLP);
-          if (d.value.cantidadCuotasPie != null) setNCuotasNew(d.value.cantidadCuotasPie);
+      .then((d: ProjectConfig | null) => {
+        if (d) {
+          setProjectConfig(d);
+          if (d.bonoPiePct != null) setBonoPct(d.bonoPiePct);
+          if (d.reservaCLP != null) setReservaCLP(d.reservaCLP);
+          if (d.cantidadCuotasPie != null) setNCuotasNew(d.cantidadCuotasPie);
         }
       })
       .catch(() => {});

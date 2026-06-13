@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { User, Project, ProjectConfig, DiscountConfig } from '../types';
+import { User, Project, ProjectConfig } from '../types';
 import { Plus, Search, Shield, Trash2, Edit2, Check, X, Mail, Briefcase, User as UserIcon, ShieldAlert, CheckSquare, Square, Settings2, AlertCircle, Building } from 'lucide-react';
 
 interface ProfileAdministrationProps {
@@ -41,23 +41,22 @@ const ProjectConfigSection: React.FC<{ projects: Project[]; currentUser: User }>
     const token = localStorage.getItem('dw_token');
     if (!token) return;
     projects.forEach(p => {
-      fetch(`/api/sync/project_config_${p.id}`, { headers: { Authorization: `Bearer ${token}` } })
+      fetch(`/api/projects/${p.id}/config`, { headers: { Authorization: `Bearer ${token}` } })
         .then(r => r.ok ? r.json() : null)
-        .then((d: { value: ProjectConfig } | null) => {
-          const extVal = d?.value as (typeof d.value & { reservaCLP?: number; direccionProyecto?: string; comunaProyecto?: string; ciudadProyecto?: string; nombreInmobiliaria?: string }) | null;
+        .then((d: ProjectConfig | null) => {
           setConfigs(prev => ({
             ...prev,
-            [p.id]: extVal ? {
-              jefeMaxPct:          extVal.discountConfig?.jefeMaxPct ?? DEFAULT_CFG.jefeMaxPct,
-              supervisorMaxPct:    extVal.discountConfig?.supervisorMaxPct ?? DEFAULT_CFG.supervisorMaxPct,
-              bonoPiePct:          extVal.bonoPiePct ?? DEFAULT_CFG.bonoPiePct,
-              vigenciaCotizacionDias: (extVal.discountConfig as DiscountConfig & { vigenciaCotizacionDias?: number })?.vigenciaCotizacionDias ?? DEFAULT_CFG.vigenciaCotizacionDias,
-              reservaCLP:          extVal.reservaCLP ?? DEFAULT_CFG.reservaCLP,
-              direccionProyecto:   extVal.direccionProyecto ?? DEFAULT_CFG.direccionProyecto,
-              comunaProyecto:      extVal.comunaProyecto ?? DEFAULT_CFG.comunaProyecto,
-              ciudadProyecto:      extVal.ciudadProyecto ?? DEFAULT_CFG.ciudadProyecto,
-              nombreInmobiliaria:  extVal.nombreInmobiliaria ?? DEFAULT_CFG.nombreInmobiliaria,
-              cantidadCuotasPie:   (extVal as unknown as { cantidadCuotasPie?: number }).cantidadCuotasPie ?? DEFAULT_CFG.cantidadCuotasPie,
+            [p.id]: d ? {
+              jefeMaxPct:             d.discountConfig?.jefeMaxPct ?? DEFAULT_CFG.jefeMaxPct,
+              supervisorMaxPct:       d.discountConfig?.supervisorMaxPct ?? DEFAULT_CFG.supervisorMaxPct,
+              bonoPiePct:             d.bonoPiePct ?? DEFAULT_CFG.bonoPiePct,
+              vigenciaCotizacionDias: d.discountConfig?.vigenciaCotizacionDias ?? DEFAULT_CFG.vigenciaCotizacionDias,
+              reservaCLP:             d.reservaCLP ?? DEFAULT_CFG.reservaCLP,
+              direccionProyecto:      d.direccionProyecto ?? DEFAULT_CFG.direccionProyecto,
+              comunaProyecto:         d.comunaProyecto ?? DEFAULT_CFG.comunaProyecto,
+              ciudadProyecto:         d.ciudadProyecto ?? DEFAULT_CFG.ciudadProyecto,
+              nombreInmobiliaria:     d.nombreInmobiliaria ?? DEFAULT_CFG.nombreInmobiliaria,
+              cantidadCuotasPie:      d.cantidadCuotasPie ?? DEFAULT_CFG.cantidadCuotasPie,
             } : (prev[p.id] || DEFAULT_CFG),
           }));
         })
@@ -100,10 +99,10 @@ const ProjectConfigSection: React.FC<{ projects: Project[]; currentUser: User }>
       nombreInmobiliaria: cfg.nombreInmobiliaria,
       cantidadCuotasPie: cfg.cantidadCuotasPie,
     };
-    await fetch('/api/sync', {
+    await fetch(`/api/projects/${projectId}/config`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ key: `project_config_${projectId}`, value: payload }),
+      body: JSON.stringify(payload),
     }).catch(() => {});
     setSaving(null); setSaved(projectId);
     setTimeout(() => setSaved(null), 2500);

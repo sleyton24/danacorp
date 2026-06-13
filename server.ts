@@ -537,6 +537,29 @@ function migrateFromAppState() {
 
 migrateFromAppState();
 
+function ensureProjectConfigs() {
+  const orphans = db.prepare(`
+    SELECT p.id FROM projects p
+    LEFT JOIN project_configs pc ON pc.project_id = p.id
+    WHERE pc.id IS NULL
+  `).all() as Array<{ id: string }>;
+  for (const p of orphans) {
+    db.prepare(`
+      INSERT OR IGNORE INTO project_configs (
+        id, project_id, jefe_max_pct, supervisor_max_pct,
+        bono_pie_pct, vigencia_cotizacion_dias, reserva_clp,
+        nombre_inmobiliaria, direccion_proyecto, comuna_proyecto,
+        ciudad_proyecto, cantidad_cuotas_pie
+      ) VALUES (?, ?, 3, 8, 10, 7, 300000, '', '', '', '', 36)
+    `).run('cfg_' + p.id, p.id);
+  }
+  if (orphans.length > 0) {
+    console.log(`[ensureProjectConfigs] Created default config for ${orphans.length} project(s)`);
+  }
+}
+
+ensureProjectConfigs();
+
 // ── UF Cache ────────────────────────────────────────────────────────────────
 let ufCache: { value: number; fecha: string; cachedAt: number } | null = null;
 const UF_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hora
@@ -1058,14 +1081,26 @@ app.post('/api/quotations/send-email', requireAuth, (req, res) => {
 
 app.get('/api/projects', requireAuth, (_req, res) => {
   const rows = db.prepare(`
-    SELECT p.*, pc.id as config_id, pc.jefe_max_pct, pc.supervisor_max_pct, pc.bono_pie_pct,
+    SELECT p.*, pc.jefe_max_pct, pc.supervisor_max_pct, pc.bono_pie_pct,
       pc.vigencia_cotizacion_dias, pc.reserva_clp, pc.nombre_inmobiliaria,
       pc.direccion_proyecto, pc.comuna_proyecto, pc.ciudad_proyecto, pc.cantidad_cuotas_pie
     FROM projects p
     LEFT JOIN project_configs pc ON pc.project_id = p.id
     ORDER BY p.created_at DESC
   `).all() as Array<Record<string, unknown>>;
-  res.json(rows);
+  res.json(rows.map(r => ({
+    id: r.id,
+    nombre: r.nombre,
+    fechaCreacion: r.fecha_creacion,
+    ...(r.jefe_max_pct != null ? {
+      discountConfig: {
+        jefeMaxPct: r.jefe_max_pct,
+        supervisorMaxPct: r.supervisor_max_pct,
+        bonoPiePct: r.bono_pie_pct,
+        vigenciaCotizacionDias: r.vigencia_cotizacion_dias,
+      }
+    } : {}),
+  })));
 });
 
 app.post('/api/projects', requireAuth, (req, res) => {
@@ -1077,6 +1112,14 @@ app.post('/api/projects', requireAuth, (req, res) => {
   db.prepare(`INSERT INTO projects (id, nombre, fecha_creacion, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET nombre = excluded.nombre, updated_at = excluded.updated_at`)
     .run(pid, nombre, fechaCreacion || now, now, now);
+  db.prepare(`
+    INSERT OR IGNORE INTO project_configs (
+      id, project_id, jefe_max_pct, supervisor_max_pct,
+      bono_pie_pct, vigencia_cotizacion_dias, reserva_clp,
+      nombre_inmobiliaria, direccion_proyecto, comuna_proyecto,
+      ciudad_proyecto, cantidad_cuotas_pie
+    ) VALUES (?, ?, 3, 8, 10, 7, 300000, '', '', '', '', 36)
+  `).run('cfg_' + pid, pid);
   res.json({ id: pid, nombre, fechaCreacion: fechaCreacion || now });
 });
 
@@ -1092,7 +1135,22 @@ app.patch('/api/projects/:id', requireAuth, (req, res) => {
 app.get('/api/projects/:id/config', requireAuth, (req, res) => {
   const row = db.prepare('SELECT * FROM project_configs WHERE project_id = ?').get(req.params.id) as Record<string, unknown> | undefined;
   if (!row) { res.status(404).json({ error: 'Config no encontrada' }); return; }
-  res.json(row);
+  res.json({
+    projectId: row.project_id,
+    bonoPiePct: row.bono_pie_pct,
+    discountConfig: {
+      jefeMaxPct: row.jefe_max_pct,
+      supervisorMaxPct: row.supervisor_max_pct,
+      bonoPiePct: row.bono_pie_pct,
+      vigenciaCotizacionDias: row.vigencia_cotizacion_dias,
+    },
+    reservaCLP: row.reserva_clp,
+    direccionProyecto: row.direccion_proyecto,
+    comunaProyecto: row.comuna_proyecto,
+    ciudadProyecto: row.ciudad_proyecto,
+    nombreInmobiliaria: row.nombre_inmobiliaria,
+    cantidadCuotasPie: row.cantidad_cuotas_pie,
+  });
 });
 
 app.post('/api/projects/:id/config', requireAuth, (req, res) => {
@@ -1125,9 +1183,32 @@ app.get('/api/clients', requireAuth, (req, res) => {
 
   const rows = db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
   res.json(rows.map(r => ({
-    ...r,
+    id: r.id,
+    projectId: r.project_id,
+    tipoPersona: r.tipo_persona,
+    nombre: r.nombre,
+    rut: r.rut,
+    nacionalidad: r.nacionalidad,
+    profesion: r.profesion,
+    sueldoRange: r.sueldo_range,
+    fechaNacimiento: r.fecha_nacimiento,
+    email: r.email,
+    telefono: r.telefono,
+    direccion: r.direccion,
+    ciudad: r.ciudad,
+    comuna: r.comuna,
+    region: r.region,
+    ejecutivoId: r.ejecutivo_id,
+    estado: r.estado,
+    fechaRegistro: r.fecha_registro,
     historial: JSON.parse((r.historial as string) || '[]'),
     documents: JSON.parse((r.documents as string) || '[]'),
+    representanteNombre: r.representante_nombre,
+    representanteRut: r.representante_rut,
+    representanteNacionalidad: r.representante_nacionalidad,
+    representanteEmail: r.representante_email,
+    representanteTelefono: r.representante_telefono,
+    representanteDireccion: r.representante_direccion,
   })));
 });
 
@@ -1220,12 +1301,65 @@ app.get('/api/units', requireAuth, (req, res) => {
 
   const rows = db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
   res.json(rows.map(r => ({
-    ...r,
+    id: r.id,
+    projectId: r.project_id,
+    numero: r.numero,
+    type: r.type,
+    estado: r.estado,
+    superficie: r.superficie,
+    orientacion: r.orientacion,
+    piso: r.piso,
+    dormitorios: r.dormitorios,
+    banos: r.banos,
+    gastoComun: r.gasto_comun,
+    gastosOperacionales: r.gastos_operacionales,
+    gastosNotariales: r.gastos_notariales,
+    gastosConservador: r.gastos_conservador,
     bodegas: JSON.parse((r.bodegas as string) || '[]'),
     estacionamientos: JSON.parse((r.estacionamientos as string) || '[]'),
+    clienteId: r.cliente_id,
+    asignadoPor: r.asignado_por,
+    fechaAsignacion: r.fecha_asignacion,
+    precioLista: r.precio_lista,
+    precioVenta: r.precio_venta,
+    pie: r.pie,
+    pieFormaPago: r.pie_forma_pago,
+    pieCuotas: r.pie_cuotas,
+    bonoDescuento: r.bono_descuento,
+    reservaMonto: r.reserva_monto,
+    reservaFormaPago: r.reserva_forma_pago,
+    reservaCuotas: r.reserva_cuotas,
+    creditoHipotecario: r.credito_hipotecario,
+    tasaFinanciamiento: r.tasa_financiamiento,
+    totalPagado: r.total_pagado,
+    saldoPorPagar: r.saldo_por_pagar,
+    canalVenta: r.canal_venta,
+    intermediario: r.intermediario,
+    banco: r.banco,
+    notaria: r.notaria,
+    repertorio: r.repertorio,
+    fechaReserva: r.fecha_reserva,
+    fechaPromesa: r.fecha_promesa,
+    fechaSolicitudCredito: r.fecha_solicitud_credito,
+    fechaAprobacionCredito: r.fecha_aprobacion_credito,
+    fechaEscritura: r.fecha_escritura,
+    fechaTerminoPago: r.fecha_termino_pago,
+    fechaAlzamiento: r.fecha_alzamiento,
+    fechaEntrega: r.fecha_entrega,
+    fechaPago: r.fecha_pago,
+    facturaNumero: r.factura_numero,
+    facturaFecha: r.factura_fecha,
+    recepcionMunicipalNumero: r.recepcion_municipal_numero,
+    recepcionMunicipalFecha: r.recepcion_municipal_fecha,
+    cbrFojas: r.cbr_fojas,
+    cbrNumero: r.cbr_numero,
+    cbrAno: r.cbr_ano,
     planPagos: JSON.parse((r.plan_pagos as string) || '[]'),
+    observaciones: (r.observaciones as string) || '',
     documents: JSON.parse((r.documents as string) || '[]'),
+    descuentoPct: r.descuento_pct,
     descuentoPendiente: r.descuento_pendiente === 1,
+    descuentoSolicitudId: r.descuento_solicitud_id,
     aplicaBonoPie: r.aplica_bono_pie === 1,
   })));
 });
@@ -1290,7 +1424,7 @@ app.patch('/api/units/:id/assign', requireAuth, (req, res) => {
   const { clienteId, asignadoPor } = req.body as { clienteId: string; asignadoPor?: string };
   const userId = (req as AuthenticatedRequest).userId;
   const now = new Date().toISOString();
-  const result = db.prepare(`UPDATE units SET cliente_id = ?, asignado_por = ?, fecha_asignacion = ?, estado = 'Asignado', updated_at = ? WHERE id = ?`)
+  const result = db.prepare(`UPDATE units SET cliente_id = ?, asignado_por = ?, fecha_asignacion = ?, estado = 'Reservado', updated_at = ? WHERE id = ?`)
     .run(clienteId, asignadoPor || userId, now, now, req.params.id);
   if (result.changes === 0) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
   res.json({ ok: true });
