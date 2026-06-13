@@ -33,6 +33,9 @@ interface DraftSummary {
   clienteNombre: string;
   clienteRut: string;
   updated_at: string;
+  estado?: string;
+  fecha_generada?: string;
+  generada_por?: string;
   data: Record<string, unknown>;
 }
 
@@ -134,12 +137,14 @@ function calcUnitBonoPie(
 ): UnitBonoPieCalc {
   const r = (v: number) => Math.round(v * 100) / 100;
   if (hasBono) {
-    const precioInflado  = r(base * (1 + bonoPct / 100));
-    const bonificacion   = r(base * bonoPct / 100);
-    const pieUnidad      = r(precioInflado * piePct / 100);
-    const montoAPagar    = r(pieUnidad - bonificacion);
-    const porFinanciar   = r(precioInflado * finPct / 100);
-    return { base, precioInflado, bonificacion, pieUnidad, montoAPagar, porFinanciar, hasBono: true };
+    // Fórmula correcta: valorTotal = base / (1 - bonoPct/100)
+    // Verificación: UF 3.000 / 0.9 = UF 3.333,3 → bonificacion=333,3 → montoAPagar=333,3 → porFinanciar=2.666,7
+    const valorTotal   = r(base / (1 - bonoPct / 100));
+    const bonificacion = r(valorTotal * bonoPct / 100);
+    const pieUnidad    = r(valorTotal * piePct / 100);
+    const montoAPagar  = r(pieUnidad - bonificacion);
+    const porFinanciar = r(valorTotal * finPct / 100);
+    return { base, precioInflado: valorTotal, bonificacion, pieUnidad, montoAPagar, porFinanciar, hasBono: true };
   }
   const precioInflado = base;
   const bonificacion  = 0;
@@ -165,10 +170,6 @@ export const Quoter: React.FC<QuoterProps> = ({
   const [isFinalized, setIsFinalized] = useState(false);
 
   // ── Client ───────────────────────────────────────────────────────────────
-  const [clientMode, setClientMode] = useState<'search' | 'create'>('create');
-  const [clientSearch, setClientSearch] = useState('');
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const searchWrapperRef = useRef<HTMLDivElement>(null);
 
   const emptyClient: Partial<Client> = {
     tipoPersona: 'Natural', nombre: '', rut: '', email: '', telefono: '',
@@ -187,21 +188,32 @@ export const Quoter: React.FC<QuoterProps> = ({
   const [adjustDrafts, setAdjustDrafts] = useState<Record<string, AdjEntry>>({});
   const [discountRequests, setDiscountRequests] = useState<Record<string, DiscountRequest>>({});
 
-  // ── Payment / Mortgage (C2) ──────────────────────────────────────────────
-  // ── Bono pie per-unit (Paso 4) ───────────────────────────────────────────
+  // ── Payment / Mortgage ───────────────────────────────────────────────────
   const [bonoPieUnits, setBonoPieUnits] = useState<Set<string>>(new Set());
 
-  const [showMortgage, setShowMortgage] = useState(false);
+  // Dos checkboxes independientes (Cambio 2)
+  const [includePaymentPlan, setIncludePaymentPlan] = useState(false);
+  const [includeMortgageSimulation, setIncludeMortgageSimulation] = useState(false);
+
   const [mortgageInputs, setMortgageInputs] = useState<MortgageInputs>({ tasaAnual: 4.5 });
-  const [reservaCLP, setReservaCLP] = useState(0);
+  const [reservaCLP, setReservaCLP] = useState(0); // poblado desde projectConfig
+  // pieCuotasDropdown/Manual: mantenidos para compat con borradores antiguos, sin UI
   const [pieCuotasDropdown, setPieCuotasDropdown] = useState<6 | 12 | 18 | 24 | 36 | 'Otro'>(12);
   const [pieCuotasManual, setPieCuotasManual] = useState(12);
-  // includeBonoPie is derived — true when any unit has bono pie checked
   const [bonoPct, setBonoPct] = useState(10);
-  const [finPct, setFinPct] = useState(80);
+  const [mortgageFinPct, setMortgageFinPct] = useState(80); // % banco cuando Forma de Pago no está activa
   const includeBonoPie = bonoPieUnits.size > 0;
-  // Paso 1: piePct siempre complementario a finPct
-  const piePct = 100 - finPct;
+
+  // ── SSilva: 4 componentes forma de pago ────────────────────────────────────
+  const [promesaPct, setPromesaPct] = useState(3);
+  const [cuotasPct, setCuotasPct] = useState(7);
+  const [escrituraPct, setEscrituraPct] = useState(10);
+  const [nCuotasNew, setNCuotasNew] = useState(36);
+
+  // ── Inline search en "Nuevo Prospecto" ───────────────────────────────────
+  const [inlineTerm, setInlineTerm] = useState('');
+  const [showInlineDropdown, setShowInlineDropdown] = useState(false);
+  const inlineSearchRef = useRef<HTMLDivElement>(null);
 
   // ── UF (BUG 2) ───────────────────────────────────────────────────────────
   const [ufHoy, setUfHoy] = useState<number | null>(null);
@@ -215,6 +227,8 @@ export const Quoter: React.FC<QuoterProps> = ({
   const [showDraftModal, setShowDraftModal] = useState(false);
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
   const [isDraftLoading, setIsDraftLoading] = useState(false);
+  const [draftSearchTerm, setDraftSearchTerm] = useState('');
+  const [draftSortOrder, setDraftSortOrder] = useState<'fecha' | 'cotizante'>('fecha');
 
   // ── Quote ID ─────────────────────────────────────────────────────────────
   const quoteIdRef = useRef(generateId().substring(0, 9).toUpperCase());
@@ -259,6 +273,8 @@ export const Quoter: React.FC<QuoterProps> = ({
         if (d?.value) {
           setProjectConfig(d.value);
           if (d.value.bonoPiePct != null) setBonoPct(d.value.bonoPiePct);
+          if (d.value.reservaCLP != null) setReservaCLP(d.value.reservaCLP);
+          if (d.value.cantidadCuotasPie != null) setNCuotasNew(d.value.cantidadCuotasPie);
         }
       })
       .catch(() => {});
@@ -269,6 +285,11 @@ export const Quoter: React.FC<QuoterProps> = ({
     () => selectedUnits.reduce((sum, u) => sum + unitFinalPrice(u, adjustDrafts), 0),
     [selectedUnits, adjustDrafts],
   );
+
+  // ── finPct deriva de creditoPct (para bono pie) — declarar ANTES de useMemos que lo usan ──
+  const creditoPctEarly = Math.max(0, 100 - promesaPct - cuotasPct - escrituraPct);
+  const finPct = creditoPctEarly;
+  const piePct = 100 - finPct;
 
   // ── Bono pie breakdown por unidad (Paso 6) ───────────────────────────────
   const bonoPieBreakdown = useMemo(() => {
@@ -293,15 +314,61 @@ export const Quoter: React.FC<QuoterProps> = ({
     return { perUnit, conBono, sinBono, totalPrecioInflado, totalPie, totalBonificacion, totalMontoAPagar, totalPorFinanciar };
   }, [selectedUnits, adjustDrafts, bonoPieUnits, bonoPct, finPct]);
 
-  // ── Close suggestions on outside click ──────────────────────────────────
+  // ── SSilva: precio breakdown ──────────────────────────────────────────────
+  // creditoPct / finPct / piePct ya declarados arriba (antes de bonoPieBreakdown)
+  const creditoPct = creditoPctEarly;
+
+  const totalPrecioListaSinDescuento = useMemo(() => {
+    const effectivePiePct = 100 - finPct;
+    return selectedUnits.reduce((sum, u) => {
+      const calc = calcUnitBonoPie(u.precioLista, bonoPieUnits.has(u.id), bonoPct, effectivePiePct, finPct);
+      return sum + calc.precioInflado;
+    }, 0);
+  }, [selectedUnits, bonoPieUnits, bonoPct, finPct]);
+
+  // PRECIO DE LISTA = suma de precios publicados (inflados donde hay bono)
+  const totalPrecioVentaSSilva = bonoPieBreakdown.totalPrecioInflado;  // alias para PRECIO DE LISTA
+  const precioListaTotal       = totalPrecioVentaSSilva;               // más explícito en contexto
+
+  // PRECIO DE VENTA = PRECIO DE LISTA - bonificación total = totalFinal (valores económicos)
+  // Equivale a: totalFinal = sum(unitFinalPrice) = precioListaTotal - bonoPieBreakdown.totalBonificacion
+  const precioVentaFinal = totalFinal;  // base para Forma de Pago y Simulador
+
+  // Forma de Pago usa PRECIO DE VENTA como base (spec SSilva)
+  const promesaUF   = Math.round(precioVentaFinal * promesaPct   / 100 * 100) / 100;
+  const cuotasUF    = Math.round(precioVentaFinal * cuotasPct    / 100 * 100) / 100;
+  const escrituraUF = Math.round(precioVentaFinal * escrituraPct / 100 * 100) / 100;
+  const creditoUF   = Math.round(precioVentaFinal * creditoPct   / 100 * 100) / 100;
+  const cuotaIndividualUF = nCuotasNew > 0 ? Math.round(cuotasUF / nCuotasNew * 100) / 100 : 0;
+
+  // ── Close inline dropdown on outside click ───────────────────────────────
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (searchWrapperRef.current && !searchWrapperRef.current.contains(e.target as Node))
-        setShowSuggestions(false);
+      if (inlineSearchRef.current && !inlineSearchRef.current.contains(e.target as Node))
+        setShowInlineDropdown(false);
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, []);
+
+  // ── Inline search results (filtrando por rol igual que el modo búsqueda) ─
+  const inlineSearchResults = useMemo(() => {
+    const term = inlineTerm.trim().toLowerCase();
+    if (term.length < 2) return [];
+    return clients.filter(c => {
+      const match = c.nombre.toLowerCase().includes(term) || c.rut.toLowerCase().includes(term);
+      if (!match) return false;
+      if (currentUser.role === 'Ventas')
+        return c.estado !== 'Activo' || c.ejecutivoId === currentUser.id;
+      return true;
+    }).slice(0, 8);
+  }, [inlineTerm, clients, currentUser]);
+
+  const handleSelectInlineClient = (c: Client) => {
+    setSelectedClient(c);
+    setInlineTerm('');
+    setShowInlineDropdown(false);
+  };
 
   // ── C1: Auto-save draft (BUG 3 fix: .trim()) ────────────────────────────
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -332,12 +399,14 @@ export const Quoter: React.FC<QuoterProps> = ({
               key: 'paymentConfig', value: {
                 reservaCLP, pieCuotasDropdown, pieCuotasManual,
                 bonoPieUnits: Array.from(bonoPieUnits),
-                bonoPct, finPct,
+                bonoPct, mortgageFinPct,
+                promesaPct, cuotasPct, escrituraPct, nCuotasNew,
+                includePaymentPlan, includeMortgageSimulation,
               },
             },
           ],
           mortgageInputs,
-          showMortgage,
+          showMortgage: includePaymentPlan || includeMortgageSimulation,
         };
         const res = await fetch('/api/quotation-drafts', {
           method: 'POST',
@@ -356,15 +425,16 @@ export const Quoter: React.FC<QuoterProps> = ({
     }, 1500);
   }, [
     currentProjectId, selectedClient, selectedUnits, adjustDrafts,
-    detachedAccessories, mortgageInputs, showMortgage,
+    detachedAccessories, mortgageInputs, includePaymentPlan, includeMortgageSimulation,
     reservaCLP, pieCuotasDropdown, pieCuotasManual,
-    bonoPieUnits, bonoPct, finPct, draftId, onDraftStateChange,
+    bonoPieUnits, bonoPct, draftId, onDraftStateChange,
   ]);
 
   useEffect(() => { triggerAutoSave(); }, [
-    selectedClient, selectedUnits, mortgageInputs, showMortgage,
+    selectedClient, selectedUnits, mortgageInputs,
+    includePaymentPlan, includeMortgageSimulation,
     adjustDrafts, reservaCLP, pieCuotasDropdown, pieCuotasManual,
-    bonoPieUnits, bonoPct, finPct,
+    bonoPieUnits, bonoPct,
   ]);
 
   useEffect(() => {
@@ -394,7 +464,11 @@ export const Quoter: React.FC<QuoterProps> = ({
       const sc = getAdj('selectedClient') as Partial<Client> | undefined;
       if (sc) setSelectedClient(sc);
       if (d.selectedUnits) setSelectedUnits(d.selectedUnits as QuoteItem[]);
-      if (d.showMortgage != null) setShowMortgage(d.showMortgage as boolean);
+      if (d.showMortgage != null) {
+        // backward-compat con borradores antiguos
+        setIncludePaymentPlan(d.showMortgage as boolean);
+        setIncludeMortgageSimulation(d.showMortgage as boolean);
+      }
       if (d.mortgageInputs) {
         const mi = d.mortgageInputs as Record<string, unknown>;
         // Backwards-compatible: old drafts may have pie/precioTotal fields
@@ -411,7 +485,14 @@ export const Quoter: React.FC<QuoterProps> = ({
         if (pc.pieCuotasManual != null) setPieCuotasManual(pc.pieCuotasManual as number);
         if (pc.bonoPieUnits != null) setBonoPieUnits(new Set(pc.bonoPieUnits as string[]));
         if (pc.bonoPct != null) setBonoPct(pc.bonoPct as number);
-        if (pc.finPct != null) setFinPct(pc.finPct as number);
+        if (pc.mortgageFinPct != null) setMortgageFinPct(pc.mortgageFinPct as number);
+        // finPct ya no se guarda — se deriva de creditoPct
+        if (pc.promesaPct != null) setPromesaPct(pc.promesaPct as number);
+        if (pc.cuotasPct != null) setCuotasPct(pc.cuotasPct as number);
+        if (pc.escrituraPct != null) setEscrituraPct(pc.escrituraPct as number);
+        if (pc.nCuotasNew != null) setNCuotasNew(pc.nCuotasNew as number);
+        if (pc.includePaymentPlan != null) setIncludePaymentPlan(pc.includePaymentPlan as boolean);
+        if (pc.includeMortgageSimulation != null) setIncludeMortgageSimulation(pc.includeMortgageSimulation as boolean);
       }
       const qid = getAdj('quoteId') as string | undefined;
       if (qid) quoteIdRef.current = qid;
@@ -639,15 +720,22 @@ export const Quoter: React.FC<QuoterProps> = ({
     return nCuotas > 0 ? Math.round((base / nCuotas) * 100) / 100 : 0;
   }, [bonoPieBreakdown.totalMontoAPagar, nCuotas]);
 
-  // ── Dividend table — base = totalPorFinanciar (Paso 7) ──────────────────
-  const dividendTable = useMemo(() =>
-    [20, 25, 30].map(years => {
-      const divUF = calcDividendo(bonoPieBreakdown.totalPorFinanciar, mortgageInputs.tasaAnual, years);
+  // ── Dividend table ────────────────────────────────────────────────────────
+  // Base = creditoPct% del PRECIO DE VENTA (precioVentaFinal = totalFinal)
+  // ufCredito = precioVentaFinal × finPct / 100
+  const dividendTable = useMemo(() => {
+    const effectiveFinPct = includePaymentPlan
+      ? Math.max(0, 100 - promesaPct - cuotasPct - escrituraPct)
+      : mortgageFinPct;
+    const base = includeMortgageSimulation && totalFinal > 0
+      ? Math.max(0, totalFinal * effectiveFinPct / 100)
+      : bonoPieBreakdown.totalPorFinanciar;
+    return [20, 25, 30].map(years => {
+      const divUF = calcDividendo(base, mortgageInputs.tasaAnual, years);
       const divCLP = ufHoy ? divUF * ufHoy : null;
       return { years, divUF, divCLP, rentaMin: divCLP ? divCLP * 4 : null };
-    }),
-    [bonoPieBreakdown.totalPorFinanciar, mortgageInputs.tasaAnual, ufHoy],
-  );
+    });
+  }, [includeMortgageSimulation, includePaymentPlan, promesaPct, cuotasPct, escrituraPct, mortgageFinPct, bonoPieBreakdown.totalPrecioInflado, bonoPieBreakdown.totalPorFinanciar, mortgageInputs.tasaAnual, ufHoy]);
 
   // ── Available units ──────────────────────────────────────────────────────
   const availableUnits = useMemo(() => {
@@ -665,36 +753,10 @@ export const Quoter: React.FC<QuoterProps> = ({
   );
 
   // ── Client helpers ───────────────────────────────────────────────────────
-  const clientSuggestions = useMemo(() => {
-    if (!clientSearch || clientSearch.length < 2) return [];
-    const term = clientSearch.toLowerCase();
-    return clients.filter(c => {
-      const match = c.nombre.toLowerCase().includes(term) || c.rut.toLowerCase().includes(term);
-      if (currentUser.role === 'Ventas')
-        return match && (c.estado !== 'Activo' || c.ejecutivoId === currentUser.id);
-      return match;
-    }).slice(0, 5);
-  }, [clientSearch, clients, currentUser]);
-
-  const handleSelectSuggestedClient = (client: Client) => {
-    setSelectedClient(client); setClientSearch(client.nombre); setShowSuggestions(false);
-  };
-
-  const handleClientSearch = () => {
-    const found = clients.find(c => {
-      const match = c.rut.includes(clientSearch) || c.nombre.toLowerCase().includes(clientSearch.toLowerCase());
-      if (currentUser.role === 'Ventas')
-        return match && (c.estado !== 'Activo' || c.ejecutivoId === currentUser.id);
-      return match;
-    });
-    if (found) { setSelectedClient(found); setShowSuggestions(false); }
-    else alert('Cliente no encontrado o bajo gestión privada de otro ejecutivo.');
-  };
-
   const handleClientChange = (field: keyof Client, value: unknown) =>
     setSelectedClient(prev => ({ ...(prev || {}), [field]: value }));
 
-  const initNewClient = () => { setSelectedClient(emptyClient); setClientSearch(''); };
+  const initNewClient = () => { setSelectedClient(emptyClient); };
 
   // ── Helper: load image as base64 for jsPDF ─────────────────────────────
   const loadImgB64 = async (src: string): Promise<string | null> => {
@@ -711,7 +773,7 @@ export const Quoter: React.FC<QuoterProps> = ({
     } catch { return null; }
   };
 
-  // ── C4: PDF generation (compacto — CAMBIO 3+4) ──────────────────────────
+  // ── PDF generation — estilo SSilva ──────────────────────────────────────
   const generatePDFBlob = async (): Promise<Blob | null> => {
     if (!selectedClient || !currentProject) return null;
     const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([
@@ -719,294 +781,404 @@ export const Quoter: React.FC<QuoterProps> = ({
       import('jspdf-autotable'),
     ]);
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-    const margin = 10;
+    const mg = 15;
     const pageWidth = 210;
-    const contentWidth = pageWidth - margin * 2;
-    // Compactar tablas: padding reducido
-    const tStyles = { fontSize: 6, cellPadding: 1.5 };
-    const thStyles = { fillColor: [37, 99, 235] as [number,number,number], fontSize: 6, fontStyle: 'bold' as const, cellPadding: 1.5 };
+    const contentWidth = pageWidth - mg * 2;
+    const tSm = { fontSize: 8, cellPadding: 1.8 };
+    const thSm = { fillColor: [37, 99, 235] as [number,number,number], fontSize: 8, fontStyle: 'bold' as const, cellPadding: 1.8, textColor: [255,255,255] as [number,number,number] };
     const lastY = () => (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY;
 
-    // ── Header: logo izquierda + fondo azul sólido derecha (sin portada.jpg) ──
-    const HEADER_H = 18; // mm
-    const LOGO_W = 38;   // mm
+    // ── HEADER ─────────────────────────────────────────────────────────────
+    const HEADER_H = 22;
+    const LOGO_W = 52; // white area width
 
-    // Fondo azul completo del header
     doc.setFillColor(37, 99, 235);
     doc.rect(0, 0, pageWidth, HEADER_H, 'F');
-
-    // Logo Danacorp a la izquierda — fondo blanco, proporciones naturales
     doc.setFillColor(255, 255, 255);
-    doc.rect(0, 0, LOGO_W + margin, HEADER_H, 'F');
+    doc.rect(0, 0, LOGO_W, HEADER_H, 'F');
+
     try {
       const logoB64 = await loadImgB64('/Danacorp.png');
-      if (!logoB64) throw new Error('logo null');
-      // Obtener dimensiones reales para mantener proporción
+      if (!logoB64) throw new Error('no logo');
       const logoImg = new window.Image();
-      await new Promise<void>(resolve => {
-        logoImg.onload = logoImg.onerror = () => resolve();
-        logoImg.src = logoB64;
-      });
-      const logoAreaWidth = LOGO_W;     // mm — ancho del área blanca
-      const logoAreaHeight = HEADER_H;  // mm — alto del área blanca
-      const lgMg = 2;                   // mm — margen alrededor
-
-      const availableW = logoAreaWidth - 2 * lgMg;
-      const availableH = logoAreaHeight - 2 * lgMg;
-
+      await new Promise<void>(resolve => { logoImg.onload = logoImg.onerror = () => resolve(); logoImg.src = logoB64; });
+      const pad = 2.5;
+      const aw = LOGO_W - 2 * pad, ah = HEADER_H - 2 * pad;
       const ar = logoImg.naturalWidth > 0 ? logoImg.naturalWidth / logoImg.naturalHeight : 3;
-      const containerRatio = availableW / availableH;
-
       let lw: number, lh: number;
-      if (ar > containerRatio) {
-        // Logo más ancho: restringir por ancho
-        lw = availableW;
-        lh = lw / ar;
-      } else {
-        // Logo más alto (o cuadrado): restringir por alto
-        lh = availableH;
-        lw = lh * ar;
-      }
-
-      // Centrar dentro del área blanca completa
-      const lx = lgMg + (availableW - lw) / 2;
-      const ly = lgMg + (availableH - lh) / 2;
-      doc.addImage(logoB64, 'PNG', lx, ly, lw, lh);
+      if (ar > aw / ah) { lw = aw; lh = lw / ar; } else { lh = ah; lw = lh * ar; }
+      doc.addImage(logoB64, 'PNG', (LOGO_W - lw) / 2, (HEADER_H - lh) / 2, lw, lh);
     } catch {
       doc.setTextColor(37, 99, 235);
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(11);
-      doc.text('DANACORP', (LOGO_W + margin) / 2, HEADER_H / 2 + 2, { align: 'center' });
+      doc.setFontSize(10);
+      doc.text('DANACORP', LOGO_W / 2, HEADER_H / 2 + 2, { align: 'center' });
     }
 
-    // Texto N° cotización sobre el área azul a la derecha
+    const meses = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+    const hoy = new Date();
+    const fechaLarga = `Santiago, ${hoy.getDate()} de ${meses[hoy.getMonth()]} de ${hoy.getFullYear()}`;
     doc.setTextColor(255, 255, 255);
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7);
-    doc.text(`COT. N° ${quoteIdRef.current}`, pageWidth - margin, HEADER_H - 3, { align: 'right' });
-
-    let y = HEADER_H + 3;
-
-    // ── Fila: datos cliente + proyecto (compacta, una sola línea por campo)
-    doc.setTextColor(30, 30, 30);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7);
-
-    // Columna izquierda: cliente
-    doc.text('DESTINATARIO', margin, y);
+    doc.setFontSize(15);
+    doc.text('COTIZACIÓN', pageWidth - mg, HEADER_H / 2 - 5, { align: 'right' });
+    doc.setFontSize(9);
+    doc.text(`N° ${quoteIdRef.current}`, pageWidth - mg, HEADER_H / 2 + 0.5, { align: 'right' });
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(7);
-    const clientLines = [
-      selectedClient.nombre || '',
-      `RUT: ${selectedClient.rut || ''}`,
-      selectedClient.email || '',
-    ].filter(Boolean);
-    clientLines.forEach(line => { y += 3.5; doc.text(line, margin, y); });
+    doc.text(fechaLarga, pageWidth - mg, HEADER_H / 2 + 5.5, { align: 'right' });
 
-    // Columna derecha: proyecto
-    const projX = pageWidth / 2 + 5;
-    let py = HEADER_H + 3;
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7);
-    doc.text('PROYECTO', projX, py);
+    let y = HEADER_H + 7;
+    const lh4 = 4.5;
+
+    // ── SEÑOR(A) block ─────────────────────────────────────────────────────
+    doc.setTextColor(30, 30, 30);
     doc.setFont('helvetica', 'normal');
-    [
-      currentProject.nombre,
-      `Ejecutivo: ${currentUser.name}`,
-      `Fecha: ${new Date().toLocaleDateString('es-CL')}`,
-      ufHoy ? `UF ${ufFecha}: ${formatCLP(ufHoy)}` : '',
-    ].filter(Boolean).forEach(line => { py += 3.5; doc.text(line, projX, py); });
-
-    // Cotización Formal title
+    doc.setFontSize(8);
+    doc.text('Señor(a)', mg, y); y += lh4;
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(10);
-    doc.setTextColor(37, 99, 235);
-    const titleY = Math.max(y, py) + 4;
-    doc.text('COTIZACIÓN FORMAL', margin, titleY);
-    doc.setTextColor(30, 30, 30);
-    y = titleY + 2;
-
-    // Línea separadora
-    doc.setDrawColor(37, 99, 235);
-    doc.setLineWidth(0.4);
-    doc.line(margin, y, pageWidth - margin, y);
-    y += 3;
-
-    // ── Section 1: Inmuebles ─────────────────────────────────────────────
-    doc.setFillColor(240, 240, 250);
-    doc.rect(margin, y, contentWidth, 4.5, 'F');
+    doc.text(selectedClient.nombre || '', mg, y); y += lh4;
+    doc.setFont('helvetica', 'normal');
+    if (selectedClient.rut)     { doc.text(`Rut : ${selectedClient.rut}`, mg, y); y += lh4; }
+    if (selectedClient.telefono){ doc.text(`Telefono : ${selectedClient.telefono}`, mg, y); y += lh4; }
+    if (selectedClient.email)   { doc.text(`Mail : ${selectedClient.email}`, mg, y); y += lh4; }
+    doc.text('Presente', mg, y); y += lh4 + 1;
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7);
-    doc.setTextColor(37, 99, 235);
-    doc.text('INMUEBLES', margin + 1, y + 3);
-    doc.setTextColor(30, 30, 30);
-    y += 5;
+    doc.text('Estimado(a) cliente:', mg, y); y += lh4;
+    doc.setFont('helvetica', 'normal');
+    const pc = projectConfig as typeof projectConfig & { direccionProyecto?: string; comunaProyecto?: string; ciudadProyecto?: string };
+    const direccionStr = pc.direccionProyecto ? `, ubicado en ${pc.direccionProyecto}` : '';
+    const comunaStr = pc.comunaProyecto ? `, comuna de ${pc.comunaProyecto}` : '';
+    const ciudadStr = pc.ciudadProyecto ? `, ciudad de ${pc.ciudadProyecto}` : '';
+    const introTxt = `De acuerdo a lo solicitado, nos es muy grato cotizar por los inmuebles que se indican, correspondientes al proyecto ${currentProject.nombre}${direccionStr}${comunaStr}${ciudadStr}:`;
+    const introLns = doc.splitTextToSize(introTxt, contentWidth);
+    doc.text(introLns, mg, y);
+    y += introLns.length * lh4 + 5;
 
-    autoTable(doc, {
-      startY: y, margin: { left: margin, right: margin },
-      head: [['Tipo', 'Unidad', 'Sup. (m²)', 'Piso', 'Orientación']],
-      body: selectedUnits.map(u => [
-        u.type, u.numero,
-        u.superficie?.toString() || '—', u.piso?.toString() || '—', u.orientacion || '—',
-      ]),
-      headStyles: thStyles,
-      bodyStyles: tStyles,
-      alternateRowStyles: { fillColor: [249, 249, 255] },
-      theme: 'grid',
+    // ── SECCIÓN 1: INMUEBLES (estilo asiento SSilva) ──────────────────────
+    if (y > 230) { doc.addPage(); y = mg; }
+
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(50, 50, 50);
+    doc.text('1.  INMUEBLES', mg, y); y += 5;
+
+    // Helper: label "Bono Pie X% en [unidades]" dinámico
+    const bonoTypesArr = [...new Set(bonoPieBreakdown.conBono.map(x => x.unit.type))] as string[];
+    const btLbls: string[] = [];
+    if (bonoTypesArr.includes('Departamento')) btLbls.push('Depto.');
+    if (bonoTypesArr.includes('Estacionamiento')) btLbls.push('Estac.');
+    if (bonoTypesArr.includes('Bodega')) btLbls.push('Bodega');
+    const bonoLabelPDF = btLbls.length === 0 ? '' :
+      btLbls.length === 1 ? `Bono Pie ${bonoPct}% en ${btLbls[0]}` :
+      `Bono Pie ${bonoPct}% en ${btLbls.slice(0,-1).join(', ')} y ${btLbls[btLbls.length-1]}`;
+
+    // Per-unit rows: precio INFLADO (con bono incorporado), badge dcto manual si aplica
+    const unitRowsPDF: unknown[][] = selectedUnits.map(u => {
+      const calc = bonoPieBreakdown.perUnit.find(x => x.unit.id === u.id)?.calc;
+      const precioMostrado = calc ? calc.precioInflado : unitFinalPrice(u, adjustDrafts);
+      const dctoP = unitDiscountPct(u, adjustDrafts);
+      const hasDcto = dctoP > 0.001 && adjustDrafts[u.id]?.applied;
+      let tipoDesc = u.type;
+      if (u.type === 'Departamento' && u.dormitorios && u.banos)
+        tipoDesc = `Departamento (${u.dormitorios}D-${u.banos}B)`;
+      const nivel = u.piso ? `del Piso N° ${u.piso}` : '';
+      return [
+        tipoDesc, `N°${u.numero}`, nivel,
+        { content: formatUF(precioMostrado), styles: { halign: 'right' as const } },
+        { content: ufHoy ? formatCLP(precioMostrado * ufHoy) : '', styles: { halign: 'right' as const } },
+        { content: hasDcto ? `← -${dctoP.toFixed(0)}% dcto` : '',
+          styles: { halign: 'right' as const, textColor: [150,150,150] as [number,number,number], fontStyle: 'italic' as const, fontSize: 6.5 } },
+      ];
     });
-    y = lastY() + 3;
 
-    // ── Section 2: Precios ───────────────────────────────────────────────
-    if (y > 240) { doc.addPage(); y = margin; }
-    doc.setFillColor(240, 240, 250);
-    doc.rect(margin, y, contentWidth, 4.5, 'F');
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7);
-    doc.setTextColor(37, 99, 235);
-    doc.text('PRECIOS', margin + 1, y + 3);
-    doc.setTextColor(30, 30, 30);
-    y += 5;
+    const hasBonoPDF  = bonoPieBreakdown.conBono.length > 0;
+    // totalPrecioVentaSSilva = suma de precios inflados = PRECIO DE LISTA
+    // totalFinal = suma de valores económicos reales = PRECIO DE VENTA
 
-    const colH = ['Unidad', 'P. Lista (UF)', 'Desc.', 'Total (UF)', ...(ufHoy ? ['Total ($)'] : [])];
-    autoTable(doc, {
-      startY: y, margin: { left: margin, right: margin },
-      head: [colH],
-      body: [
-        ...selectedUnits.map(u => {
-          const fp = unitFinalPrice(u, adjustDrafts);
-          const dp = unitDiscountPct(u, adjustDrafts);
-          return [
-            `${u.type} ${u.numero}`, formatUF(u.precioLista),
-            dp > 0 ? `-${dp.toFixed(1)}%` : '—', formatUF(fp),
-            ...(ufHoy ? [formatCLP(fp * ufHoy)] : []),
-          ];
-        }),
-        [
-          { content: 'TOTAL', styles: { fontStyle: 'bold' } },
-          { content: formatUF(selectedUnits.reduce((s, u) => s + u.precioLista, 0)), styles: { fontStyle: 'bold' } },
-          '—',
-          { content: formatUF(totalFinal), styles: { fontStyle: 'bold', textColor: [37,99,235] as [number,number,number] } },
-          ...(ufHoy ? [{ content: formatCLP(totalFinal * ufHoy), styles: { fontStyle: 'bold', textColor: [37,99,235] as [number,number,number] } }] : []),
-        ],
-      ],
-      headStyles: thStyles,
-      bodyStyles: tStyles,
-      alternateRowStyles: { fillColor: [249, 249, 255] },
-      theme: 'grid',
-    });
-    y = lastY() + 3;
-
-    // ── Section 3: Forma de pago ─────────────────────────────────────────
-    if (showMortgage) {
-      if (y > 240) { doc.addPage(); y = margin; }
-      doc.setFillColor(240, 240, 250);
-      doc.rect(margin, y, contentWidth, 4.5, 'F');
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(7);
-      doc.setTextColor(37, 99, 235);
-      doc.text('FORMA DE PAGO', margin + 1, y + 3);
-      doc.setTextColor(30, 30, 30);
-      y += 5;
-
-      const bd = bonoPieBreakdown;
-      const rows: unknown[][] = [];
-      if (reservaCLP > 0) rows.push(['Reserva', '—', '—', formatCLP(reservaCLP)]);
-
-      if (bd.conBono.length > 0 && bd.sinBono.length > 0) {
-        rows.push([{ content: 'Con bono pie', styles: { fontStyle: 'bold', textColor: [37,99,235] as [number,number,number] } }, '', '', '']);
-        rows.push(['  Valor Total', `${bonoPct}%`, formatUF(bd.conBono.reduce((s,x)=>s+x.calc.precioInflado,0)), '']);
-        rows.push(['  Bonificación', '', `- ${formatUF(bd.conBono.reduce((s,x)=>s+x.calc.bonificacion,0))}`, '']);
-        rows.push(['  Monto a Pagar', '', formatUF(bd.conBono.reduce((s,x)=>s+x.calc.montoAPagar,0)), '']);
-        rows.push(['  Crédito Hipotecario', `${finPct}%`, formatUF(bd.conBono.reduce((s,x)=>s+x.calc.porFinanciar,0)), '']);
-        rows.push([{ content: 'Sin bono pie', styles: { fontStyle: 'bold' } }, '', '', '']);
-        rows.push(['  Monto a Pagar', `${piePct}%`, formatUF(bd.sinBono.reduce((s,x)=>s+x.calc.montoAPagar,0)), '']);
-        rows.push(['  Crédito Hipotecario', `${finPct}%`, formatUF(bd.sinBono.reduce((s,x)=>s+x.calc.porFinanciar,0)), '']);
-      } else if (includeBonoPie) {
-        rows.push(['Valor Total Unidades', `${bonoPct}%`, formatUF(bd.totalPrecioInflado), ufHoy ? formatCLP(bd.totalPrecioInflado * ufHoy) : '—']);
-        rows.push(['Bonificación', '', `- ${formatUF(bd.totalBonificacion)}`, '']);
-        rows.push(['Monto a Pagar', '', formatUF(bd.totalMontoAPagar), ufHoy ? formatCLP(bd.totalMontoAPagar * ufHoy) : '—']);
-      } else {
-        rows.push([`Monto a Pagar (pie ${piePct}%)`, '', formatUF(bd.totalMontoAPagar), ufHoy ? formatCLP(bd.totalMontoAPagar * ufHoy) : '—']);
-      }
-      rows.push([`Plan: ${nCuotas} cuotas de ${formatUF(montoPorCuota)} UF`, '', '', '']);
-      rows.push([
-        { content: 'Crédito Hipotecario', styles: { fontStyle: 'bold' } },
-        { content: `${finPct}%`, styles: { fontStyle: 'bold' } },
-        { content: formatUF(bd.totalPorFinanciar), styles: { fontStyle: 'bold', textColor: [37,99,235] as [number,number,number] } },
-        { content: ufHoy ? formatCLP(bd.totalPorFinanciar * ufHoy) : '—', styles: { fontStyle: 'bold', textColor: [37,99,235] as [number,number,number] } },
+    // Filas de resumen
+    const summaryPDF: unknown[][] = [];
+    if (hasBonoPDF) {
+      // PRECIO DE LISTA = suma de inflados
+      summaryPDF.push([
+        { content: 'PRECIO DE LISTA', styles: { fontStyle: 'bold' as const } }, '', '',
+        { content: formatUF(totalPrecioVentaSSilva), styles: { fontStyle: 'bold' as const, halign: 'right' as const } },
+        { content: ufHoy ? formatCLP(totalPrecioVentaSSilva * ufHoy) : '', styles: { fontStyle: 'bold' as const, halign: 'right' as const } }, '',
       ]);
+      // Bono Pie = monto que se resta
+      summaryPDF.push([
+        { content: bonoLabelPDF, styles: { fontStyle: 'italic' as const, textColor: [100,100,100] as [number,number,number] } }, '', '',
+        { content: formatUF(bonoPieBreakdown.totalBonificacion), styles: { halign: 'right' as const, textColor: [100,100,100] as [number,number,number] } },
+        { content: ufHoy ? formatCLP(bonoPieBreakdown.totalBonificacion * ufHoy) : '', styles: { halign: 'right' as const, textColor: [100,100,100] as [number,number,number] } }, '',
+      ]);
+    }
+    // PRECIO DE VENTA = valor económico real (= totalFinal)
+    summaryPDF.push([
+      { content: 'PRECIO DE VENTA', styles: { fontStyle: 'bold' as const, textColor: [37,99,200] as [number,number,number] } }, '', '',
+      { content: formatUF(totalFinal), styles: { fontStyle: 'bold' as const, halign: 'right' as const, textColor: [37,99,200] as [number,number,number] } },
+      { content: ufHoy ? formatCLP(totalFinal * ufHoy) : '', styles: { fontStyle: 'bold' as const, halign: 'right' as const, textColor: [37,99,200] as [number,number,number] } }, '',
+    ]);
+
+    autoTable(doc, {
+      startY: y, margin: { left: mg, right: mg },
+      head: [[
+        'Tipo', 'Número', 'Ubicación',
+        { content: 'Valor UF', styles: { halign: 'right' as const } },
+        { content: 'Valor $', styles: { halign: 'right' as const } },
+        '',
+      ]],
+      body: [...unitRowsPDF, ...summaryPDF],
+      headStyles: {
+        fillColor: [255, 255, 255] as [number, number, number],
+        textColor: [60, 60, 60] as [number, number, number],
+        fontStyle: 'bold' as const,
+        fontSize: 9,
+        cellPadding: { top: 3, bottom: 4, left: 3, right: 3 },
+        lineWidth: { bottom: 0.3 } as unknown as number,
+        lineColor: [180, 180, 180] as [number, number, number],
+      },
+      bodyStyles: { fontSize: 9, cellPadding: { top: 3, bottom: 3, left: 3, right: 3 } },
+      theme: 'plain',
+      columnStyles: {
+        3: { halign: 'right' as const },
+        4: { halign: 'right' as const },
+        5: { halign: 'right' as const, cellWidth: 22 },
+      },
+      didDrawCell: (data: { section: string; row: { index: number }; cell: { x: number; y: number; height: number }; column: { index: number } }) => {
+        // Línea bajo encabezado
+        if (data.section === 'head' && data.column.index === 0) {
+          doc.setDrawColor(180, 180, 180); doc.setLineWidth(0.2);
+          doc.line(mg, data.cell.y + data.cell.height, pageWidth - mg, data.cell.y + data.cell.height);
+        }
+        // Línea separadora antes de las filas resumen
+        if (data.section === 'body' && data.row.index === unitRowsPDF.length && data.column.index === 0) {
+          doc.setDrawColor(200, 200, 200); doc.setLineWidth(0.2);
+          doc.line(mg, data.cell.y, pageWidth - mg, data.cell.y);
+        }
+        // Línea separadora antes del TOTAL (cuando hay bono + precio lista + bonificacion)
+        if (data.section === 'body' && hasBonoPDF && data.row.index === unitRowsPDF.length + summaryPDF.length - 1 && data.column.index === 0) {
+          doc.setDrawColor(200, 200, 200); doc.setLineWidth(0.2);
+          doc.line(mg, data.cell.y, pageWidth - mg, data.cell.y);
+        }
+      },
+    });
+    y = lastY() + 5;
+
+    // ── SECCIÓN 2: FORMA DE PAGO (estilo asiento) ─────────────────────────
+    if (includePaymentPlan) {
+      if (y > 220) { doc.addPage(); y = mg; }
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(50, 50, 50);
+      doc.text('2.  FORMA DE PAGO', mg, y); y += 5;
+
+      const pagoRows: unknown[][] = [
+        ['A la firma de Promesa', `${promesaPct.toFixed(2)}%`, '',
+          { content: formatUF(promesaUF), styles: { halign: 'right' as const } },
+          { content: ufHoy ? formatCLP(promesaUF * ufHoy) : '', styles: { halign: 'right' as const } }],
+        [`En ${nCuotasNew} cuota(s)`, `${cuotasPct.toFixed(2)}%`, `Cuota(s) de UF ${formatUF(cuotaIndividualUF)} c/u.`,
+          { content: formatUF(cuotasUF), styles: { halign: 'right' as const } },
+          { content: ufHoy ? formatCLP(cuotasUF * ufHoy) : '', styles: { halign: 'right' as const } }],
+        ['A la firma de Escritura', `${escrituraPct.toFixed(2)}%`, '',
+          { content: formatUF(escrituraUF), styles: { halign: 'right' as const } },
+          { content: ufHoy ? formatCLP(escrituraUF * ufHoy) : '', styles: { halign: 'right' as const } }],
+        [{ content: 'Crédito Inst. Financiera', styles: { textColor: [37,99,200] as [number,number,number] } },
+          { content: `${creditoPct.toFixed(2)}%`, styles: { textColor: [37,99,200] as [number,number,number] } }, '',
+          { content: formatUF(creditoUF), styles: { halign: 'right' as const, textColor: [37,99,200] as [number,number,number] } },
+          { content: ufHoy ? `${formatCLP(creditoUF * ufHoy)} (*)` : '', styles: { halign: 'right' as const, textColor: [37,99,200] as [number,number,number] } }],
+        // Total row — 100% × precioVentaFinal
+        ['', { content: '100,00%', styles: { fontStyle: 'bold' as const } }, '',
+          { content: formatUF(precioVentaFinal), styles: { fontStyle: 'bold' as const, halign: 'right' as const } },
+          { content: ufHoy ? formatCLP(precioVentaFinal * ufHoy) : '', styles: { fontStyle: 'bold' as const, halign: 'right' as const } }],
+      ];
 
       autoTable(doc, {
-        startY: y, margin: { left: margin, right: margin },
-        head: [['Concepto', '%', 'UF', '$']],
-        body: rows,
-        headStyles: thStyles,
-        bodyStyles: tStyles,
-        theme: 'grid',
+        startY: y, margin: { left: mg, right: mg },
+        head: [[
+          'Concepto', '%', 'Detalle',
+          { content: 'Valor UF', styles: { halign: 'right' as const } },
+          { content: 'Valor $', styles: { halign: 'right' as const } },
+        ]],
+        body: pagoRows,
+        headStyles: {
+          fillColor: [255, 255, 255] as [number, number, number],
+          textColor: [60, 60, 60] as [number, number, number],
+          fontStyle: 'bold' as const,
+          fontSize: 9,
+          cellPadding: { top: 3, bottom: 4, left: 3, right: 3 },
+          lineWidth: { bottom: 0.3 } as unknown as number,
+          lineColor: [180, 180, 180] as [number, number, number],
+        },
+        bodyStyles: { fontSize: 9, cellPadding: { top: 3, bottom: 3, left: 3, right: 3 } },
+        theme: 'plain',
+        columnStyles: { 0: { cellWidth: 52 }, 1: { cellWidth: 18, halign: 'right' as const }, 2: { cellWidth: 38 }, 3: { halign: 'right' as const }, 4: { halign: 'right' as const } },
+        didDrawCell: (data: { section: string; row: { index: number }; cell: { x: number; y: number; height: number }; column: { index: number } }) => {
+          // Línea bajo encabezado
+          if (data.section === 'head' && data.column.index === 0) {
+            doc.setDrawColor(180, 180, 180); doc.setLineWidth(0.2);
+            doc.line(mg, data.cell.y + data.cell.height, pageWidth - mg, data.cell.y + data.cell.height);
+          }
+          // Separador antes del Total
+          if (data.section === 'body' && data.row.index === pagoRows.length - 1 && data.column.index === 0) {
+            doc.setDrawColor(200,200,200); doc.setLineWidth(0.2);
+            doc.line(mg, data.cell.y, pageWidth - mg, data.cell.y);
+          }
+        },
       });
-      y = lastY() + 3;
+      y = lastY() + 2;
 
-      // ── Section 4: Dividendo ──────────────────────────────────────────
-      if (y > 240) { doc.addPage(); y = margin; }
-      doc.setFillColor(240, 240, 250);
-      doc.rect(margin, y, contentWidth, 4.5, 'F');
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(7);
-      doc.setTextColor(37, 99, 235);
-      doc.text('DIVIDENDO REFERENCIAL', margin + 1, y + 3);
-      doc.setTextColor(30, 30, 30);
-      y += 5;
+      doc.setFont('helvetica', 'italic'); doc.setFontSize(6.5); doc.setTextColor(120, 120, 120);
+      const notaAst = '(*) El (la) cotizante declara conocer cuáles son los requerimientos exigidos para optar a un crédito o mutuo hipotecario y que las instituciones financieras los cursan con la tasa vigente a la fecha en que se formalice la compraventa.';
+      const notaLns = doc.splitTextToSize(notaAst, contentWidth);
+      doc.text(notaLns, mg, y);
+      y += notaLns.length * 3.2 + 5;
+
+    } // end includePaymentPlan
+
+    // ── SECCIÓN 3: DIVIDENDO APROXIMADO REFERENCIAL ────────────────────────
+    if (includeMortgageSimulation) {
+      if (y > 225) { doc.addPage(); y = mg; }
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(50, 50, 50);
+      const secNum = includePaymentPlan ? '3.' : '2.';
+      doc.text(`${secNum}  DIVIDENDO APROXIMADO REFERENCIAL`, mg, y); y += 5;
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(80, 80, 80);
+      doc.text(`Calculado a la tasa referencial de este día, sin considerar seguros: ${mortgageInputs.tasaAnual.toFixed(2)}%.`, mg, y);
+      y += 4;
 
       autoTable(doc, {
-        startY: y, margin: { left: margin, right: margin },
-        head: [['Plazo', 'UF/mes', '$/mes', 'Renta Mín.']],
+        startY: y, margin: { left: mg, right: mg },
+        head: [['Plazo Crédito', 'Dividendo en UF', 'Dividendo en $', 'Renta mínima aprox. $']],
         body: dividendTable.map(r => [
-          `${r.years} años`, formatUF(r.divUF),
-          r.divCLP ? formatCLP(r.divCLP) : '—',
-          r.rentaMin ? formatCLP(r.rentaMin) : '—',
+          `${r.years} años`,
+          { content: formatUF(r.divUF), styles: { halign: 'right' as const } },
+          { content: r.divCLP ? formatCLP(r.divCLP) : '—', styles: { halign: 'right' as const } },
+          { content: r.rentaMin ? formatCLP(r.rentaMin) : '—', styles: { halign: 'right' as const } },
         ]),
-        headStyles: thStyles,
-        bodyStyles: tStyles,
-        theme: 'grid',
+        headStyles: {
+          fillColor: [255, 255, 255] as [number, number, number],
+          textColor: [60, 60, 60] as [number, number, number],
+          fontStyle: 'bold' as const,
+          fontSize: 9,
+          cellPadding: { top: 3, bottom: 4, left: 3, right: 3 },
+          lineWidth: { bottom: 0.3 } as unknown as number,
+          lineColor: [180, 180, 180] as [number, number, number],
+        },
+        bodyStyles: { fontSize: 9, cellPadding: { top: 3, bottom: 3, left: 3, right: 3 } },
+        theme: 'plain',
+        columnStyles: {
+          0: { halign: 'left' as const },
+          1: { halign: 'right' as const },
+          2: { halign: 'right' as const },
+          3: { halign: 'right' as const },
+        },
+        didDrawCell: (data: { section: string; row: { index: number }; cell: { x: number; y: number; height: number }; column: { index: number } }) => {
+          if (data.section === 'head' && data.column.index === 0) {
+            doc.setDrawColor(180, 180, 180); doc.setLineWidth(0.2);
+            doc.line(mg, data.cell.y + data.cell.height, pageWidth - mg, data.cell.y + data.cell.height);
+          }
+        },
       });
-      y = lastY() + 3;
-
-      if (includeBonoPie && bonoPieBreakdown.conBono.length > 0) {
-        doc.setFontSize(5.5);
-        doc.setTextColor(120, 120, 120);
-        doc.setFont('helvetica', 'italic');
-        doc.text(
-          `Bono pie: ${bonoPieBreakdown.conBono.map(x => `${x.unit.type} ${x.unit.numero}`).join(', ')}`,
-          margin, y,
-        );
-        y += 3;
-      }
+      y = lastY() + 5;
     }
 
-    // ── Footer en todas las páginas ──────────────────────────────────────
+    // ── BLOQUE: MONTO DE LA RESERVA + Notas Aclaratorias ─────────────────
+    {
+      if (y > 215) { doc.addPage(); y = mg; }
+      const reservaCLPVal = reservaCLP || 300000;
+      const nombreInmob   = projectConfig.nombreInmobiliaria || 'la Inmobiliaria';
+      const vigenciaDias  = effectiveDiscountConfig.vigenciaCotizacionDias;
+      const reservaFmt    = reservaCLPVal.toLocaleString('es-CL');
+      const fechaUFStr    = ufFecha || new Date().toLocaleDateString('es-CL');
+      const valorUFStr    = ufHoy
+        ? ufHoy.toLocaleString('es-CL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        : '—';
+
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(50, 50, 50);
+      doc.text('4.  MONTO DE LA RESERVA', mg, y); y += 5;
+
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(60, 60, 60);
+
+      const pdfBullets = [
+        `.- Al concretar la decisión de compra, el cotizante deberá entregar $ ${reservaFmt} que se imputarán íntegramente al pago de parte de los gastos operacionales que se generen por la compraventa. En caso que no firmara la respectiva promesa de compraventa, teniendo la pre aprobación o aprobación de un crédito, este monto se imputará por completo al pago de una multa penal compensatoria a favor de ${nombreInmob}.`,
+        `.- La Inmobiliaria se reserva el derecho de gestionar el crédito hipotecario con las instituciones financieras que considere pertinentes. Para el efecto, el cliente deberá hacer entrega de todos los antecedentes que se soliciten.`,
+        `.- El Número de cuotas para el pie en construcción es válido mientras la primera cuota cae en este mes.`,
+        `.- Quedamos atentos a cualquier requerimiento adicional y dispuesto a aclararle cualquier duda. Nuestro objetivo es atenderlo con esmero y entregarle la información que usted requiere para que su decisión de compra y en definitiva su compra, se haga realidad. Agradecidos por su visita y confiados en poder atenderlo con el profesionalismo que su decisión de compra merece, le saludamos atentamente.`,
+      ];
+
+      for (const bullet of pdfBullets) {
+        if (y + 8 > 275) { doc.addPage(); y = mg; }
+        const wrapped = doc.splitTextToSize(bullet, contentWidth);
+        doc.text(wrapped, mg, y);
+        y += wrapped.length * 3 + 1;
+      }
+      y += 3;
+
+      if (y > 265) { doc.addPage(); y = mg; }
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(50, 50, 50);
+      doc.text('Notas Aclaratorias:', mg, y); y += 4;
+
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(6.5); doc.setTextColor(60, 60, 60);
+
+      const pdfNotas = ([
+        `- Los montos en pesos corresponden al valor de la UF. a esta fecha, por lo cual se citan sólo como referencia.`,
+        ufHoy ? `  Valor de la UF al ${fechaUFStr} es de $${valorUFStr}.` : '',
+        `- Cotización válida por ${vigenciaDias} días, según disponibilidad de los inmuebles.`,
+        `- El valor indicado en pesos es sólo referencial y meramente demostrativo. Para efectos de cada pago se deberá considerar el valor equivalente en pesos al día de pago efectivo según la Unidad de Fomento correspondiente.`,
+      ] as string[]).filter(Boolean);
+
+      for (const nota of pdfNotas) {
+        if (y + 5 > 275) { doc.addPage(); y = mg; }
+        const wrapped = doc.splitTextToSize(nota, contentWidth);
+        doc.text(wrapped, mg, y);
+        y += wrapped.length * 2.8 + 0.5;
+      }
+      y += 5;
+    }
+
+    // ── FOOTER: firma vendedor ─────────────────────────────────────────────
+    if (y > 262) { doc.addPage(); y = mg; }
+    doc.setDrawColor(37, 99, 235); doc.setLineWidth(0.3);
+    doc.line(mg, y, mg + 45, y); y += 4;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(30, 30, 30);
+    doc.text(currentUser.name, mg, y); y += 4;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(80, 80, 80);
+    doc.text(currentUser.company || currentProject.nombre, mg, y); y += 3.5;
+    if (currentUser.email) { doc.text(currentUser.email, mg, y); }
+
+    // Numeración de páginas
     const pageCount = doc.getNumberOfPages();
     for (let i = 1; i <= pageCount; i++) {
       doc.setPage(i);
-      const h = doc.internal.pageSize.getHeight();
-      doc.setDrawColor(37, 99, 235);
-      doc.setLineWidth(0.3);
-      doc.line(margin, h - 10, pageWidth - margin, h - 10);
-      doc.setFontSize(5.5);
-      doc.setTextColor(120, 120, 120);
-      doc.setFont('helvetica', 'normal');
-      doc.text('Generado por DanaWorks', margin, h - 7);
-      doc.text(`Ejecutivo: ${currentUser.name}`, pageWidth / 2, h - 7, { align: 'center' });
-      doc.text(`Pág. ${i}/${pageCount}`, pageWidth - margin, h - 7, { align: 'right' });
-      const ufNote = ufHoy
-        ? `UF del ${ufFecha}: ${formatCLP(ufHoy)} · Simulación referencial con tasa ${mortgageInputs.tasaAnual}% anual · Cotización válida 7 días`
-        : `Simulación referencial con tasa ${mortgageInputs.tasaAnual}% anual · Cotización válida 7 días`;
-      doc.text(ufNote, margin, h - 4, { maxWidth: contentWidth });
+      const ph = doc.internal.pageSize.getHeight();
+      doc.setFontSize(6); doc.setTextColor(160, 160, 160); doc.setFont('helvetica', 'normal');
+      doc.text('Generado por DanaWorks', mg, ph - 5);
+      doc.text(`Página ${i} de ${pageCount}`, pageWidth - mg, ph - 5, { align: 'right' });
     }
 
     return doc.output('blob');
   };
 
+  const [isDraftGenerated, setIsDraftGenerated] = useState(false);
+  const [toastMsg, setToastMsg] = useState('');
+
+  const promoteDraft = async () => {
+    if (!draftId || isDraftGenerated) return;
+    const token = localStorage.getItem('dw_token');
+    try {
+      const res = await fetch(`/api/quotation-drafts/${draftId}/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ vendedorId: currentUser.id }),
+      });
+      if (res.ok) {
+        setIsDraftGenerated(true);
+        setToastMsg('✓ Cotización guardada en ficha del cliente');
+        setTimeout(() => setToastMsg(''), 3000);
+      }
+    } catch { /* no bloquear la acción principal */ }
+  };
+
   const handleDownloadPDF = async () => {
+    await promoteDraft();
     const blob = await generatePDFBlob();
     if (!blob) return;
     const url = URL.createObjectURL(blob);
@@ -1020,6 +1192,7 @@ export const Quoter: React.FC<QuoterProps> = ({
   const handleSendEmail = async () => {
     setIsEmailSending(true);
     setEmailSent(false);
+    await promoteDraft();
     try {
       const blob = await generatePDFBlob();
       let pdfBase64 = '';
@@ -1118,9 +1291,13 @@ export const Quoter: React.FC<QuoterProps> = ({
     setStep(1); setIsFinalized(false);
     setSelectedUnits([]); setAdjustDrafts({}); setDetachedAccessories([]);
     setDiscountRequests({}); setDiscountError({});
-    setShowMortgage(false); setBonoPieUnits(new Set());
+    setIncludePaymentPlan(false); setIncludeMortgageSimulation(false);
+    setBonoPieUnits(new Set());
     setMortgageInputs({ tasaAnual: 4.5 });
+    setMortgageFinPct(80);
     setReservaCLP(0); setPieCuotasDropdown(12); setPieCuotasManual(12);
+    setPromesaPct(3); setCuotasPct(7); setEscrituraPct(10); setNCuotasNew(36);
+    setInlineTerm(''); setShowInlineDropdown(false);
     setEmailSent(false); setDraftId(null);
     quoteIdRef.current = generateId().substring(0, 9).toUpperCase();
     initNewClient(); loadDraftsList();
@@ -1151,41 +1328,121 @@ export const Quoter: React.FC<QuoterProps> = ({
   }
 
   // Draft modal
-  const DraftModal = () => (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl max-h-[80vh] flex flex-col overflow-hidden">
-        <div className="flex justify-between items-center p-6 border-b border-gray-100">
-          <h3 className="text-lg font-bold text-gray-900">Borradores guardados</h3>
-          <button onClick={() => setShowDraftModal(false)} className="p-1 hover:bg-gray-100 rounded-lg">
-            <X className="w-5 h-5 text-gray-500" />
-          </button>
-        </div>
-        <div className="overflow-y-auto flex-1 p-4 space-y-3">
-          {drafts.length === 0 ? (
-            <p className="text-center text-gray-400 italic py-8">Sin borradores guardados.</p>
-          ) : drafts.map(d => (
-            <div key={d.id} className="flex items-center justify-between p-4 border border-gray-100 rounded-xl hover:border-blue-200 transition-all">
-              <div>
-                <div className="font-bold text-gray-900 text-sm">{d.clienteNombre || 'Sin nombre'}</div>
-                <div className="text-xs text-gray-400 font-mono">{d.clienteRut || '—'}</div>
-                <div className="text-[10px] text-gray-400 mt-0.5">{new Date(d.updated_at).toLocaleString('es-CL')}</div>
-              </div>
-              <div className="flex gap-2">
-                <button onClick={() => loadDraft(d)} disabled={isDraftLoading}
-                  className="px-3 py-1.5 text-xs bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 transition-colors">
-                  Continuar
-                </button>
-                <button onClick={() => deleteDraft(d.id)}
-                  className="p-1.5 text-red-400 hover:bg-red-50 rounded-lg transition-colors">
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          ))}
+  const DraftModal = () => {
+    const getDraftQuoteId = (d: DraftSummary): string => {
+      const adj = (d.data?.adjustments ?? []) as { key: string; value: string }[];
+      return adj.find(a => a.key === 'quoteId')?.value || '—';
+    };
+    const getDraftUnits = (d: DraftSummary): string => {
+      const units = (d.data?.selectedUnits ?? []) as { type: string; numero: string }[];
+      if (units.length === 0) return '—';
+      return units.map(u => `${u.type} ${u.numero}`).join(', ');
+    };
+    const fmtFecha = (iso: string): string => {
+      const dt = new Date(iso);
+      if (isNaN(dt.getTime())) return '—';
+      const dd = String(dt.getDate()).padStart(2, '0');
+      const mm = String(dt.getMonth() + 1).padStart(2, '0');
+      const yyyy = dt.getFullYear();
+      return `${dd}/${mm}/${yyyy}`;
+    };
+    const q = draftSearchTerm.toLowerCase();
+    const filtered = drafts.filter(d => {
+      if (!q) return true;
+      const qid = getDraftQuoteId(d).toLowerCase();
+      const nombre = (d.clienteNombre || '').toLowerCase();
+      const unidades = getDraftUnits(d).toLowerCase();
+      return qid.includes(q) || nombre.includes(q) || unidades.includes(q);
+    });
+    const sorted = [...filtered].sort((a, b) => {
+      if (draftSortOrder === 'cotizante') {
+        return (a.clienteNombre || '').localeCompare(b.clienteNombre || '', 'es');
+      }
+      return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+    });
+
+    return (
+      <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden">
+          {/* Header */}
+          <div className="flex justify-between items-center px-6 py-4 border-b border-gray-100">
+            <h3 className="text-lg font-bold text-gray-900">Borradores guardados</h3>
+            <button onClick={() => setShowDraftModal(false)} className="p-1 hover:bg-gray-100 rounded-lg">
+              <X className="w-5 h-5 text-gray-500" />
+            </button>
+          </div>
+          {/* Search + Sort bar */}
+          <div className="flex items-center gap-3 px-6 py-3 border-b border-gray-100 bg-gray-50">
+            <input
+              type="text"
+              placeholder="Buscar por cotizante, N° o unidad..."
+              value={draftSearchTerm}
+              onChange={e => setDraftSearchTerm(e.target.value)}
+              className="flex-1 px-3 py-1.5 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-100"
+            />
+            <span className="text-xs text-gray-400 shrink-0">Ordenar:</span>
+            <button
+              onClick={() => setDraftSortOrder('fecha')}
+              className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${draftSortOrder === 'fecha' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'}`}>
+              Fecha
+            </button>
+            <button
+              onClick={() => setDraftSortOrder('cotizante')}
+              className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${draftSortOrder === 'cotizante' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'}`}>
+              Cotizante
+            </button>
+          </div>
+          {/* Table */}
+          <div className="overflow-y-auto flex-1">
+            {sorted.length === 0 ? (
+              <p className="text-center text-gray-400 italic py-10">
+                {drafts.length === 0 ? 'Sin borradores guardados.' : 'Sin resultados para la búsqueda.'}
+              </p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50 border-b border-gray-100 text-left">
+                    <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide w-28">N° Cotización</th>
+                    <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Cotizante</th>
+                    <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Unidades</th>
+                    <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide w-28">Fecha</th>
+                    <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide w-32 text-right">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {sorted.map(d => (
+                    <tr key={d.id} className="hover:bg-blue-50/40 transition-colors">
+                      <td className="px-4 py-3 font-mono text-xs text-gray-500">{getDraftQuoteId(d)}</td>
+                      <td className="px-4 py-3">
+                        <div className="font-medium text-gray-900">{d.clienteNombre || 'Sin nombre'}</div>
+                        <div className="text-xs text-gray-400 font-mono">{d.clienteRut || '—'}</div>
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-600 max-w-[180px] truncate" title={getDraftUnits(d)}>
+                        {getDraftUnits(d)}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-500">{fmtFecha(d.updated_at)}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex justify-end gap-2">
+                          <button onClick={() => loadDraft(d)} disabled={isDraftLoading}
+                            className="px-3 py-1.5 text-xs bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                            Continuar
+                          </button>
+                          <button onClick={() => deleteDraft(d.id)}
+                            className="p-1.5 text-red-400 hover:bg-red-50 rounded-lg transition-colors">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
         </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="animate-fade-in max-w-6xl mx-auto space-y-8 pb-12">
@@ -1227,7 +1484,7 @@ export const Quoter: React.FC<QuoterProps> = ({
               <React.Fragment key={s}>
                 {i > 0 && <span className="text-gray-300">→</span>}
                 <span className={`px-3 py-1 rounded-full ${step === s ? 'bg-blue-600 text-white' : step > s ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
-                  {s}. {['Cliente', 'Unidades', 'Resumen'][i]}
+                  {s}. {['Datos Cotizante', 'Unidades', 'Resumen'][i]}
                 </span>
               </React.Fragment>
             ))}
@@ -1235,59 +1492,14 @@ export const Quoter: React.FC<QuoterProps> = ({
         </div>
       </div>
 
-      {/* ── STEP 1: CLIENT ──────────────────────────────────────────────── */}
+      {/* ── STEP 1: DATOS COTIZANTE ─────────────────────────────────────── */}
       {step === 1 && (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 space-y-8">
-          <div className="flex gap-4 border-b border-gray-100 pb-2">
-            <button onClick={() => { setClientMode('create'); initNewClient(); }}
-              className={`pb-4 px-2 text-sm font-bold transition-all ${clientMode === 'create' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-400'}`}>
-              Nuevo Prospecto
-            </button>
-            <button onClick={() => setClientMode('search')}
-              className={`pb-4 px-2 text-sm font-bold transition-all ${clientMode === 'search' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-400'}`}>
-              Cliente Existente
-            </button>
+          <div className="pb-4 border-b border-gray-100">
+            <h3 className="font-bold text-gray-800 text-lg">Datos Cotizante</h3>
+            <p className="text-xs text-gray-400 mt-0.5">Escribe 3+ caracteres en Nombre o RUT para buscar clientes existentes y autocompletar.</p>
           </div>
 
-          {clientMode === 'search' ? (
-            <div className="relative" ref={searchWrapperRef}>
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
-                <input type="text" placeholder="Buscar por RUT o nombre… (selecciona del dropdown)"
-                  value={clientSearch}
-                  onChange={e => { setClientSearch(e.target.value); setShowSuggestions(true); }}
-                  onFocus={() => setShowSuggestions(true)}
-                  className="w-full pl-10 p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-100 font-medium" />
-              </div>
-              {showSuggestions && clientSuggestions.length > 0 && (
-                <div className="absolute z-50 left-0 right-0 mt-2 bg-white border border-gray-200 rounded-xl shadow-2xl overflow-hidden">
-                  {clientSuggestions.map(s => (
-                    <button key={s.id} onClick={() => handleSelectSuggestedClient(s)}
-                      className="w-full text-left px-5 py-4 hover:bg-blue-50 flex items-center justify-between border-b border-gray-50 last:border-none">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600"><UserIcon className="w-5 h-5" /></div>
-                        <div><div className="font-bold text-gray-900">{s.nombre}</div><div className="text-xs text-gray-500 font-mono">{s.rut}</div></div>
-                      </div>
-                      <span className="text-[10px] bg-gray-100 px-2 py-0.5 rounded font-bold uppercase">{s.estado}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-              {selectedClient.id && (
-                <div className="mt-8 p-6 bg-blue-50 border border-blue-100 rounded-2xl flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 bg-blue-600 rounded-full flex items-center justify-center text-white text-xl font-bold">{selectedClient.nombre?.charAt(0)}</div>
-                    <div>
-                      <p className="text-xs font-black text-blue-600 uppercase tracking-widest mb-0.5">Cliente Seleccionado</p>
-                      <h4 className="font-bold text-lg">{selectedClient.nombre}</h4>
-                      <p className="text-sm text-gray-500">{selectedClient.rut} · {selectedClient.email}</p>
-                    </div>
-                  </div>
-                  <button onClick={initNewClient} className="p-2 text-gray-400 hover:text-red-500 rounded-lg"><X className="w-6 h-6" /></button>
-                </div>
-              )}
-            </div>
-          ) : (
             <div className="space-y-8">
               <div className="flex items-center gap-4">
                 <label className="text-sm font-black text-gray-400 uppercase tracking-widest">Perfil Legal:</label>
@@ -1303,19 +1515,55 @@ export const Quoter: React.FC<QuoterProps> = ({
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="md:col-span-2">
                   <label className="text-[10px] font-black text-gray-400 uppercase mb-1.5 block tracking-widest">Nombre Completo / Razón Social *</label>
-                  <div className="relative">
+                  <div className="relative" ref={inlineSearchRef}>
                     <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300" />
                     <input type="text" value={selectedClient.nombre || ''}
-                      onChange={e => handleClientChange('nombre', e.target.value)} placeholder="Ej: Juan Pérez"
+                      onChange={e => {
+                        handleClientChange('nombre', e.target.value);
+                        setInlineTerm(e.target.value);
+                        setShowInlineDropdown(e.target.value.trim().length >= 2);
+                      }}
+                      onFocus={e => { if (e.target.value.trim().length >= 2) setShowInlineDropdown(true); }}
+                      placeholder="Ej: Juan Pérez"
                       className="w-full pl-10 p-3 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100" />
+                    {showInlineDropdown && inlineSearchResults.length > 0 && (
+                      <div className="absolute z-[200] left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-2xl overflow-hidden">
+                        <div className="px-3 py-1.5 bg-blue-50 border-b border-blue-100">
+                          <span className="text-[9px] font-black text-blue-600 uppercase tracking-widest">Clientes existentes — clic para autocompletar</span>
+                        </div>
+                        {inlineSearchResults.map(c => (
+                          <button key={c.id} onClick={() => handleSelectInlineClient(c)}
+                            className="w-full text-left px-4 py-3 hover:bg-blue-50 flex items-center justify-between border-b border-gray-50 last:border-none transition-colors">
+                            <div className="flex items-center gap-3">
+                              <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-sm shrink-0">{c.nombre.charAt(0)}</div>
+                              <div>
+                                <div className="font-bold text-gray-900 text-sm">{c.nombre}</div>
+                                <div className="text-xs text-gray-400 font-mono">{c.rut}</div>
+                              </div>
+                            </div>
+                            <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${c.estado === 'Activo' ? 'bg-green-100 text-green-700' : c.estado === 'Prospecto' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>{c.estado}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
+                  {selectedClient.id && (
+                    <p className="mt-1 text-[10px] text-blue-600 font-bold flex items-center gap-1">
+                      <Check className="w-3 h-3" /> Cliente existente seleccionado
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="text-[10px] font-black text-gray-400 uppercase mb-1.5 block tracking-widest">RUT *</label>
                   <div className="relative">
                     <FileText className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300" />
                     <input type="text" value={selectedClient.rut || ''}
-                      onChange={e => handleClientChange('rut', e.target.value)} placeholder="12.345.678-9"
+                      onChange={e => {
+                        handleClientChange('rut', e.target.value);
+                        setInlineTerm(e.target.value);
+                        setShowInlineDropdown(e.target.value.trim().length >= 2);
+                      }}
+                      placeholder="12.345.678-9"
                       className="w-full pl-10 p-3 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100 font-mono" />
                   </div>
                 </div>
@@ -1429,7 +1677,6 @@ export const Quoter: React.FC<QuoterProps> = ({
                 </div>
               </div>
             </div>
-          )}
 
           <div className="flex justify-end pt-8 border-t border-gray-100">
             <button
@@ -1605,257 +1852,210 @@ export const Quoter: React.FC<QuoterProps> = ({
                 </div>
               )}
 
-              {/* ── Mortgage (C2) ──────────────────────────────────────── */}
-              <div className="mt-6 pt-4 border-t border-gray-100 space-y-4">
-                <label className="flex items-center gap-3 cursor-pointer group" onClick={() => setShowMortgage(v => !v)}>
-                  <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors shrink-0 ${showMortgage ? 'bg-blue-600 border-blue-600' : 'border-gray-300 group-hover:border-blue-400'}`}>
-                    {showMortgage && <Check className="w-3 h-3 text-white" />}
+              {/* ── Bono Pie (config interna, siempre visible si hay unidades) ─ */}
+              {selectedUnits.length > 0 && (
+                <div className="mt-6 pt-4 border-t border-gray-100">
+                  <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+                    <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
+                      <span className="text-xs font-black text-gray-400 uppercase tracking-widest">Bono Pie por Unidad</span>
+                      {currentUser.role !== 'Ventas' && (
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-black text-gray-400 uppercase">% Bono Pie</span>
+                          <input type="number" step="0.5" min="0" max="99" value={bonoPct}
+                            onChange={e => setBonoPct(Number(e.target.value))}
+                            className="w-14 p-1 border border-gray-200 rounded text-xs font-mono text-center outline-none focus:ring-2 focus:ring-blue-100" />
+                        </div>
+                      )}
+                      <div className="flex gap-2">
+                        <button onClick={() => setBonoPieUnits(new Set(selectedUnits.map(u => u.id)))}
+                          className="text-[10px] text-blue-500 font-bold hover:underline">Todos</button>
+                        <span className="text-gray-300">·</span>
+                        <button onClick={() => setBonoPieUnits(new Set())}
+                          className="text-[10px] text-gray-400 font-bold hover:underline">Ninguno</button>
+                      </div>
+                    </div>
+                    <div className="divide-y divide-gray-50">
+                      {selectedUnits.map(u => {
+                        const hasBono = bonoPieUnits.has(u.id);
+                        const calc = bonoPieBreakdown.perUnit.find(x => x.unit.id === u.id)?.calc;
+                        return (
+                          <label key={u.id}
+                            className={`flex items-center gap-3 px-4 py-2 cursor-pointer hover:bg-gray-50 transition-colors ${hasBono ? 'bg-blue-50/30' : ''}`}>
+                            <input type="checkbox" checked={hasBono}
+                              onChange={e => {
+                                setBonoPieUnits(prev => {
+                                  const next = new Set(prev);
+                                  if (e.target.checked) next.add(u.id); else next.delete(u.id);
+                                  return next;
+                                });
+                              }}
+                              className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                            <div className="flex-1 flex items-center justify-between">
+                              <span className="text-sm font-medium text-gray-700">
+                                {u.type} {u.numero}
+                                {u.isAutoLoaded && <span className="ml-1 text-[9px] bg-blue-100 text-blue-600 px-1 py-0.5 rounded font-black uppercase">Auto</span>}
+                              </span>
+                              {calc && (
+                                <span className={`text-xs font-mono font-bold ${hasBono ? 'text-blue-600' : 'text-gray-400'}`}>
+                                  {formatUF(hasBono ? calc.precioInflado : calc.base)} UF
+                                </span>
+                              )}
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
                   </div>
-                  <span className="font-bold text-sm text-gray-700">Incluir simulación de crédito hipotecario</span>
+                </div>
+              )}
+
+              {/* ── BLOQUE 1: Forma de Pago ──────────────────────────────── */}
+              <div className="mt-4 pt-4 border-t border-gray-100 space-y-3">
+                <label className="flex items-center gap-3 cursor-pointer group" onClick={() => setIncludePaymentPlan(v => !v)}>
+                  <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors shrink-0 ${includePaymentPlan ? 'bg-blue-600 border-blue-600' : 'border-gray-300 group-hover:border-blue-400'}`}>
+                    {includePaymentPlan && <Check className="w-3 h-3 text-white" />}
+                  </div>
+                  <span className="font-bold text-sm text-gray-700">Incluir Forma de Pago</span>
                 </label>
 
-                {showMortgage && (
-                  <div className="bg-blue-50/40 border border-blue-100 rounded-2xl p-5 space-y-5">
-
-                    {/* ── Inputs base (Cambio 1: % Pie eliminado, deriva de finPct) ── */}
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                      <div>
-                        <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest block mb-1.5">Reserva ($CLP)</label>
-                        <input type="number" step="1000" value={reservaCLP || ''}
-                          onChange={e => setReservaCLP(Number(e.target.value))}
-                          className="w-full p-2.5 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-100 font-mono" />
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest block mb-1.5">Cuotas del pie</label>
-                        <select value={pieCuotasDropdown}
-                          onChange={e => setPieCuotasDropdown(e.target.value === 'Otro' ? 'Otro' : Number(e.target.value) as 6|12|18|24|36)}
-                          className="w-full p-2.5 border border-gray-200 rounded-xl text-sm outline-none">
-                          {[6, 12, 18, 24, 36].map(n => <option key={n} value={n}>{n}</option>)}
-                          <option value="Otro">Otro</option>
-                        </select>
-                        {pieCuotasDropdown === 'Otro' && (
-                          <input type="number" value={pieCuotasManual}
-                            onChange={e => setPieCuotasManual(Number(e.target.value))}
-                            className="mt-1.5 w-full p-2.5 border border-gray-200 rounded-xl text-sm outline-none font-mono" />
-                        )}
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest block mb-1.5">Tasa anual (%)</label>
-                        <input type="number" step="0.1" value={mortgageInputs.tasaAnual}
-                          onChange={e => setMortgageInputs(p => ({ ...p, tasaAnual: Number(e.target.value) }))}
-                          className="w-full p-2.5 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-100 font-mono" />
-                      </div>
+                {includePaymentPlan && (
+                  <div className="bg-white rounded-xl border border-gray-200 overflow-hidden ml-8">
+                    <div className="px-4 py-3 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
+                      <span className="text-xs font-black text-gray-500 uppercase tracking-widest">Distribución del Pago</span>
+                      {creditoPct >= 0
+                        ? <span className="text-[10px] font-bold text-green-600 bg-green-50 px-2 py-0.5 rounded-full">100% ✓</span>
+                        : <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full">Suma supera 100% ⚠️</span>
+                      }
                     </div>
-
-                    {/* % Financiamiento + info pie derivado */}
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest block mb-1.5">% Financiamiento banco</label>
-                        <input type="number" step="1" min="0" max="100" value={finPct}
-                          onChange={e => setFinPct(Number(e.target.value))}
-                          className="w-full p-2.5 border border-gray-200 rounded-xl text-sm outline-none font-mono" />
+                    <div className="p-4 space-y-1.5 text-xs">
+                      {/* Promesa */}
+                      <div className="flex items-center gap-2">
+                        <span className="w-44 shrink-0 text-gray-600">A la firma de Promesa</span>
+                        <input type="number" step="0.1" min="0" max="100" value={promesaPct}
+                          onChange={e => setPromesaPct(Number(e.target.value))}
+                          className="w-16 p-1.5 border border-gray-200 rounded text-sm font-mono text-right outline-none" />
+                        <span className="text-gray-400">%</span>
+                        <span className="ml-auto font-mono font-bold text-gray-700">{formatUF(promesaUF)} UF</span>
+                        {ufHoy && <span className="font-mono text-gray-400 ml-2">{formatCLP(promesaUF * ufHoy)}</span>}
                       </div>
-                      <div className="flex flex-col justify-center">
-                        <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest block mb-1.5">% Pie (derivado)</label>
-                        <div className="p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-mono font-bold text-gray-700">
-                          {piePct}%
+                      {/* Cuotas */}
+                      <div className="flex items-center gap-2">
+                        <span className="w-44 shrink-0 text-gray-600">En cuotas</span>
+                        <input type="number" step="0.1" min="0" max="100" value={cuotasPct}
+                          onChange={e => setCuotasPct(Number(e.target.value))}
+                          className="w-16 p-1.5 border border-gray-200 rounded text-sm font-mono text-right outline-none" />
+                        <span className="text-gray-400">%</span>
+                        <span className="ml-auto font-mono font-bold text-gray-700">{formatUF(cuotasUF)} UF</span>
+                        {ufHoy && <span className="font-mono text-gray-400 ml-2">{formatCLP(cuotasUF * ufHoy)}</span>}
+                      </div>
+                      <div className="flex items-center gap-2 pl-4">
+                        <span className="w-40 shrink-0 text-gray-400">En {nCuotasNew} cuota(s)</span>
+                        <span className="text-[10px] text-gray-400 bg-gray-50 border border-gray-100 rounded px-2 py-1">
+                          c/u {formatUF(cuotaIndividualUF)} UF — fijado por proyecto
+                        </span>
+                      </div>
+                      {/* Escritura */}
+                      <div className="flex items-center gap-2">
+                        <span className="w-44 shrink-0 text-gray-600">A la firma de Escritura</span>
+                        <input type="number" step="0.1" min="0" max="100" value={escrituraPct}
+                          onChange={e => setEscrituraPct(Number(e.target.value))}
+                          className="w-16 p-1.5 border border-gray-200 rounded text-sm font-mono text-right outline-none" />
+                        <span className="text-gray-400">%</span>
+                        <span className="ml-auto font-mono font-bold text-gray-700">{formatUF(escrituraUF)} UF</span>
+                        {ufHoy && <span className="font-mono text-gray-400 ml-2">{formatCLP(escrituraUF * ufHoy)}</span>}
+                      </div>
+                      {/* Separador */}
+                      <div className="border-t border-gray-100 my-1" />
+                      {/* Crédito Banco (auto) */}
+                      <div className="flex items-center gap-2">
+                        <span className={`w-44 shrink-0 font-bold ${creditoPct < 0 ? 'text-red-600' : 'text-blue-700'}`}>Crédito Banco</span>
+                        <div className={`w-16 p-1.5 border rounded text-sm font-mono text-right font-bold ${creditoPct < 0 ? 'bg-red-50 border-red-200 text-red-700' : 'bg-gray-50 border-gray-200 text-blue-700'}`}>
+                          {creditoPct.toFixed(1)}
+                        </div>
+                        <span className="text-gray-400">%</span>
+                        <span className={`ml-auto font-mono font-bold ${creditoPct < 0 ? 'text-red-600' : 'text-blue-700'}`}>{formatUF(creditoUF)} UF</span>
+                        {ufHoy && <span className={`font-mono ml-2 ${creditoPct < 0 ? 'text-red-400' : 'text-blue-400'}`}>{formatCLP(creditoUF * ufHoy)}</span>}
+                      </div>
+                      {/* Separador + Total */}
+                      <div className="border-t border-gray-200 mt-1 pt-1.5">
+                        <div className="flex items-center gap-2 font-bold">
+                          <span className="w-44 shrink-0 text-gray-800">TOTAL</span>
+                          <div className="w-16 p-1.5 bg-gray-50 border border-gray-200 rounded text-sm font-mono text-right text-gray-700">100</div>
+                          <span className="text-gray-400">%</span>
+                          <span className="ml-auto font-mono font-bold text-gray-900">{formatUF(precioVentaFinal)} UF</span>
+                          {ufHoy && <span className="font-mono text-gray-500 ml-2">{formatCLP(precioVentaFinal * ufHoy)}</span>}
                         </div>
                       </div>
-                    </div>
-
-                    {/* ── Bono Pie: config + checkboxes por unidad ── */}
-                    {selectedUnits.length > 0 && (
-                      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-                        <div className="px-4 py-3 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
-                          <span className="text-xs font-black text-gray-500 uppercase tracking-widest">Bono Pie por Unidad</span>
-                          {/* bonoPct config — visible para Admin/JefeSala */}
-                          {currentUser.role !== 'Ventas' && (
-                            <div className="flex items-center gap-2">
-                              <label className="text-[10px] font-black text-gray-500 uppercase">% Bono Pie</label>
-                              <input type="number" step="0.5" min="0" max="99" value={bonoPct}
-                                onChange={e => setBonoPct(Number(e.target.value))}
-                                className="w-16 p-1.5 border border-gray-200 rounded-lg text-xs font-mono text-center outline-none focus:ring-2 focus:ring-blue-100" />
-                            </div>
-                          )}
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => setBonoPieUnits(new Set(selectedUnits.map(u => u.id)))}
-                              className="text-[10px] text-blue-600 font-bold hover:underline">
-                              Todos
-                            </button>
-                            <span className="text-gray-300">·</span>
-                            <button
-                              onClick={() => setBonoPieUnits(new Set())}
-                              className="text-[10px] text-gray-500 font-bold hover:underline">
-                              Ninguno
-                            </button>
-                          </div>
-                        </div>
-                        <div className="divide-y divide-gray-50">
-                          {selectedUnits.map(u => {
-                            const hasBono = bonoPieUnits.has(u.id);
-                            const calc = bonoPieBreakdown.perUnit.find(x => x.unit.id === u.id)?.calc;
-                            return (
-                              <label key={u.id}
-                                className={`flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-gray-50 transition-colors ${hasBono ? 'bg-blue-50/30' : ''}`}>
-                                <input
-                                  type="checkbox"
-                                  checked={hasBono}
-                                  onChange={e => {
-                                    setBonoPieUnits(prev => {
-                                      const next = new Set(prev);
-                                      if (e.target.checked) next.add(u.id);
-                                      else next.delete(u.id);
-                                      return next;
-                                    });
-                                  }}
-                                  className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                                />
-                                <div className="flex-1 flex items-center justify-between">
-                                  <span className="text-sm font-medium text-gray-800">
-                                    {u.type} {u.numero}
-                                    {u.isAutoLoaded && <span className="ml-1 text-[9px] bg-blue-100 text-blue-600 px-1 py-0.5 rounded font-black uppercase">Auto</span>}
-                                  </span>
-                                  {calc && (
-                                    <span className={`text-xs font-mono font-bold ${hasBono ? 'text-blue-600' : 'text-gray-400'}`}>
-                                      {hasBono ? formatUF(calc.precioInflado) : formatUF(calc.base)} UF
-                                    </span>
-                                  )}
-                                </div>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* ── Paso 10: Desglose Forma de Pago ──────────────── */}
-                    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-                      <div className="px-4 py-3 bg-gray-50 border-b border-gray-100">
-                        <span className="text-xs font-black text-gray-500 uppercase tracking-widest">Forma de Pago</span>
-                      </div>
-                      <div className="p-4 space-y-2 text-sm">
-                        {reservaCLP > 0 && (
-                          <div className="flex justify-between text-gray-600">
-                            <span>Reserva</span><span className="font-bold">{formatCLP(reservaCLP)}</span>
-                          </div>
-                        )}
-
-                        {/* Caso mixto: algunos con bono, otros sin */}
-                        {bonoPieBreakdown.conBono.length > 0 && bonoPieBreakdown.sinBono.length > 0 ? (
-                          <>
-                            <div className="text-[10px] font-black text-blue-600 uppercase tracking-widest pt-1">Unidades con bono pie ({bonoPct}%)</div>
-                            {[
-                              { label: 'Valor Total', val: bonoPieBreakdown.conBono.reduce((s,x)=>s+x.calc.precioInflado,0) },
-                              { label: `Pie (${piePct}%)`, val: bonoPieBreakdown.conBono.reduce((s,x)=>s+x.calc.pieUnidad,0) },
-                              { label: 'Bonificación', val: bonoPieBreakdown.conBono.reduce((s,x)=>s+x.calc.bonificacion,0) },
-                              { label: 'Monto a Pagar', val: bonoPieBreakdown.conBono.reduce((s,x)=>s+x.calc.montoAPagar,0), bold: true },
-                              { label: 'Crédito Hipotecario', val: bonoPieBreakdown.conBono.reduce((s,x)=>s+x.calc.porFinanciar,0), blue: true },
-                            ].map(r => (
-                              <div key={r.label} className={`flex justify-between ml-3 ${r.bold ? 'font-bold' : ''} ${r.blue ? 'text-blue-700 font-bold' : 'text-gray-600'}`}>
-                                <span>{r.label}</span><span className="font-mono">{formatUF(r.val)} UF</span>
-                              </div>
-                            ))}
-                            <div className="text-[10px] font-black text-gray-500 uppercase tracking-widest pt-2 border-t border-gray-100">Unidades sin bono pie</div>
-                            {[
-                              { label: 'Precio', val: bonoPieBreakdown.sinBono.reduce((s,x)=>s+x.calc.base,0) },
-                              { label: `Pie (${piePct}%)`, val: bonoPieBreakdown.sinBono.reduce((s,x)=>s+x.calc.pieUnidad,0), bold: true },
-                              { label: 'Crédito Hipotecario', val: bonoPieBreakdown.sinBono.reduce((s,x)=>s+x.calc.porFinanciar,0), blue: true },
-                            ].map(r => (
-                              <div key={r.label} className={`flex justify-between ml-3 ${r.bold ? 'font-bold' : ''} ${r.blue ? 'text-blue-700 font-bold' : 'text-gray-600'}`}>
-                                <span>{r.label}</span><span className="font-mono">{formatUF(r.val)} UF</span>
-                              </div>
-                            ))}
-                            <div className="border-t border-gray-200 pt-2 mt-1 space-y-1">
-                              <div className="flex justify-between font-black text-gray-900">
-                                <span>TOTAL Monto a Pagar</span>
-                                <span className="font-mono">{formatUF(bonoPieBreakdown.totalMontoAPagar)} UF</span>
-                              </div>
-                              <div className="flex justify-between font-black text-blue-700">
-                                <span>TOTAL Crédito Hipotecario</span>
-                                <span className="font-mono">{formatUF(bonoPieBreakdown.totalPorFinanciar)} UF{ufHoy ? ` / ${formatCLP(bonoPieBreakdown.totalPorFinanciar * ufHoy)}` : ''}</span>
-                              </div>
-                            </div>
-                          </>
-                        ) : includeBonoPie ? (
-                          /* Todas con bono pie */
-                          <>
-                            <div className="flex justify-between text-gray-600">
-                              <span>Valor Total</span>
-                              <span className="font-bold font-mono">{formatUF(bonoPieBreakdown.totalPrecioInflado)} UF</span>
-                            </div>
-                            <div className="flex justify-between text-gray-600">
-                              <span>Pie ({piePct}%)</span>
-                              <span className="font-mono">{formatUF(bonoPieBreakdown.totalPie)} UF</span>
-                            </div>
-                            <div className="flex justify-between text-gray-600">
-                              <span>Bonificación Bono Pie</span>
-                              <span className="font-mono text-green-700">- {formatUF(bonoPieBreakdown.totalBonificacion)} UF</span>
-                            </div>
-                            <div className="flex justify-between font-bold pt-1 border-t border-gray-100">
-                              <span>Monto a Pagar</span>
-                              <span className="font-mono">{formatUF(bonoPieBreakdown.totalMontoAPagar)} UF</span>
-                            </div>
-                            <div className="flex justify-between font-bold text-blue-700">
-                              <span>Crédito Hipotecario</span>
-                              <span className="font-mono">{formatUF(bonoPieBreakdown.totalPorFinanciar)} UF{ufHoy ? ` / ${formatCLP(bonoPieBreakdown.totalPorFinanciar * ufHoy)}` : ''}</span>
-                            </div>
-                          </>
-                        ) : (
-                          /* Sin bono pie */
-                          <>
-                            <div className="flex justify-between text-gray-600">
-                              <span>Pie ({piePct}%)</span>
-                              <span className="font-bold font-mono">{formatUF(bonoPieBreakdown.totalMontoAPagar)} UF</span>
-                            </div>
-                            <div className="flex justify-between font-bold text-blue-700 pt-1 border-t border-gray-100">
-                              <span>Crédito Hipotecario</span>
-                              <span className="font-mono">{formatUF(bonoPieBreakdown.totalPorFinanciar)} UF{ufHoy ? ` / ${formatCLP(bonoPieBreakdown.totalPorFinanciar * ufHoy)}` : ''}</span>
-                            </div>
-                          </>
-                        )}
-
-                        {/* Plan de pago — base = totalMontoAPagar (Paso 7) */}
-                        <div className="bg-blue-50 rounded-lg p-3 mt-2 flex justify-between items-center">
-                          <span className="text-xs font-black text-blue-700 uppercase tracking-widest">Plan de Pago</span>
-                          <span className="text-sm font-bold text-blue-800">
-                            {nCuotas} cuotas de {formatUF(montoPorCuota)} UF
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* ── Dividendo hipotecario (base = totalPorFinanciar) ── */}
-                    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-                      <div className="px-4 py-3 bg-gray-50 border-b border-gray-100">
-                        <span className="text-xs font-black text-gray-500 uppercase tracking-widest">Dividendo Aproximado Referencial</span>
-                      </div>
-                      <table className="min-w-full text-sm">
-                        <thead>
-                          <tr className="border-b border-gray-100">
-                            {['Plazo', 'Dividendo UF', 'Dividendo $', 'Renta Mín.'].map(h => (
-                              <th key={h} className={`px-4 py-2.5 font-black text-gray-500 text-xs uppercase ${h === 'Plazo' ? 'text-left' : 'text-right'}`}>{h}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-50">
-                          {dividendTable.map(r => (
-                            <tr key={r.years} className="hover:bg-blue-50/20">
-                              <td className="px-4 py-2.5 font-bold text-gray-800">{r.years} años</td>
-                              <td className="px-4 py-2.5 text-right font-mono">{formatUF(r.divUF)}</td>
-                              <td className="px-4 py-2.5 text-right font-mono">{r.divCLP ? formatCLP(r.divCLP) : '—'}</td>
-                              <td className="px-4 py-2.5 text-right font-mono text-green-700">{r.rentaMin ? formatCLP(r.rentaMin) : '—'}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                      <div className="px-4 py-2 bg-gray-50 border-t border-gray-100">
-                        <p className="text-[10px] text-gray-400 italic">
-                          Simulación referencial con tasa {mortgageInputs.tasaAnual}% anual.
-                          Base: {formatUF(bonoPieBreakdown.totalPorFinanciar)} UF.
-                          Renta mín. = dividendo × 4.{ufHoy ? ` UF ${ufFecha}: ${formatCLP(ufHoy)}.` : ''}
+                      {creditoPct < 0 && (
+                        <p className="text-xs text-red-600 font-bold flex items-center gap-1 pt-1">
+                          <AlertCircle className="w-3 h-3 shrink-0" /> La suma supera 100%. Reduce los porcentajes.
                         </p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ── BLOQUE 2: Simulación Crédito Hipotecario ─────────────── */}
+              <div className="space-y-3">
+                <label className="flex items-center gap-3 cursor-pointer group" onClick={() => setIncludeMortgageSimulation(v => !v)}>
+                  <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors shrink-0 ${includeMortgageSimulation ? 'bg-purple-600 border-purple-600' : 'border-gray-300 group-hover:border-purple-400'}`}>
+                    {includeMortgageSimulation && <Check className="w-3 h-3 text-white" />}
+                  </div>
+                  <span className="font-bold text-sm text-gray-700">Incluir Simulación Crédito Hipotecario</span>
+                </label>
+
+                {includeMortgageSimulation && (
+                  <div className="bg-white rounded-xl border border-gray-200 overflow-hidden ml-8">
+                    {/* Tasa anual + % Financiamiento — DENTRO del simulador */}
+                    <div className="px-4 py-3 bg-gray-50 border-b border-gray-100 flex flex-wrap items-center gap-4">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-black text-gray-500 uppercase tracking-widest shrink-0">Tasa anual</span>
+                        <input type="number" step="0.1" min="0" max="30" value={mortgageInputs.tasaAnual}
+                          onChange={e => setMortgageInputs(p => ({ ...p, tasaAnual: Number(e.target.value) }))}
+                          className="w-20 p-1.5 border border-gray-200 rounded-lg text-sm font-mono text-right outline-none focus:ring-2 focus:ring-purple-100" />
+                        <span className="text-xs text-gray-400">%</span>
                       </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-black text-gray-500 uppercase tracking-widest shrink-0">% Financ. Banco</span>
+                        <input
+                          type="number" step="0.1" min="0" max="100"
+                          value={includePaymentPlan ? creditoPct : mortgageFinPct}
+                          onChange={e => { if (!includePaymentPlan) setMortgageFinPct(Number(e.target.value)); }}
+                          disabled={includePaymentPlan}
+                          title={includePaymentPlan ? 'Tomado de Forma de Pago' : undefined}
+                          className={`w-20 p-1.5 border rounded-lg text-sm font-mono text-right outline-none ${includePaymentPlan ? 'bg-gray-50 border-gray-200 opacity-60 cursor-not-allowed text-gray-500' : 'border-gray-200 focus:ring-2 focus:ring-purple-100'}`}
+                        />
+                        <span className="text-xs text-gray-400">%</span>
+                        {includePaymentPlan && <span className="text-[9px] text-gray-400 italic">de Forma de Pago</span>}
+                      </div>
+                      <span className="ml-auto text-[10px] text-gray-400">
+                        Base: {formatUF((includePaymentPlan ? creditoUF : precioVentaFinal * mortgageFinPct / 100))} UF
+                      </span>
+                    </div>
+                    <table className="min-w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-100 bg-gray-50/50">
+                          {['Plazo','Dividendo UF','Dividendo $','Renta mín. aprox.'].map(h => (
+                            <th key={h} className={`px-4 py-2 font-black text-gray-500 text-[10px] uppercase ${h === 'Plazo' ? 'text-left' : 'text-right'}`}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-50">
+                        {dividendTable.map(r => (
+                          <tr key={r.years} className="hover:bg-purple-50/20">
+                            <td className="px-4 py-2.5 font-bold text-gray-800">{r.years} años</td>
+                            <td className="px-4 py-2.5 text-right font-mono">{formatUF(r.divUF)}</td>
+                            <td className="px-4 py-2.5 text-right font-mono">{r.divCLP ? formatCLP(r.divCLP) : '—'}</td>
+                            <td className="px-4 py-2.5 text-right font-mono text-green-700">{r.rentaMin ? formatCLP(r.rentaMin) : '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div className="px-4 py-2 bg-gray-50 border-t border-gray-100">
+                      <p className="text-[9px] text-gray-400 italic">
+                        Tasa {mortgageInputs.tasaAnual}% anual · Renta mín. = dividendo × 4{ufHoy ? ` · UF ${ufFecha}: ${formatCLP(ufHoy)}` : ''}
+                      </p>
                     </div>
                   </div>
                 )}
@@ -1894,6 +2094,11 @@ export const Quoter: React.FC<QuoterProps> = ({
           )}
 
           <div className="flex gap-3 justify-end print:hidden flex-wrap">
+            {toastMsg && (
+              <span className="px-4 py-3 text-green-700 bg-green-50 border border-green-200 font-bold flex items-center gap-2 text-sm rounded-xl">
+                {toastMsg}
+              </span>
+            )}
             <button onClick={handleDownloadPDF} disabled={hasPendingDiscount}
               className="px-6 py-3 bg-white border border-gray-200 text-gray-700 font-bold rounded-xl flex items-center gap-2 hover:bg-gray-50 transition-all shadow-sm disabled:opacity-50">
               <Download className="w-4 h-4" /> Descargar PDF
@@ -1905,190 +2110,224 @@ export const Quoter: React.FC<QuoterProps> = ({
             </button>
           </div>
 
-          {/* ── Vista previa del PDF — mismo layout que generatePDFBlob (CAMBIO 2+4) ── */}
+          {/* ── Vista previa — estructura SSilva ──────────────────────────────── */}
           <div className="bg-white rounded-xl border border-gray-200 max-w-4xl mx-auto shadow-2xl overflow-hidden quotation-document" style={{ fontFamily: 'Helvetica, Arial, sans-serif' }}>
 
-            {/* HEADER: Logo izquierda (fondo blanco) + Área azul sólida derecha */}
-            <div className="flex h-16 overflow-hidden">
-              {/* Área logo — fondo blanco, proporciones naturales */}
-              <div className="w-[120px] h-[60px] bg-white flex items-center justify-center p-2 overflow-hidden shrink-0 self-center ml-1">
-                <img
-                  src="/Danacorp.png"
-                  alt="Danacorp"
-                  className="max-w-full max-h-full object-contain"
-                  onError={e => {
-                    const img = e.target as HTMLImageElement;
-                    img.style.display = 'none';
-                    img.parentElement!.innerHTML = '<span class="font-black text-blue-600 text-sm">DANACORP</span>';
-                  }}
-                />
+            {/* HEADER: Logo blanco izquierda + azul derecha con COTIZACIÓN */}
+            <div className="flex overflow-hidden" style={{ height: '72px' }}>
+              <div className="w-[140px] h-full bg-white flex items-center justify-center px-2 py-1 overflow-hidden shrink-0">
+                <img src="/Danacorp.png" alt="Danacorp" className="max-w-full max-h-full object-contain"
+                  onError={e => { const img = e.target as HTMLImageElement; img.style.display='none'; img.parentElement!.innerHTML='<span class="font-black text-blue-600 text-sm">DANACORP</span>'; }} />
               </div>
-              {/* Área azul sólida derecha */}
-              <div className="flex-1 bg-blue-600 flex items-end justify-end pb-2 pr-3">
-                <span className="text-white text-[10px] font-black uppercase tracking-wider">
-                  COT. N° {quoteIdRef.current}
-                </span>
+              <div className="flex-1 bg-blue-600 flex flex-col items-end justify-center pr-4 gap-0.5">
+                <span className="text-white text-lg font-black tracking-wide">COTIZACIÓN</span>
+                <span className="text-white text-xs font-bold">N° {quoteIdRef.current}</span>
+                <span className="text-blue-200 text-[10px]">{new Date().toLocaleDateString('es-CL', { day:'numeric', month:'long', year:'numeric' })}</span>
               </div>
             </div>
 
-            <div className="p-6">
-              {/* Fila: datos cliente + proyecto + título */}
-              <div className="flex justify-between items-start mb-4 pb-3 border-b-2 border-blue-100">
-                <div>
-                  <h1 className="text-lg font-black text-blue-700 uppercase tracking-tight mb-2">Cotización Formal</h1>
-                  <div className="text-[10px] font-black text-gray-400 uppercase mb-1">Destinatario</div>
-                  <div className="font-bold text-gray-900 text-sm">{selectedClient.nombre}</div>
-                  <div className="text-gray-500 text-xs font-mono">RUT: {selectedClient.rut}</div>
-                  {selectedClient.email && <div className="text-gray-400 text-xs">{selectedClient.email}</div>}
-                </div>
-                <div className="text-right text-xs">
-                  <div className="font-bold text-gray-900 text-sm">{currentProject?.nombre}</div>
-                  <div className="text-blue-600 font-bold">Ejecutivo: {currentUser.name}</div>
-                  <div className="text-gray-400">{new Date().toLocaleDateString('es-CL')}</div>
-                  {ufHoy && <div className="text-gray-400">UF {ufFecha}: {formatCLP(ufHoy)}</div>}
+            <div className="p-6 space-y-4 text-xs">
+
+              {/* Señor(a) block */}
+              <div className="space-y-0.5 text-sm leading-snug">
+                <div>Señor(a)</div>
+                <div className="font-bold">{selectedClient.nombre}</div>
+                {selectedClient.rut && <div>Rut : {selectedClient.rut}</div>}
+                {selectedClient.telefono && <div>Telefono : {selectedClient.telefono}</div>}
+                {selectedClient.email && <div>Mail : {selectedClient.email}</div>}
+                <div>Presente</div>
+                <div className="pt-1" />
+                <div className="font-bold">Estimado(a) cliente:</div>
+                <div className="text-gray-600">
+                  De acuerdo a lo solicitado, nos es muy grato cotizar por los inmuebles que se indican,
+                  correspondientes al proyecto <strong>{currentProject?.nombre}</strong>
+                  {(projectConfig as typeof projectConfig & { direccionProyecto?: string }).direccionProyecto ? `, ubicado en ${(projectConfig as typeof projectConfig & { direccionProyecto?: string }).direccionProyecto}` : ''}
+                  {(projectConfig as typeof projectConfig & { comunaProyecto?: string }).comunaProyecto ? `, comuna de ${(projectConfig as typeof projectConfig & { comunaProyecto?: string }).comunaProyecto}` : ''}:
                 </div>
               </div>
 
-              {/* Sección INMUEBLES */}
-              <div className="mb-3">
-                <div className="bg-blue-50 border-l-4 border-blue-600 px-2 py-1 mb-1">
-                  <span className="text-[10px] font-black text-blue-700 uppercase tracking-widest">Inmuebles</span>
-                </div>
-                <table className="w-full text-xs border border-gray-200">
-                  <thead className="bg-blue-600 text-white">
-                    <tr>{['Tipo','Unidad','Sup. m²','Piso','Orientación'].map(h=>(
-                      <th key={h} className="px-2 py-1 text-left font-bold text-[10px]">{h}</th>
-                    ))}</tr>
-                  </thead>
-                  <tbody>
-                    {selectedUnits.map((u, i) => (
-                      <tr key={u.id} className={i%2===0?'bg-white':'bg-blue-50/20'}>
-                        <td className="px-2 py-1 border-t border-gray-100">{u.type}</td>
-                        <td className="px-2 py-1 border-t border-gray-100 font-bold">{u.numero}</td>
-                        <td className="px-2 py-1 border-t border-gray-100">{u.superficie || '—'}</td>
-                        <td className="px-2 py-1 border-t border-gray-100">{u.piso || '—'}</td>
-                        <td className="px-2 py-1 border-t border-gray-100">{u.orientacion || '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Sección PRECIOS */}
-              <div className="mb-3">
-                <div className="bg-blue-50 border-l-4 border-blue-600 px-2 py-1 mb-1">
-                  <span className="text-[10px] font-black text-blue-700 uppercase tracking-widest">Precios</span>
-                </div>
-                <table className="w-full text-xs border border-gray-200">
-                  <thead className="bg-blue-600 text-white">
-                    <tr>
-                      {['Unidad','P. Lista (UF)','Desc.','Total (UF)', ...(ufHoy?['Total ($)']:[])].map(h=>(
-                        <th key={h} className="px-2 py-1 text-right first:text-left font-bold text-[10px]">{h}</th>
-                      ))}
+              {/* SECCIÓN 1: INMUEBLES — estilo asiento SSilva */}
+              <div>
+                <p className="font-black text-gray-700 text-sm mb-2">1.&nbsp; INMUEBLES</p>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-gray-300">
+                      <th className="py-1 pr-2 text-left font-semibold text-gray-500">Tipo</th>
+                      <th className="py-1 pr-2 text-left font-semibold text-gray-500">Número</th>
+                      <th className="py-1 pr-2 text-left font-semibold text-gray-500">Ubicación</th>
+                      <th className="py-1 text-right font-semibold text-gray-500 whitespace-nowrap">Valor UF</th>
+                      {ufHoy && <th className="py-1 pl-3 text-right font-semibold text-gray-500 whitespace-nowrap">Valor $</th>}
+                      <th />
                     </tr>
                   </thead>
                   <tbody>
-                    {selectedUnits.map((u, i) => {
-                      const fp = unitFinalPrice(u, adjustDrafts);
-                      const dp = unitDiscountPct(u, adjustDrafts);
+                    {selectedUnits.map(u => {
+                      const calc = bonoPieBreakdown.perUnit.find(x => x.unit.id === u.id)?.calc;
+                      const precioMostrado = calc ? calc.precioInflado : unitFinalPrice(u, adjustDrafts);
+                      const dctoP = unitDiscountPct(u, adjustDrafts);
+                      const hasDcto = dctoP > 0.001 && adjustDrafts[u.id]?.applied;
+                      let tipoDesc = u.type;
+                      if (u.type === 'Departamento' && u.dormitorios && u.banos) tipoDesc = `Departamento (${u.dormitorios}D-${u.banos}B)`;
                       return (
-                        <tr key={u.id} className={i%2===0?'bg-white':'bg-blue-50/20'}>
-                          <td className="px-2 py-1 border-t border-gray-100 font-bold">{u.type} {u.numero}</td>
-                          <td className="px-2 py-1 border-t border-gray-100 text-right font-mono text-gray-500">{formatUF(u.precioLista)}</td>
-                          <td className="px-2 py-1 border-t border-gray-100 text-right">
-                            {dp > 0 && <span className="text-red-600 font-bold">-{dp.toFixed(1)}%</span>}
+                        <tr key={u.id} className="border-b border-gray-50">
+                          <td className="py-1.5 pr-2 text-gray-700">{tipoDesc}</td>
+                          <td className="py-1.5 pr-2 font-bold text-gray-800 whitespace-nowrap">N°{u.numero}</td>
+                          <td className="py-1.5 pr-2 text-gray-400">{u.piso ? `del Piso N° ${u.piso}` : ''}</td>
+                          <td className="py-1.5 text-right font-mono font-bold text-gray-800 whitespace-nowrap">{formatUF(precioMostrado)} UF</td>
+                          {ufHoy && <td className="py-1.5 pl-3 text-right font-mono text-gray-500 whitespace-nowrap">{formatCLP(precioMostrado * ufHoy)}</td>}
+                          <td className="py-1.5 pl-2 text-right whitespace-nowrap">
+                            {hasDcto && <span className="text-gray-400 italic text-[9px]">← -{dctoP.toFixed(0)}% dcto</span>}
                           </td>
-                          <td className="px-2 py-1 border-t border-gray-100 text-right font-bold text-gray-900">{formatUF(fp)}</td>
-                          {ufHoy && <td className="px-2 py-1 border-t border-gray-100 text-right font-mono text-gray-500">{formatCLP(fp * ufHoy)}</td>}
                         </tr>
                       );
                     })}
-                    <tr className="bg-blue-700 text-white font-black">
-                      <td className="px-2 py-1 uppercase text-[10px]">Total</td>
-                      <td className="px-2 py-1 text-right font-mono text-blue-200 text-[10px]">{formatUF(selectedUnits.reduce((s,u)=>s+u.precioLista,0))}</td>
+                    {/* Separador + resumen */}
+                    <tr className="border-t border-gray-300">
+                      <td colSpan={6} className="py-0.5" />
+                    </tr>
+                    {bonoPieBreakdown.conBono.length > 0 && (() => {
+                      const btL: string[] = [];
+                      if (bonoPieBreakdown.conBono.some(x => x.unit.type === 'Departamento')) btL.push('Depto.');
+                      if (bonoPieBreakdown.conBono.some(x => x.unit.type === 'Estacionamiento')) btL.push('Estac.');
+                      if (bonoPieBreakdown.conBono.some(x => x.unit.type === 'Bodega')) btL.push('Bodega');
+                      const label = btL.length === 1 ? `Bono Pie ${bonoPct}% en ${btL[0]}` :
+                        `Bono Pie ${bonoPct}% en ${btL.slice(0,-1).join(', ')} y ${btL[btL.length-1]}`;
+                      return (
+                        <>
+                          {/* PRECIO DE LISTA = suma de precios inflados */}
+                          <tr>
+                            <td colSpan={3} className="py-1 font-bold text-gray-700">PRECIO DE LISTA</td>
+                            <td className="py-1 text-right font-bold font-mono text-gray-800 whitespace-nowrap">{formatUF(totalPrecioVentaSSilva)} UF</td>
+                            {ufHoy && <td className="py-1 pl-3 text-right font-mono text-gray-500 whitespace-nowrap">{formatCLP(totalPrecioVentaSSilva * ufHoy)}</td>}
+                            <td />
+                          </tr>
+                          {/* Bono Pie = monto que se descuenta */}
+                          <tr>
+                            <td colSpan={3} className="py-1 text-gray-500 italic">{label}</td>
+                            <td className="py-1 text-right font-mono text-gray-500 whitespace-nowrap">{formatUF(bonoPieBreakdown.totalBonificacion)} UF</td>
+                            {ufHoy && <td className="py-1 pl-3 text-right font-mono text-gray-400 whitespace-nowrap">{formatCLP(bonoPieBreakdown.totalBonificacion * ufHoy)}</td>}
+                            <td />
+                          </tr>
+                          <tr className="border-t border-gray-300">
+                            <td colSpan={6} className="py-0.5" />
+                          </tr>
+                        </>
+                      );
+                    })()}
+                    {/* PRECIO DE VENTA = valor económico real */}
+                    <tr>
+                      <td colSpan={3} className="py-1.5 font-black text-blue-700">PRECIO DE VENTA</td>
+                      <td className="py-1.5 text-right font-black font-mono text-blue-700 whitespace-nowrap">{formatUF(totalFinal)} UF</td>
+                      {ufHoy && <td className="py-1.5 pl-3 text-right font-black font-mono text-blue-600 whitespace-nowrap">{formatCLP(totalFinal * ufHoy)}</td>}
                       <td />
-                      <td className="px-2 py-1 text-right">{formatUF(totalFinal)}</td>
-                      {ufHoy && <td className="px-2 py-1 text-right">{formatCLP(totalFinal * ufHoy)}</td>}
                     </tr>
                   </tbody>
                 </table>
               </div>
 
-              {/* Sección FORMA DE PAGO (solo si showMortgage) */}
-              {showMortgage && (
-                <div className="mb-3">
-                  <div className="bg-blue-50 border-l-4 border-blue-600 px-2 py-1 mb-1">
-                    <span className="text-[10px] font-black text-blue-700 uppercase tracking-widest">Forma de Pago</span>
-                  </div>
-                  <table className="w-full text-xs border border-gray-200">
-                    <thead className="bg-blue-600 text-white">
-                      <tr>{['Concepto','%','UF','$'].map(h=>(<th key={h} className="px-2 py-1 text-left font-bold text-[10px]">{h}</th>))}</tr>
-                    </thead>
-                    <tbody className="text-[10px]">
-                      {reservaCLP > 0 && (
-                        <tr><td className="px-2 py-1 border-t border-gray-100">Reserva</td><td/><td/><td className="px-2 py-1 font-bold border-t border-gray-100">{formatCLP(reservaCLP)}</td></tr>
-                      )}
-                      {bonoPieBreakdown.conBono.length > 0 && bonoPieBreakdown.sinBono.length > 0 ? (<>
-                        <tr className="bg-blue-50"><td colSpan={4} className="px-2 py-0.5 font-black text-blue-700">Con bono pie ({bonoPct}%)</td></tr>
-                        <tr><td className="px-2 py-1 pl-4 border-t border-gray-100">Valor Total</td><td className="px-2 py-1 border-t border-gray-100">{bonoPct}%</td><td className="px-2 py-1 font-mono border-t border-gray-100">{formatUF(bonoPieBreakdown.conBono.reduce((s,x)=>s+x.calc.precioInflado,0))}</td><td/></tr>
-                        <tr><td className="px-2 py-1 pl-4 border-t border-gray-100">Bonificación Bono Pie</td><td/><td className="px-2 py-1 font-mono text-green-700 border-t border-gray-100">- {formatUF(bonoPieBreakdown.conBono.reduce((s,x)=>s+x.calc.bonificacion,0))}</td><td/></tr>
-                        <tr className="font-bold"><td className="px-2 py-1 pl-4 border-t border-gray-100">Monto a Pagar</td><td/><td className="px-2 py-1 font-mono border-t border-gray-100">{formatUF(bonoPieBreakdown.conBono.reduce((s,x)=>s+x.calc.montoAPagar,0))}</td><td/></tr>
-                        <tr className="text-blue-700 font-bold"><td className="px-2 py-1 pl-4 border-t border-gray-100">Crédito Hipotecario</td><td className="px-2 py-1 border-t border-gray-100">{finPct}%</td><td className="px-2 py-1 font-mono border-t border-gray-100">{formatUF(bonoPieBreakdown.conBono.reduce((s,x)=>s+x.calc.porFinanciar,0))}</td><td/></tr>
-                        <tr className="bg-gray-50"><td colSpan={4} className="px-2 py-0.5 font-black text-gray-600">Sin bono pie</td></tr>
-                        <tr className="font-bold"><td className="px-2 py-1 pl-4 border-t border-gray-100">Monto a Pagar</td><td className="px-2 py-1 border-t border-gray-100">{piePct}%</td><td className="px-2 py-1 font-mono border-t border-gray-100">{formatUF(bonoPieBreakdown.sinBono.reduce((s,x)=>s+x.calc.montoAPagar,0))}</td><td/></tr>
-                        <tr className="text-blue-700 font-bold"><td className="px-2 py-1 pl-4 border-t border-gray-100">Crédito Hipotecario</td><td className="px-2 py-1 border-t border-gray-100">{finPct}%</td><td className="px-2 py-1 font-mono border-t border-gray-100">{formatUF(bonoPieBreakdown.sinBono.reduce((s,x)=>s+x.calc.porFinanciar,0))}</td><td/></tr>
-                      </>) : includeBonoPie ? (<>
-                        <tr><td className="px-2 py-1 border-t border-gray-100">Valor Total</td><td className="px-2 py-1 border-t border-gray-100">{bonoPct}%</td><td className="px-2 py-1 font-mono border-t border-gray-100">{formatUF(bonoPieBreakdown.totalPrecioInflado)}</td><td className="px-2 py-1 font-mono border-t border-gray-100">{ufHoy?formatCLP(bonoPieBreakdown.totalPrecioInflado*ufHoy):'—'}</td></tr>
-                        <tr><td className="px-2 py-1 border-t border-gray-100">Bonificación Bono Pie</td><td/><td className="px-2 py-1 font-mono text-green-700 border-t border-gray-100">- {formatUF(bonoPieBreakdown.totalBonificacion)}</td><td/></tr>
-                        <tr className="font-bold"><td className="px-2 py-1 border-t border-gray-100">Monto a Pagar</td><td/><td className="px-2 py-1 font-mono border-t border-gray-100">{formatUF(bonoPieBreakdown.totalMontoAPagar)}</td><td className="px-2 py-1 font-mono border-t border-gray-100">{ufHoy?formatCLP(bonoPieBreakdown.totalMontoAPagar*ufHoy):'—'}</td></tr>
-                        <tr className="font-black text-blue-700"><td className="px-2 py-1 border-t border-gray-100">Crédito Hipotecario</td><td className="px-2 py-1 border-t border-gray-100">{finPct}%</td><td className="px-2 py-1 font-mono border-t border-gray-100">{formatUF(bonoPieBreakdown.totalPorFinanciar)}</td><td className="px-2 py-1 font-mono border-t border-gray-100">{ufHoy?formatCLP(bonoPieBreakdown.totalPorFinanciar*ufHoy):'—'}</td></tr>
-                      </>) : (<>
-                        <tr className="font-bold"><td className="px-2 py-1 border-t border-gray-100">Monto a Pagar (pie {piePct}%)</td><td/><td className="px-2 py-1 font-mono border-t border-gray-100">{formatUF(bonoPieBreakdown.totalMontoAPagar)}</td><td className="px-2 py-1 font-mono border-t border-gray-100">{ufHoy?formatCLP(bonoPieBreakdown.totalMontoAPagar*ufHoy):'—'}</td></tr>
-                        <tr className="font-black text-blue-700"><td className="px-2 py-1 border-t border-gray-100">Crédito Hipotecario</td><td className="px-2 py-1 border-t border-gray-100">{finPct}%</td><td className="px-2 py-1 font-mono border-t border-gray-100">{formatUF(bonoPieBreakdown.totalPorFinanciar)}</td><td className="px-2 py-1 font-mono border-t border-gray-100">{ufHoy?formatCLP(bonoPieBreakdown.totalPorFinanciar*ufHoy):'—'}</td></tr>
-                      </>)}
-                      <tr className="bg-blue-600 text-white font-black">
-                        <td className="px-2 py-1 text-[10px]" colSpan={2}>Plan: {nCuotas} cuotas de {formatUF(montoPorCuota)} UF</td>
-                        <td className="px-2 py-1 font-mono">{formatUF(montoPorCuota)}</td>
-                        <td className="px-2 py-1 font-mono">{ufHoy?formatCLP(montoPorCuota*ufHoy):'—'}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  {includeBonoPie && bonoPieBreakdown.conBono.length > 0 && (
-                    <p className="text-[9px] text-amber-700 mt-1">
-                      Bono pie: {bonoPieBreakdown.conBono.map(x=>`${x.unit.type} ${x.unit.numero}`).join(', ')}
-                    </p>
-                  )}
-
-                  {/* Dividendo */}
-                  <div className="bg-blue-50 border-l-4 border-blue-600 px-2 py-1 mt-2 mb-1">
-                    <span className="text-[10px] font-black text-blue-700 uppercase tracking-widest">Dividendo Referencial</span>
-                  </div>
-                  <table className="w-full text-xs border border-gray-200">
-                    <thead className="bg-blue-600 text-white">
-                      <tr>{['Plazo','UF/mes','$/mes','Renta Mín.'].map(h=>(<th key={h} className="px-2 py-1 text-right first:text-left font-bold text-[10px]">{h}</th>))}</tr>
-                    </thead>
-                    <tbody>
-                      {dividendTable.map((r,i) => (
-                        <tr key={r.years} className={i%2===0?'bg-white':'bg-blue-50/20'}>
-                          <td className="px-2 py-1 border-t border-gray-100 font-bold">{r.years} años</td>
-                          <td className="px-2 py-1 border-t border-gray-100 text-right font-mono">{formatUF(r.divUF)}</td>
-                          <td className="px-2 py-1 border-t border-gray-100 text-right font-mono">{r.divCLP?formatCLP(r.divCLP):'—'}</td>
-                          <td className="px-2 py-1 border-t border-gray-100 text-right font-mono text-green-700">{r.rentaMin?formatCLP(r.rentaMin):'—'}</td>
+              {/* SECCIÓN 2+3: Forma de pago + Dividendo — estilo asiento */}
+              {(includePaymentPlan || includeMortgageSimulation) && (
+                <>
+                  {includePaymentPlan && <div>
+                    <p className="font-black text-gray-700 text-sm mb-2">2.&nbsp; FORMA DE PAGO</p>
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-gray-300">
+                          <th className="py-1 pr-2 text-left font-semibold text-gray-500">Concepto</th>
+                          <th className="py-1 pr-2 text-right font-semibold text-gray-500">%</th>
+                          <th className="py-1 pr-2 text-left font-semibold text-gray-500">Detalle</th>
+                          <th className="py-1 text-right font-semibold text-gray-500 whitespace-nowrap">Valor UF</th>
+                          {ufHoy && <th className="py-1 pl-3 text-right font-semibold text-gray-500 whitespace-nowrap">Valor $</th>}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  <p className="text-[9px] text-gray-400 italic mt-1">
-                    Tasa {mortgageInputs.tasaAnual}% anual · Base {formatUF(bonoPieBreakdown.totalPorFinanciar)} UF · No constituye oferta crediticia
-                  </p>
-                </div>
+                      </thead>
+                      <tbody>
+                        {[
+                          { label: 'A la firma de Promesa', pct: promesaPct, detail: '', uf: promesaUF, isBold: false },
+                          { label: `En ${nCuotasNew} cuota(s)`, pct: cuotasPct, detail: `Cuota(s) de UF ${formatUF(cuotaIndividualUF)} c/u.`, uf: cuotasUF, isBold: false },
+                          { label: 'A la firma de Escritura', pct: escrituraPct, detail: '', uf: escrituraUF, isBold: false },
+                          { label: 'Crédito Inst. Financiera', pct: creditoPct, detail: '(*)', uf: creditoUF, isBold: true },
+                        ].map(r => (
+                          <tr key={r.label} className="border-b border-gray-50">
+                            <td className={`py-1.5 pr-2 ${r.isBold ? 'font-bold text-blue-700' : 'text-gray-700'}`}>{r.label}</td>
+                            <td className={`py-1.5 pr-2 font-mono whitespace-nowrap ${r.isBold ? 'font-bold text-blue-700' : 'text-gray-500'}`}>{r.pct.toFixed(2)}%</td>
+                            <td className="py-1.5 pr-2 text-gray-400 italic">{r.detail}</td>
+                            <td className={`py-1.5 text-right font-mono whitespace-nowrap ${r.isBold ? 'font-bold text-blue-700' : 'font-bold text-gray-800'}`}>{formatUF(r.uf)} UF</td>
+                            {ufHoy && <td className={`py-1.5 pl-3 text-right font-mono whitespace-nowrap ${r.isBold ? 'text-blue-500' : 'text-gray-500'}`}>{formatCLP(r.uf * ufHoy)}{r.isBold?' (*)':''}</td>}
+                          </tr>
+                        ))}
+                        <tr className="border-t border-gray-300">
+                          <td colSpan={ufHoy ? 6 : 5} className="py-0.5" />
+                        </tr>
+                        <tr>
+                          <td className="py-1.5 font-black text-gray-800"></td>
+                          <td className="py-1.5 font-black font-mono text-gray-800">100,00%</td>
+                          <td />
+                          <td className="py-1.5 text-right font-black font-mono text-gray-900 whitespace-nowrap">{formatUF(precioVentaFinal)} UF</td>
+                          {ufHoy && <td className="py-1.5 pl-3 text-right font-black font-mono text-gray-700 whitespace-nowrap">{formatCLP(precioVentaFinal * ufHoy)}</td>}
+                        </tr>
+                      </tbody>
+                    </table>
+                    <p className="text-[9px] text-gray-400 italic mt-1">
+                      (*) El (la) cotizante declara conocer cuáles son los requerimientos exigidos para optar a un crédito o mutuo hipotecario y que las instituciones financieras los cursan con la tasa vigente a la fecha en que se formalice la compraventa.
+                    </p>
+                  </div>}
+
+                  {/* SECCIÓN 4: Dividendo */}
+                  {includeMortgageSimulation && <div>
+                    <p className="font-black text-gray-700 text-sm mb-1">
+                      {includePaymentPlan ? '3.' : '2.'}&nbsp; DIVIDENDO APROXIMADO REFERENCIAL
+                    </p>
+                    <p className="text-[10px] text-gray-500 mb-2">Calculado a la tasa referencial de este día, sin considerar seguros: {mortgageInputs.tasaAnual.toFixed(2)}%.</p>
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-gray-300">
+                          {['Plazo Crédito','Dividendo UF','Dividendo $','Renta mínima aprox. $'].map(h=>(
+                            <th key={h} className="py-1 text-right first:text-left font-black text-[10px] text-gray-600 uppercase tracking-wide">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dividendTable.map(r=>(
+                          <tr key={r.years} className="border-b border-gray-50">
+                            <td className="py-1.5 font-bold text-gray-700">{r.years} años</td>
+                            <td className="py-1.5 text-right font-mono text-gray-800">{formatUF(r.divUF)} UF</td>
+                            <td className="py-1.5 text-right font-mono text-gray-600">{r.divCLP?formatCLP(r.divCLP):'—'}</td>
+                            <td className="py-1.5 text-right font-mono text-green-700">{r.rentaMin?formatCLP(r.rentaMin):'—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>}
+                </>
               )}
 
-              {/* Footer del documento */}
-              <div className="border-t border-blue-200 pt-2 mt-2 flex justify-between items-center text-[9px] text-gray-400">
-                <span>Generado por DanaWorks</span>
-                <span>• Cotización válida 7 días •</span>
-                <span>Ejecutivo: {currentUser.name}</span>
+              {/* BLOQUE: MONTO DE LA RESERVA + Notas Aclaratorias */}
+              <div className="mt-6 border-t border-gray-100 pt-4">
+                <p className="font-black text-gray-700 text-sm mb-2">4.&nbsp; MONTO DE LA RESERVA</p>
+                <div className="space-y-1 text-[10px] text-gray-700 leading-tight">
+                  <p>.- Al concretar la decisión de compra, el cotizante deberá entregar $ {(reservaCLP || 300000).toLocaleString('es-CL')} que se imputarán íntegramente al pago de parte de los gastos operacionales que se generen por la compraventa. En caso que no firmara la respectiva promesa de compraventa, teniendo la pre aprobación o aprobación de un crédito, este monto se imputará por completo al pago de una multa penal compensatoria a favor de {projectConfig.nombreInmobiliaria || 'la Inmobiliaria'}.</p>
+                  <p>.- La Inmobiliaria se reserva el derecho de gestionar el crédito hipotecario con las instituciones financieras que considere pertinentes. Para el efecto, el cliente deberá hacer entrega de todos los antecedentes que se soliciten.</p>
+                  <p>.- El Número de cuotas para el pie en construcción es válido mientras la primera cuota cae en este mes.</p>
+                  <p>.- Quedamos atentos a cualquier requerimiento adicional y dispuesto a aclararle cualquier duda. Nuestro objetivo es atenderlo con esmero y entregarle la información que usted requiere para que su decisión de compra y en definitiva su compra, se haga realidad. Agradecidos por su visita y confiados en poder atenderlo con el profesionalismo que su decisión de compra merece, le saludamos atentamente.</p>
+                </div>
+                <h4 className="font-bold text-gray-800 text-xs mt-3 mb-1">Notas Aclaratorias:</h4>
+                <div className="space-y-0.5 text-[9px] text-gray-700 leading-tight">
+                  <p>- Los montos en pesos corresponden al valor de la UF. a esta fecha, por lo cual se citan sólo como referencia.</p>
+                  {ufHoy && <p className="ml-2">Valor de la UF al {ufFecha} es de ${ufHoy.toLocaleString('es-CL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.</p>}
+                  <p>- Cotización válida por {effectiveDiscountConfig.vigenciaCotizacionDias} días, según disponibilidad de los inmuebles.</p>
+                  <p>- El valor indicado en pesos es sólo referencial y meramente demostrativo. Para efectos de cada pago se deberá considerar el valor equivalente en pesos al día de pago efectivo según la Unidad de Fomento correspondiente.</p>
+                </div>
+              </div>
+
+              {/* Footer firma */}
+              <div className="border-t-2 border-blue-200 pt-3 flex justify-between items-end text-[10px]">
+                <div>
+                  <div className="w-28 border-b border-gray-400 mb-1" />
+                  <div className="font-bold text-gray-800">{currentUser.name}</div>
+                  <div className="text-gray-500">{currentUser.company || currentProject?.nombre}</div>
+                  {currentUser.email && <div className="text-gray-400">{currentUser.email}</div>}
+                </div>
+                <div className="text-gray-400">Generado por DanaWorks</div>
               </div>
             </div>
           </div>

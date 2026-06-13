@@ -167,6 +167,13 @@ export interface RealEstateUnit {
   planPagos: PaymentItem[];
   observaciones: string;
   documents?: ClientDocument[];
+
+  // Descuento directo desde UnitDetail
+  descuentoPct?: number;
+  descuentoPendiente?: boolean;
+  descuentoSolicitudId?: string;
+
+  aplicaBonoPie?: boolean;
 }
 
 export interface DiscountConfig {
@@ -180,6 +187,13 @@ export interface ProjectConfig {
   projectId: string;
   bonoPiePct: number;
   discountConfig: DiscountConfig;
+  // Configuración del proyecto para PDF
+  reservaCLP?: number;
+  direccionProyecto?: string;
+  comunaProyecto?: string;
+  ciudadProyecto?: string;
+  nombreInmobiliaria?: string;
+  cantidadCuotasPie?: number;
 }
 
 export interface DiscountRequestRecord {

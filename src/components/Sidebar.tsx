@@ -1,10 +1,10 @@
 import React from 'react';
-import { Users, Settings, Building, Tag, ChevronDown, PlusCircle, PieChart, ClipboardList, Shield, Bell, Calculator, Download, LogOut, CheckSquare } from 'lucide-react';
+import { Users, Settings, Building, Tag, ChevronDown, PlusCircle, PieChart, ClipboardList, Shield, Bell, Calculator, Download, LogOut, CheckSquare, TrendingUp } from 'lucide-react';
 import { Project, User } from '../types';
 
 interface SidebarProps {
   currentView: string;
-  onChangeView: (view: 'clients' | 'inventory' | 'prices' | 'create_project' | 'summary' | 'settings' | 'audit' | 'profile_admin' | 'quoter' | 'notifications' | 'downloads' | 'approvals') => void;
+  onChangeView: (view: 'clients' | 'inventory' | 'prices' | 'create_project' | 'summary' | 'settings' | 'audit' | 'profile_admin' | 'quoter' | 'notifications' | 'downloads' | 'approvals' | 'performance') => void;
   projects: Project[];
   currentProjectId: string | null;
   onSelectProject: (id: string) => void;
@@ -44,7 +44,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   return (
     <div className="w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 h-screen hidden md:flex flex-col fixed left-0 top-0 z-20">
       <div className="px-3 py-2 h-16 flex items-center">
-        <div className="flex items-center justify-center p-2 bg-white rounded-lg h-14 overflow-hidden w-full">
+        <div className="flex items-center justify-center px-2 py-1 bg-white rounded-lg h-14 overflow-hidden w-full">
           <img
             src="/Danacorp.png"
             alt="Danacorp"
@@ -118,6 +118,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     {pendingApprovalsCount}
                   </span>
                 )}
+              </button>
+            )}
+            {/* Performance: visible para todos excepto Lectura */}
+            {currentUser.role !== 'Lectura' && (
+              <button
+                onClick={() => onChangeView('performance')}
+                className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-all ${currentView === 'performance' ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-gray-600 hover:bg-gray-50'}`}
+              >
+                <TrendingUp className={`w-5 h-5 ${currentView === 'performance' ? 'text-blue-600' : 'text-gray-400'}`} />
+                Performance
               </button>
             )}
         </div>

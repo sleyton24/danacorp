@@ -14,6 +14,7 @@ import { ProfileAdministration } from './components/ProfileAdministration';
 import { NotificationsView } from './components/NotificationsView';
 import { DownloadsView } from './components/DownloadsView';
 import { ApprovalsView } from './components/ApprovalsView';
+import { SalesPerformanceView } from './components/SalesPerformanceView';
 import { Shield, User as UserIcon, ChevronUp, ChevronDown, RefreshCw } from 'lucide-react';
 
 // Lazy-loaded heavy module — jsPDF only downloads when user opens the Quoter
@@ -120,7 +121,7 @@ const App: React.FC = () => {
   const tokenRef = useRef<string>('');
 
   // ── App State ─────────────────────────────────────────────────────────────
-  const [currentView, setCurrentView] = useState<'clients' | 'inventory' | 'prices' | 'create_project' | 'summary' | 'settings' | 'audit' | 'profile_admin' | 'quoter' | 'notifications' | 'downloads' | 'approvals'>('summary');
+  const [currentView, setCurrentView] = useState<'clients' | 'inventory' | 'prices' | 'create_project' | 'summary' | 'settings' | 'audit' | 'profile_admin' | 'quoter' | 'notifications' | 'downloads' | 'approvals' | 'performance'>('summary');
   const [clients, setClients] = useState<Client[]>(initialClients);
   const [units, setUnits] = useState<RealEstateUnit[]>(initialUnits);
   const [projects, setProjects] = useState<Project[]>(defaultProjects);
@@ -583,6 +584,16 @@ const App: React.FC = () => {
             )}
             {currentView === 'approvals' && (
               <ApprovalsView currentUser={currentUser} />
+            )}
+            {currentView === 'performance' && (
+              <SalesPerformanceView
+                currentUser={currentUser}
+                units={units}
+                clients={clients}
+                users={users}
+                projects={projects}
+                currentProjectId={currentProjectId}
+              />
             )}
           </>
         )}

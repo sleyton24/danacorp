@@ -12,8 +12,24 @@ interface ProfileAdministrationProps {
 }
 
 // ── P4: Project Configuration Section (full spec) ─────────────────────────
-type ProjectCfg = { jefeMaxPct: number; supervisorMaxPct: number; bonoPiePct: number; vigenciaCotizacionDias: number };
-const DEFAULT_CFG: ProjectCfg = { jefeMaxPct: 3, supervisorMaxPct: 8, bonoPiePct: 10, vigenciaCotizacionDias: 7 };
+type ProjectCfg = {
+  jefeMaxPct: number;
+  supervisorMaxPct: number;
+  bonoPiePct: number;
+  vigenciaCotizacionDias: number;
+  // SSilva PDF fields
+  reservaCLP: number;
+  direccionProyecto: string;
+  comunaProyecto: string;
+  ciudadProyecto: string;
+  nombreInmobiliaria: string;
+  cantidadCuotasPie: number;
+};
+const DEFAULT_CFG: ProjectCfg = {
+  jefeMaxPct: 3, supervisorMaxPct: 8, bonoPiePct: 10, vigenciaCotizacionDias: 7,
+  reservaCLP: 0, direccionProyecto: '', comunaProyecto: '', ciudadProyecto: '',
+  nombreInmobiliaria: '', cantidadCuotasPie: 36,
+};
 
 const ProjectConfigSection: React.FC<{ projects: Project[]; currentUser: User }> = ({ projects, currentUser }) => {
   const [configs, setConfigs] = useState<Record<string, ProjectCfg>>({});
@@ -28,13 +44,20 @@ const ProjectConfigSection: React.FC<{ projects: Project[]; currentUser: User }>
       fetch(`/api/sync/project_config_${p.id}`, { headers: { Authorization: `Bearer ${token}` } })
         .then(r => r.ok ? r.json() : null)
         .then((d: { value: ProjectConfig } | null) => {
+          const extVal = d?.value as (typeof d.value & { reservaCLP?: number; direccionProyecto?: string; comunaProyecto?: string; ciudadProyecto?: string; nombreInmobiliaria?: string }) | null;
           setConfigs(prev => ({
             ...prev,
-            [p.id]: d?.value ? {
-              jefeMaxPct:          d.value.discountConfig?.jefeMaxPct ?? DEFAULT_CFG.jefeMaxPct,
-              supervisorMaxPct:    d.value.discountConfig?.supervisorMaxPct ?? DEFAULT_CFG.supervisorMaxPct,
-              bonoPiePct:          d.value.bonoPiePct ?? DEFAULT_CFG.bonoPiePct,
-              vigenciaCotizacionDias: (d.value.discountConfig as DiscountConfig & { vigenciaCotizacionDias?: number })?.vigenciaCotizacionDias ?? DEFAULT_CFG.vigenciaCotizacionDias,
+            [p.id]: extVal ? {
+              jefeMaxPct:          extVal.discountConfig?.jefeMaxPct ?? DEFAULT_CFG.jefeMaxPct,
+              supervisorMaxPct:    extVal.discountConfig?.supervisorMaxPct ?? DEFAULT_CFG.supervisorMaxPct,
+              bonoPiePct:          extVal.bonoPiePct ?? DEFAULT_CFG.bonoPiePct,
+              vigenciaCotizacionDias: (extVal.discountConfig as DiscountConfig & { vigenciaCotizacionDias?: number })?.vigenciaCotizacionDias ?? DEFAULT_CFG.vigenciaCotizacionDias,
+              reservaCLP:          extVal.reservaCLP ?? DEFAULT_CFG.reservaCLP,
+              direccionProyecto:   extVal.direccionProyecto ?? DEFAULT_CFG.direccionProyecto,
+              comunaProyecto:      extVal.comunaProyecto ?? DEFAULT_CFG.comunaProyecto,
+              ciudadProyecto:      extVal.ciudadProyecto ?? DEFAULT_CFG.ciudadProyecto,
+              nombreInmobiliaria:  extVal.nombreInmobiliaria ?? DEFAULT_CFG.nombreInmobiliaria,
+              cantidadCuotasPie:   (extVal as unknown as { cantidadCuotasPie?: number }).cantidadCuotasPie ?? DEFAULT_CFG.cantidadCuotasPie,
             } : (prev[p.id] || DEFAULT_CFG),
           }));
         })
@@ -70,6 +93,12 @@ const ProjectConfigSection: React.FC<{ projects: Project[]; currentUser: User }>
         bonoPiePct: cfg.bonoPiePct,
         vigenciaCotizacionDias: cfg.vigenciaCotizacionDias,
       },
+      reservaCLP: cfg.reservaCLP,
+      direccionProyecto: cfg.direccionProyecto,
+      comunaProyecto: cfg.comunaProyecto,
+      ciudadProyecto: cfg.ciudadProyecto,
+      nombreInmobiliaria: cfg.nombreInmobiliaria,
+      cantidadCuotasPie: cfg.cantidadCuotasPie,
     };
     await fetch('/api/sync', {
       method: 'POST',
@@ -164,6 +193,63 @@ const ProjectConfigSection: React.FC<{ projects: Project[]; currentUser: User }>
                         className="w-24 px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono text-center outline-none focus:ring-2 focus:ring-blue-100" />
                       <span className="text-sm text-gray-500">días</span>
                     </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Cuotas del pie <span className="text-gray-400 text-xs">(cantidad fija)</span></label>
+                    <div className="flex items-center gap-2">
+                      <input type="number" step="1" min="1" max="120"
+                        value={cfg.cantidadCuotasPie}
+                        onChange={e => upd(p.id, 'cantidadCuotasPie', Number(e.target.value))}
+                        className="w-24 px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono text-center outline-none focus:ring-2 focus:ring-blue-100" />
+                      <span className="text-sm text-gray-500">cuotas</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Datos del proyecto para PDF */}
+              <div>
+                <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4">Datos del Proyecto (PDF Cotización)</div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="md:col-span-2">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Nombre Inmobiliaria</label>
+                    <input type="text"
+                      value={cfg.nombreInmobiliaria}
+                      onChange={e => setConfigs(prev => ({ ...prev, [p.id]: { ...(prev[p.id] || DEFAULT_CFG), nombreInmobiliaria: e.target.value } }))}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-100"
+                      placeholder="Ej: Inmobiliaria Calle del Peumo" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Reserva CLP <span className="text-gray-400 text-xs">($ pesos)</span></label>
+                    <input type="number" step="10000" min="0"
+                      value={cfg.reservaCLP}
+                      onChange={e => upd(p.id, 'reservaCLP' as keyof ProjectCfg, Number(e.target.value))}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono text-right outline-none focus:ring-2 focus:ring-blue-100"
+                      placeholder="300000" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Dirección</label>
+                    <input type="text"
+                      value={cfg.direccionProyecto}
+                      onChange={e => setConfigs(prev => ({ ...prev, [p.id]: { ...(prev[p.id] || DEFAULT_CFG), direccionProyecto: e.target.value } }))}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-100"
+                      placeholder="Av. Ejemplo 1234" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Comuna</label>
+                    <input type="text"
+                      value={cfg.comunaProyecto}
+                      onChange={e => setConfigs(prev => ({ ...prev, [p.id]: { ...(prev[p.id] || DEFAULT_CFG), comunaProyecto: e.target.value } }))}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-100"
+                      placeholder="Las Condes" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Ciudad</label>
+                    <input type="text"
+                      value={cfg.ciudadProyecto}
+                      onChange={e => setConfigs(prev => ({ ...prev, [p.id]: { ...(prev[p.id] || DEFAULT_CFG), ciudadProyecto: e.target.value } }))}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-100"
+                      placeholder="Santiago" />
                   </div>
                 </div>
               </div>

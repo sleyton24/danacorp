@@ -41,7 +41,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-xl border border-gray-100 p-10 w-full max-w-md">
 
-        <div className="flex items-center justify-center mb-6 h-24 overflow-hidden">
+        <div className="flex items-center justify-center bg-white rounded-lg w-full h-24 px-3 py-2 overflow-hidden mb-6">
           <img
             src="/Danacorp.png"
             alt="Danacorp"
