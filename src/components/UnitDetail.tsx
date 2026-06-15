@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { RealEstateUnit, Client, PaymentItem, User } from '../types';
+import { RealEstateUnit, Client, PaymentItem, User, PaymentPlan } from '../types';
 import {
   ArrowLeft, Save, Trash2, Building2,
   AlertTriangle, CreditCard, RefreshCw,
@@ -12,6 +12,7 @@ import {
   Search, X, UserPlus, MoreVertical
 } from 'lucide-react';
 import { AssetTagInput } from './AssetTagInput';
+import { calcBonoPie } from '../utils/bonoPieCalc';
 
 interface UnitDetailProps {
   unit: RealEstateUnit;
@@ -25,6 +26,7 @@ interface UnitDetailProps {
   clients?: Client[];
   onAssignClient?: (clientId: string, unitId: string) => void;
   onUnassignClient?: (unitId: string) => void;
+  showToast?: (message: string, type?: 'success' | 'error' | 'warning') => void;
 }
 
 // Formateador estricto: Miles con punto, 1 decimal con coma (Ej: 4.565,0)
@@ -91,7 +93,7 @@ interface UnitDraft {
 
 export const UnitDetail: React.FC<UnitDetailProps> = ({
   unit, client, onBack, onUpdate, allUnits = [], currentUser, onSelectClient,
-  clients = [], onAssignClient, onUnassignClient,
+  clients = [], onAssignClient, onUnassignClient, showToast,
 }) => {
   const [formData, setFormData] = useState<RealEstateUnit>(unit);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
@@ -99,9 +101,11 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   const [clientMenuOpen, setClientMenuOpen] = useState(false);
   const clientMenuRef = useRef<HTMLDivElement>(null);
 
-  // ── Forma de Pago (PUNTO 3) ────────────────────────────────────────────────
+  // ── Forma de Pago ──────────────────────────────────────────────────────────
   const [unitDrafts, setUnitDrafts] = useState<UnitDraft[]>([]);
   const [selectedDraftId, setSelectedDraftId] = useState<string>('');
+  const [paymentPlans, setPaymentPlans] = useState<PaymentPlan[]>([]);
+  const [selectedPlanId, setSelectedPlanId] = useState<string>('');
   const [cantidadCuotasPie, setCantidadCuotasPie] = useState(36);
   const [fpPromesaPct, setFpPromesaPct] = useState(10);
   const [fpCuotasPct, setFpCuotasPct] = useState(20);
@@ -142,33 +146,34 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
       .catch(() => {});
   }, [unit.projectId]);
 
-  // Fetch drafts for this unit (PUNTO 3)
-  useEffect(() => {
-    if (!unit.clienteId) return;
+  const loadPaymentPlans = (rutFilter?: string) => {
     const token = localStorage.getItem('dw_token');
     if (!token) return;
-    fetch('/api/quotation-drafts', { headers: { Authorization: `Bearer ${token}` } })
+    const params = new URLSearchParams({ unitNumero: unit.numero, projectId: unit.projectId });
+    if (rutFilter) params.set('clienteRut', rutFilter);
+    fetch(`/api/payment-plans?${params}`, { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.ok ? r.json() : [])
-      .then((draftsData: UnitDraft[]) => {
-        const forUnit = draftsData.filter(d => {
-          const units = (d.data?.selectedUnits ?? []) as { id?: string }[];
-          return units.some(u => u.id === unit.id) && d.estado === 'generada';
-        });
-        setUnitDrafts(forUnit);
-        if (forUnit.length > 0) {
-          const first = forUnit[0];
-          setSelectedDraftId(first.id);
-          const pc = (first.data?.adjustments ?? []) as { key: string; value: unknown }[];
-          const paymentConfig = pc.find(a => a.key === 'paymentConfig')?.value as Record<string, number> | undefined;
-          if (paymentConfig) {
-            setFpPromesaPct(paymentConfig.promesaPct ?? 10);
-            setFpCuotasPct(paymentConfig.cuotasPct ?? 20);
-            setFpEscrituraPct(paymentConfig.escrituraPct ?? 10);
-          }
+      .then((plans: PaymentPlan[]) => {
+        setPaymentPlans(plans);
+        if (plans.length > 0) {
+          const first = plans[0];
+          setSelectedPlanId(first.id);
+          setFpPromesaPct(first.promesaPct);
+          setFpCuotasPct(first.cuotasPct);
+          setFpEscrituraPct(first.escrituraPct);
+          if (first.cuotasN > 0) setCantidadCuotasPie(first.cuotasN);
         }
       })
       .catch(() => {});
-  }, [unit.id, unit.clienteId]);
+  };
+
+  // Load payment plans when unit has a client
+  useEffect(() => {
+    if (!unit.clienteId) return;
+    const rut = client?.rut;
+    loadPaymentPlans(rut);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unit.numero, unit.projectId, unit.clienteId]);
 
   useEffect(() => {
     setDiscountInput(formData.descuentoPct?.toString() || '');
@@ -241,13 +246,24 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     setSelectedDraftId(draftId);
     const d = unitDrafts.find(x => x.id === draftId);
     if (!d) return;
-    const adj = (d.data?.adjustments ?? []) as { key: string; value: unknown }[];
-    const pc = adj.find(a => a.key === 'paymentConfig')?.value as Record<string, number> | undefined;
+    const data = typeof d.data === 'string' ? JSON.parse(d.data) : d.data;
+    const adj = (data?.adjustments ?? []) as { key: string; value: unknown }[];
+    const pc = adj.find(a => a.key === 'paymentConfig')?.value as Record<string, unknown> | undefined;
     if (pc) {
-      setFpPromesaPct(pc.promesaPct ?? 10);
-      setFpCuotasPct(pc.cuotasPct ?? 20);
-      setFpEscrituraPct(pc.escrituraPct ?? 10);
+      setFpPromesaPct(parseFloat(String(pc.promesaPct ?? 10)));
+      setFpCuotasPct(parseFloat(String(pc.cuotasPct ?? 20)));
+      setFpEscrituraPct(parseFloat(String(pc.escrituraPct ?? 10)));
     }
+  };
+
+  const handleSelectPlan = (planId: string) => {
+    setSelectedPlanId(planId);
+    const plan = paymentPlans.find(p => p.id === planId);
+    if (!plan) return;
+    setFpPromesaPct(plan.promesaPct);
+    setFpCuotasPct(plan.cuotasPct);
+    setFpEscrituraPct(plan.escrituraPct);
+    if (plan.cuotasN > 0) setCantidadCuotasPie(plan.cuotasN);
   };
 
   const saveFormaPago = async () => {
@@ -258,16 +274,18 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     if (!draft) return;
     setFpSaving(true);
     try {
-      const adjustments = (draft.data?.adjustments ?? []) as { key: string; value: unknown }[];
+      const draftData = typeof draft.data === 'string' ? JSON.parse(draft.data) : draft.data;
+      const adjustments = (draftData?.adjustments ?? []) as { key: string; value: unknown }[];
       const filtered = adjustments.filter(a => a.key !== 'paymentConfig');
       filtered.push({ key: 'paymentConfig', value: { promesaPct: fpPromesaPct, cuotasPct: fpCuotasPct, escrituraPct: fpEscrituraPct, creditoPct: fpCreditoPct } });
       await fetch('/api/quotation-drafts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ ...draft.data, id: draft.id, adjustments: filtered }),
+        body: JSON.stringify({ ...draftData, id: draft.id, adjustments: filtered }),
       });
       setFpSaved(true);
       setTimeout(() => setFpSaved(false), 2500);
+      showToast?.('Forma de pago guardada');
     } catch { /* ignore */ }
     setFpSaving(false);
   };
@@ -340,16 +358,16 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     }
   }, [totalPrecioListaAcumulado]);
 
-  // Cálculo bono pie para Estructura Financiera
+  // Cálculo bono pie para Estructura Financiera (usa util compartido con Quoter)
   const bonoCalc = useMemo(() => {
-    const precioConDescuento = formData.precioVenta || totalPrecioListaAcumulado;
-    if (hasBono && bonoPct > 0) {
-      const valorTotal = precioConDescuento / (1 - bonoPct / 100);
-      const bonificacion = valorTotal * (bonoPct / 100);
-      return { valorTotal: Math.round(valorTotal * 100) / 100, bonificacion: Math.round(bonificacion * 100) / 100, precioVenta: precioConDescuento };
-    }
-    return { valorTotal: precioConDescuento, bonificacion: 0, precioVenta: precioConDescuento };
-  }, [hasBono, bonoPct, formData.precioVenta, totalPrecioListaAcumulado]);
+    const descuentoPct = formData.descuentoPct ?? 0;
+    return calcBonoPie(
+      totalPrecioListaAcumulado,
+      descuentoPct,
+      bonoPct > 0 ? bonoPct : 10,
+      hasBono,
+    );
+  }, [hasBono, bonoPct, totalPrecioListaAcumulado, formData.descuentoPct]);
 
 
   // Sincronizar formData cuando cambian datos clave de la unidad (Fix A)
@@ -366,10 +384,28 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
 
   const handleChange = (field: keyof RealEstateUnit, value: any) => {
     if (isReadOnly) return;
-    
+
     let updatedEstado = formData.estado;
-    
-    if (field === 'fechaReserva' && value) {
+    const extraUpdates: Partial<RealEstateUnit> = {};
+    const hoy = new Date().toISOString().split('T')[0];
+
+    if (field === 'estado') {
+        if (value === 'Reservado' && !formData.fechaReserva) {
+            extraUpdates.fechaReserva = hoy;
+        }
+        if (value === 'Promesado' && !formData.fechaPromesa) {
+            extraUpdates.fechaPromesa = hoy;
+        }
+        if (value === 'Escriturado' && !formData.fechaEscritura) {
+            extraUpdates.fechaEscritura = hoy;
+        }
+        // Cambio de estado es acción deliberada — persiste inmediatamente sin esperar "Guardar"
+        const immediateUnit: RealEstateUnit = { ...formData, ...extraUpdates, estado: value };
+        setFormData(immediateUnit);
+        onUpdate(immediateUnit);
+        showToast?.(`Estado actualizado a ${value}`);
+        return;
+    } else if (field === 'fechaReserva' && value) {
         updatedEstado = 'Reservado';
     } else if (field === 'fechaPromesa' && value) {
         updatedEstado = 'Promesado';
@@ -377,8 +413,9 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
         updatedEstado = 'Escriturado';
     }
 
-    setFormData(prev => ({ 
-        ...prev, 
+    setFormData(prev => ({
+        ...prev,
+        ...extraUpdates,
         [field]: value,
         estado: updatedEstado
     }));
@@ -423,17 +460,22 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
         finalObservaciones = autoLog + (formData.observaciones || '');
     }
 
-    onUpdate({
-        ...formData,
-        observaciones: finalObservaciones
-    });
+    try {
+      onUpdate({
+          ...formData,
+          observaciones: finalObservaciones
+      });
+      showToast?.('Cambios guardados');
+    } catch {
+      showToast?.('Error al guardar', 'error');
+    }
   };
 
   const addManualPayment = () => {
       if (isReadOnly) return;
       setFormData(prev => {
           const nextId = `Cuota ${prev.planPagos.length + 1}`;
-          
+
           let nextDate = '';
           if (prev.planPagos.length === 0) {
               // Lógica Tarea Puntual: Primer día hábil del siguiente mes
@@ -455,12 +497,75 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
               id: nextId,
               date: nextDate,
               amount: '0',
-              status: 'Pendiente', 
+              status: 'Pendiente',
               fechaPagoReal: '',
-              observacion: ''    
+              observacion: ''
           };
           return { ...prev, planPagos: [...prev.planPagos, newItem] };
       });
+  };
+
+  const generatePaymentSchedule = () => {
+    if (isReadOnly) return;
+
+    // Precio base: bonoCalc.precioVenta (con descuento y bono aplicados), fallback a precioLista
+    const precioVentaFinal = bonoCalc.precioVenta > 0 ? bonoCalc.precioVenta : (unit.precioLista || 0);
+    if (precioVentaFinal === 0) return;
+
+    // Usar cuotasN del plan de pago seleccionado, fallback al config del proyecto
+    const planCuotasN = paymentPlans.find(p => p.id === selectedPlanId)?.cuotasN ?? 0;
+    const cuotasN = planCuotasN > 0 ? planCuotasN : cantidadCuotasPie;
+
+    // Calcular montos en UF (4 decimales para precisión)
+    const round4 = (n: number) => Math.round(n * 10000) / 10000;
+    const ufPromesa     = round4(precioVentaFinal * fpPromesaPct / 100);
+    const ufCuotaUnit   = cuotasN > 0 ? round4(round4(precioVentaFinal * fpCuotasPct / 100) / cuotasN) : 0;
+    const ufEscritura   = round4(precioVentaFinal * fpEscrituraPct / 100);
+    const ufCredito     = round4(precioVentaFinal * fpCreditoPct / 100);
+
+    console.log('[generatePaymentSchedule]', {
+      fpPromesaPct, fpCuotasPct, fpEscrituraPct, fpCreditoPct,
+      precioVentaFinal, cuotasN,
+      ufPromesa, ufCuotaUnit, ufEscritura, ufCredito,
+    });
+
+    const today = new Date();
+    let monthCursor = 1;
+    const nuevasCuotas: PaymentItem[] = [];
+
+    // 1. Promesa — primer día hábil del mes siguiente
+    if (fpPromesaPct > 0 && ufPromesa > 0) {
+      const d = new Date(today.getFullYear(), today.getMonth() + monthCursor, 1);
+      const dow = d.getDay();
+      if (dow === 0) d.setDate(2);
+      else if (dow === 6) d.setDate(3);
+      nuevasCuotas.push({ id: 'Promesa', date: d.toISOString().split('T')[0], amount: ufPromesa.toFixed(4), status: 'Pendiente' });
+      monthCursor++;
+    }
+
+    // 2. Cuotas del pie — día 1 de cada mes consecutivo
+    if (fpCuotasPct > 0 && cuotasN > 0 && ufCuotaUnit > 0) {
+      for (let i = 1; i <= cuotasN; i++) {
+        const d = new Date(today.getFullYear(), today.getMonth() + monthCursor, 1);
+        nuevasCuotas.push({ id: `Cuota ${i}`, date: d.toISOString().split('T')[0], amount: ufCuotaUnit.toFixed(4), status: 'Pendiente' });
+        monthCursor++;
+      }
+    }
+
+    // 3. Escritura y Crédito — día 1 del mes siguiente a la última cuota
+    const fechaFinal = new Date(today.getFullYear(), today.getMonth() + monthCursor, 1).toISOString().split('T')[0];
+
+    if (fpEscrituraPct > 0 && ufEscritura > 0) {
+      nuevasCuotas.push({ id: 'Escritura', date: fechaFinal, amount: ufEscritura.toFixed(4), status: 'Pendiente' });
+    }
+    if (fpCreditoPct > 0 && ufCredito > 0) {
+      nuevasCuotas.push({ id: 'Crédito Hipotecario', date: fechaFinal, amount: ufCredito.toFixed(4), status: 'Pendiente', observacion: 'Financiamiento bancario' });
+    }
+
+    if (nuevasCuotas.length === 0) return;
+
+    setFormData(prev => ({ ...prev, planPagos: [...(prev.planPagos || []), ...nuevasCuotas] }));
+    showToast?.(`✓ ${nuevasCuotas.length} cuotas generadas en el cronograma`);
   };
 
   const totalPaidReal = formData.planPagos.filter(p => p.status === 'Pagado').reduce((acc, curr) => acc + Number(curr.amount || 0), 0);
@@ -602,7 +707,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                         ) : searchedClients.map(c => (
                           <button
                             key={c.id}
-                            onClick={() => { onAssignClient?.(c.id, unit.id); setIsAssignModalOpen(false); }}
+                            onClick={() => { onAssignClient?.(c.id, unit.id); setIsAssignModalOpen(false); loadPaymentPlans(c.rut); }}
                             className="w-full p-3 text-left border border-gray-100 rounded-xl hover:border-blue-300 hover:bg-blue-50/30 transition-all flex items-center gap-3"
                           >
                             <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-sm shrink-0">
@@ -669,35 +774,33 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                 <h3 className="text-xs font-bold text-gray-500 flex items-center gap-2 uppercase tracking-widest">
                   <CreditCard className="w-4 h-4 text-blue-600" /> Forma de Pago Cotizada
                 </h3>
-                {unitDrafts.length > 1 && (
+                {paymentPlans.length > 1 && (
                   <select
-                    value={selectedDraftId}
-                    onChange={e => handleSelectDraft(e.target.value)}
+                    value={selectedPlanId}
+                    onChange={e => handleSelectPlan(e.target.value)}
                     className="text-xs px-2 py-1.5 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-100 bg-white"
                   >
-                    {unitDrafts.map(d => {
-                      const adj = (d.data?.adjustments ?? []) as { key: string; value: unknown }[];
-                      const qid = adj.find(a => a.key === 'quoteId')?.value as string | undefined;
-                      return (
-                        <option key={d.id} value={d.id}>
-                          {qid ? `Cot. ${qid}` : d.clienteNombre || d.id.slice(0, 8)}
-                        </option>
-                      );
-                    })}
+                    {paymentPlans.map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.clienteNombre || p.quotationId.slice(0, 8)} — {new Date(p.createdAt).toLocaleDateString('es-CL')}
+                      </option>
+                    ))}
                   </select>
                 )}
               </div>
-              {unitDrafts.length === 0 ? (
-                <div className="px-6 py-8 text-center text-xs text-gray-400 italic">
-                  Sin cotización vinculada a esta unidad.
-                </div>
-              ) : (
-                <div className="p-6 space-y-5">
+              <div className="p-6 space-y-5">
+                  {/* Informational note when no cotización exists in payment_plans */}
+                  {paymentPlans.length === 0 && (
+                    <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                      <span>Sin cotización generada con forma de pago. Los porcentajes son editables manualmente. Para pre-cargarlos, genera una cotización desde el Cotizador con "Incluir forma de pago".</span>
+                    </div>
+                  )}
                   {/* Editable percentages */}
                   <div className="grid grid-cols-3 gap-4">
                     {[
                       { label: 'Promesa', val: fpPromesaPct, set: setFpPromesaPct },
-                      { label: `Cuotas (${cantidadCuotasPie})`, val: fpCuotasPct, set: setFpCuotasPct },
+                      { label: `Cuotas (${cantidadCuotasPie}x)`, val: fpCuotasPct, set: setFpCuotasPct },
                       { label: 'Escritura', val: fpEscrituraPct, set: setFpEscrituraPct },
                     ].map(({ label, val, set }) => (
                       <div key={label}>
@@ -727,11 +830,11 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                   <div className="space-y-1.5">
                     {[
                       { label: 'Promesa', pct: fpPromesaPct },
-                      { label: `Cuotas (${cantidadCuotasPie} c/u)`, pct: fpCuotasPct },
+                      { label: `Cuotas (${cantidadCuotasPie}x)`, pct: fpCuotasPct },
                       { label: 'Escritura', pct: fpEscrituraPct },
                       { label: 'Crédito', pct: fpCreditoPct },
                     ].map(({ label, pct }) => {
-                      const uf = Math.round(formData.precioVenta * pct / 100 * 100) / 100;
+                      const uf = Math.round(bonoCalc.precioVenta * pct / 100 * 100) / 100;
                       return (
                         <div key={label} className="flex justify-between items-center text-xs">
                           <span className="text-gray-500">{label}</span>
@@ -748,18 +851,16 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                       <AlertTriangle className="w-3 h-3 shrink-0" /> Los porcentajes no suman 100%
                     </p>
                   )}
-                  {/* Save button */}
+                  {/* Generate button */}
                   {!isReadOnly && (
                     <button
-                      onClick={saveFormaPago}
-                      disabled={fpSaving}
-                      className="w-full py-2 text-xs font-bold rounded-xl transition-colors bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                      onClick={generatePaymentSchedule}
+                      className="w-full py-2 text-xs font-bold rounded-xl transition-colors bg-green-600 text-white hover:bg-green-700"
                     >
-                      {fpSaved ? '✓ Guardado' : fpSaving ? 'Guardando…' : 'Guardar Forma de Pago'}
+                      Generar Forma de Pago
                     </button>
                   )}
                 </div>
-              )}
             </div>
           )}
 
@@ -1052,93 +1153,110 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                ))}
              </div>
 
-             {/* ── Precio Lista total ── */}
-             <div className="flex justify-between items-center text-xs border-t border-gray-100 pt-2">
-               <span className="text-gray-500 font-bold uppercase">Precio Lista</span>
-               <span className="font-mono font-black text-gray-800">{formatValueStandard(totalPrecioListaAcumulado)} UF</span>
-             </div>
+             {/* ── Desglose: Precio Lista → descuento → bono → precio venta ── */}
+             <div className="space-y-1 text-[11px]">
 
-             {/* ── Descuento (visible cuando hay cliente) ── */}
-             {hasClient && (
-               <div className="space-y-2 p-3 bg-amber-50/60 rounded-xl border border-amber-200/70">
-                 <label className="text-[9px] font-black text-amber-700 uppercase tracking-widest flex items-center gap-1">
-                   <Percent className="w-3 h-3" /> Descuento (%) — máx {discountCfg.supervisorMaxPct}%
-                 </label>
-                 <div className="flex gap-2">
-                   <input
-                     type="number" min="0" max={discountCfg.supervisorMaxPct} step="0.1"
-                     placeholder={`ej: ${discountCfg.jefeMaxPct}`}
-                     value={discountInput}
-                     onChange={e => { setDiscountInput(e.target.value); setDiscountError(''); }}
-                     disabled={isReadOnly || discountPending}
-                     className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm font-mono outline-none focus:ring-2 focus:ring-amber-100 disabled:opacity-60"
-                   />
-                   <button
-                     onClick={applyUnitDiscount}
-                     disabled={isReadOnly || discountPending || !discountInput}
-                     className="px-3 py-2 bg-amber-500 text-white text-xs font-bold rounded-lg hover:bg-amber-600 disabled:opacity-40 transition-all active:scale-95"
-                   >
-                     {discountPending ? '…' : 'Aplicar'}
-                   </button>
-                 </div>
-                 {discountError && (
-                   <p className={`text-[10px] font-bold flex items-start gap-1 ${discountError.includes('requiere') ? 'text-amber-600' : 'text-red-600'}`}>
-                     <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" /> {discountError}
-                   </p>
-                 )}
-                 {discountPending && (
-                   <div className="flex items-center gap-1.5 px-2 py-1.5 bg-amber-100 rounded-lg">
-                     <Clock className="w-3 h-3 text-amber-600 shrink-0" />
-                     <span className="text-[10px] font-bold text-amber-700">Pend. Autorización</span>
-                   </div>
-                 )}
-                 {formData.descuentoPct && formData.descuentoPct > 0 && !discountPending && (
-                   <div className="text-[10px] text-green-600 font-bold">✓ Descuento {formData.descuentoPct.toFixed(1)}% aplicado</div>
-                 )}
+               {/* Precio Lista */}
+               <div className="flex justify-between items-center py-1">
+                 <span className="text-gray-500 font-bold uppercase">Precio Lista</span>
+                 <span className="font-mono font-black text-gray-800">{formatValueStandard(bonoCalc.precioLista)} UF</span>
                </div>
-             )}
 
-             {/* ── Precio con Descuento ── */}
-             <div className="flex justify-between items-center text-xs border-t border-gray-100 pt-2">
-               <span className="text-gray-500 font-bold uppercase">Precio con Descuento</span>
-               <span className="font-mono font-bold text-gray-700">{formatValueStandard(formData.precioVenta || totalPrecioListaAcumulado)} UF</span>
-             </div>
-
-             {/* ── Bono Pie (sólo si está configurado) ── */}
-             {hasClient && (
-               <div className="space-y-2 p-3 bg-blue-50/50 rounded-xl border border-blue-100">
-                 <div className="flex items-center justify-between">
-                   <label className="flex items-center gap-2 text-xs font-bold text-blue-700 cursor-pointer select-none">
-                     <input
-                       type="checkbox"
-                       checked={hasBono}
-                       disabled={isReadOnly || currentUser.role === 'Ventas'}
-                       onChange={e => {
-                         setHasBono(e.target.checked);
-                         handleChange('aplicaBonoPie', e.target.checked);
-                       }}
-                       className="w-4 h-4 accent-blue-600 disabled:opacity-50"
-                     />
-                     Bono Pie {bonoPct}%
+               {/* Descuento (visible cuando hay cliente) */}
+               {hasClient && (
+                 <div className="space-y-1.5 py-1 px-3 bg-amber-50/60 rounded-xl border border-amber-200/70">
+                   <label className="text-[9px] font-black text-amber-700 uppercase tracking-widest flex items-center gap-1">
+                     <Percent className="w-3 h-3" /> Descuento (%) — máx {discountCfg.supervisorMaxPct}%
                    </label>
-                   {hasBono && (
-                     <span className="text-[10px] text-blue-500 font-mono">+{formatValueStandard(bonoCalc.bonificacion)} UF</span>
+                   <div className="flex gap-2">
+                     <input
+                       type="number" min="0" max={discountCfg.supervisorMaxPct} step="0.1"
+                       placeholder={`ej: ${discountCfg.jefeMaxPct}`}
+                       value={discountInput}
+                       onChange={e => { setDiscountInput(e.target.value); setDiscountError(''); }}
+                       disabled={isReadOnly || discountPending}
+                       className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm font-mono outline-none focus:ring-2 focus:ring-amber-100 disabled:opacity-60"
+                     />
+                     <button
+                       onClick={applyUnitDiscount}
+                       disabled={isReadOnly || discountPending || !discountInput}
+                       className="px-3 py-2 bg-amber-500 text-white text-xs font-bold rounded-lg hover:bg-amber-600 disabled:opacity-40 transition-all active:scale-95"
+                     >
+                       {discountPending ? '…' : 'Aplicar'}
+                     </button>
+                   </div>
+                   {discountError && (
+                     <p className={`text-[10px] font-bold flex items-start gap-1 ${discountError.includes('requiere') ? 'text-amber-600' : 'text-red-600'}`}>
+                       <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" /> {discountError}
+                     </p>
+                   )}
+                   {discountPending && (
+                     <div className="flex items-center gap-1.5 px-2 py-1.5 bg-amber-100 rounded-lg">
+                       <Clock className="w-3 h-3 text-amber-600 shrink-0" />
+                       <span className="text-[10px] font-bold text-amber-700">Pend. Autorización</span>
+                     </div>
+                   )}
+                   {bonoCalc.descuentoPct > 0 && (
+                     <div className="flex justify-between text-[10px] text-amber-700">
+                       <span>Descuento (-{bonoCalc.descuentoPct.toFixed(1)}%)</span>
+                       <span className="font-mono">-{formatValueStandard(bonoCalc.descuentoMonto)} UF</span>
+                     </div>
+                   )}
+                   {formData.descuentoPct && formData.descuentoPct > 0 && !discountPending && (
+                     <div className="text-[10px] text-green-600 font-bold">✓ Descuento {formData.descuentoPct.toFixed(1)}% aplicado</div>
                    )}
                  </div>
-                 {hasBono && (
-                   <div className="space-y-1 text-[10px] text-blue-600">
-                     <div className="flex justify-between">
-                       <span>Precio de Lista (inflado)</span>
-                       <span className="font-mono">{formatValueStandard(bonoCalc.valorTotal)} UF</span>
-                     </div>
-                     <div className="flex justify-between">
-                       <span>Bonificación ({bonoPct}%)</span>
-                       <span className="font-mono text-red-400">-{formatValueStandard(bonoCalc.bonificacion)} UF</span>
-                     </div>
-                   </div>
-                 )}
+               )}
+
+               {/* Separador + Precio con Descuento */}
+               <div className="border-t border-gray-200 pt-1 flex justify-between items-center">
+                 <span className="text-gray-500 font-bold uppercase">Precio con Descuento</span>
+                 <span className="font-mono font-bold text-gray-700">{formatValueStandard(bonoCalc.precioConDescuento)} UF</span>
                </div>
-             )}
+
+               {/* Bono Pie toggle + desglose */}
+               {hasClient && (
+                 <div className="space-y-1 py-1 px-3 bg-blue-50/50 rounded-xl border border-blue-100">
+                   <div className="flex items-center justify-between">
+                     <label className="flex items-center gap-2 text-xs font-bold text-blue-700 cursor-pointer select-none">
+                       <input
+                         type="checkbox"
+                         checked={hasBono}
+                         disabled={isReadOnly || currentUser.role === 'Ventas'}
+                         onChange={e => {
+                           const checked = e.target.checked;
+                           setHasBono(checked);
+                           const updated: RealEstateUnit = { ...formData, aplicaBonoPie: checked };
+                           setFormData(updated);
+                           onUpdate(updated);
+                         }}
+                         className="w-4 h-4 accent-blue-600 disabled:opacity-50"
+                       />
+                       Bono Pie {bonoPct > 0 ? bonoPct : 10}%
+                     </label>
+                   </div>
+                   {hasBono && (
+                     <>
+                       <div className="flex justify-between text-[10px] text-blue-600 pt-1">
+                         <span>Ajuste Bono Pie ({bonoPct > 0 ? bonoPct : 10}%)</span>
+                         <span className="font-mono">+{formatValueStandard(bonoCalc.ajusteBonoMonto)} UF</span>
+                       </div>
+                       <div className="border-t border-blue-100 pt-1 flex justify-between text-[10px] text-blue-700 font-bold">
+                         <span>Precio de Lista (publicado)</span>
+                         <span className="font-mono">{formatValueStandard(bonoCalc.precioPublicado)} UF</span>
+                       </div>
+                       <div className="flex justify-between text-[10px] text-red-500">
+                         <span>Bono Pie (-{bonoPct > 0 ? bonoPct : 10}%)</span>
+                         <span className="font-mono">-{formatValueStandard(bonoCalc.bonificacionMonto)} UF</span>
+                       </div>
+                     </>
+                   )}
+                 </div>
+               )}
+
+               {/* Separador final */}
+               <div className="border-t-2 border-gray-300 mt-1" />
+             </div>
 
              {/* ── PRECIO DE VENTA ── */}
              <div className={`flex flex-col items-center py-4 rounded-2xl bg-gray-50 border border-gray-100 shadow-inner ${!hasClient ? 'opacity-60 grayscale-[0.5]' : ''}`}>

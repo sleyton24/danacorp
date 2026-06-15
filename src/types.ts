@@ -234,6 +234,26 @@ export interface BackendNotification {
 }
 
 
+export interface PaymentPlan {
+  id: string;
+  quotationId: string;
+  unitNumero: string;
+  projectId: string;
+  clienteId?: string;
+  clienteRut?: string;
+  clienteNombre?: string;
+  precioVentaFinal: number;
+  promesaPct: number;
+  cuotasPct: number;
+  cuotasN: number;
+  escrituraPct: number;
+  creditoPct: number;
+  bonoPiePct: number;
+  aplicaBonoPie: boolean;
+  descuentoPct: number;
+  createdAt: string;
+}
+
 export interface TransactionData {
   meta: { obra: string; fechaActual: string; folio: string; };
   comprador: { nombre: string; rut: string; ciudad: string; comuna: string; telefono: string; email: string; };

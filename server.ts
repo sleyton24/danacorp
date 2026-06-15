@@ -223,6 +223,26 @@ db.exec(`
     ip_address  TEXT,
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS payment_plans (
+    id                 TEXT PRIMARY KEY,
+    quotation_id       TEXT NOT NULL,
+    unit_numero        TEXT NOT NULL,
+    project_id         TEXT NOT NULL,
+    cliente_id         TEXT,
+    cliente_rut        TEXT,
+    cliente_nombre     TEXT,
+    precio_venta_final REAL NOT NULL DEFAULT 0,
+    promesa_pct        REAL NOT NULL DEFAULT 0,
+    cuotas_pct         REAL NOT NULL DEFAULT 0,
+    cuotas_n           INTEGER NOT NULL DEFAULT 0,
+    escritura_pct      REAL NOT NULL DEFAULT 0,
+    credito_pct        REAL NOT NULL DEFAULT 0,
+    bono_pie_pct       REAL NOT NULL DEFAULT 0,
+    aplica_bono_pie    INTEGER NOT NULL DEFAULT 0,
+    descuento_pct      REAL NOT NULL DEFAULT 0,
+    created_at         DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 // Migrate old discount_requests columns if they exist in older schema
@@ -244,6 +264,8 @@ try {
 try { db.exec(`ALTER TABLE quotation_drafts ADD COLUMN estado TEXT DEFAULT 'borrador'`); } catch { /* already exists */ }
 try { db.exec(`ALTER TABLE quotation_drafts ADD COLUMN fecha_generada TEXT`); } catch { /* already exists */ }
 try { db.exec(`ALTER TABLE quotation_drafts ADD COLUMN generada_por TEXT`); } catch { /* already exists */ }
+// Migrate quotation_drafts: add cliente_id column (ACCIÓN 2)
+try { db.exec(`ALTER TABLE quotation_drafts ADD COLUMN cliente_id TEXT`); } catch { /* already exists */ }
 
 // Migrate existing NULL estado drafts to 'generada'
 db.exec(`UPDATE quotation_drafts SET estado = 'generada', fecha_generada = updated_at, generada_por = user_id WHERE estado IS NULL`);
@@ -692,31 +714,45 @@ app.get('/api/me', requireAuth, (req, res) => {
 // ── 4. Borradores de Cotización ──────────────────────────────────────────────
 
 app.post('/api/quotation-drafts', requireAuth, (req, res) => {
-  const { id, projectId, clienteRut, clienteNombre, ...rest } = req.body as Record<string, unknown>;
+  const { id, projectId, clienteRut, clienteNombre, clienteId, ...rest } = req.body as Record<string, unknown>;
   const userId = (req as AuthenticatedRequest).userId;
   const draftId = (id as string) || crypto.randomUUID();
   const now = new Date().toISOString();
-  const data = JSON.stringify({ projectId, clienteRut, clienteNombre, ...rest });
+  const data = JSON.stringify({ projectId, clienteRut, clienteNombre, clienteId, ...rest });
 
   db.prepare(`
-    INSERT INTO quotation_drafts (id, project_id, user_id, cliente_rut, cliente_nombre, data, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO quotation_drafts (id, project_id, user_id, cliente_rut, cliente_nombre, cliente_id, data, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       data           = excluded.data,
       cliente_rut    = excluded.cliente_rut,
       cliente_nombre = excluded.cliente_nombre,
+      cliente_id     = excluded.cliente_id,
       updated_at     = excluded.updated_at
-  `).run(draftId, (projectId as string) || null, userId, (clienteRut as string) || null, (clienteNombre as string) || null, data, now, now);
+  `).run(draftId, (projectId as string) || null, userId, (clienteRut as string) || null, (clienteNombre as string) || null, (clienteId as string) || null, data, now, now);
 
-  res.json({ id: draftId, projectId, clienteRut, clienteNombre, updatedAt: now });
+  res.json({ id: draftId, projectId, clienteRut, clienteNombre, clienteId, updatedAt: now });
 });
 
 app.get('/api/quotation-drafts', requireAuth, (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
+  const { unitNumero, projectId: qProjectId } = req.query as { unitNumero?: string; projectId?: string };
 
   let rows: Array<Record<string, unknown>>;
-  if (userRole === 'Admin' || userRole === 'Supervisor') {
+
+  if (unitNumero && qProjectId) {
+    rows = db.prepare(
+      `SELECT * FROM quotation_drafts
+       WHERE estado = 'generada'
+         AND project_id = ?
+         AND (
+           data LIKE '%"numero":"' || ? || '",%'
+           OR data LIKE '%"numero":"' || ? || '"}%'
+         )
+       ORDER BY updated_at DESC`
+    ).all(qProjectId, unitNumero, unitNumero) as Array<Record<string, unknown>>;
+  } else if (userRole === 'Admin' || userRole === 'Supervisor') {
     rows = db.prepare(
       'SELECT * FROM quotation_drafts ORDER BY updated_at DESC'
     ).all() as Array<Record<string, unknown>>;
@@ -762,14 +798,130 @@ app.post('/api/quotation-drafts/:id/generate', requireAuth, (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const { vendedorId } = req.body as { vendedorId?: string };
   const now = new Date().toISOString();
+
+  // Load the draft to extract payment config
+  const draft = db.prepare(
+    `SELECT id, project_id, cliente_id, cliente_nombre, cliente_rut, data FROM quotation_drafts WHERE id = ? AND user_id = ?`
+  ).get(req.params.id, userId) as { id: string; project_id: string; cliente_id: string; cliente_nombre: string; cliente_rut: string; data: string } | undefined;
+
+  if (!draft) {
+    res.status(404).json({ error: 'Borrador no encontrado o sin permisos' });
+    return;
+  }
+
   const result = db.prepare(
-    `UPDATE quotation_drafts SET estado = 'generada', fecha_generada = ?, generada_por = ? WHERE id = ? AND user_id = ?`
-  ).run(now, vendedorId ?? userId, req.params.id, userId);
+    `UPDATE quotation_drafts SET estado = 'generada', fecha_generada = ?, generada_por = ? WHERE id = ?`
+  ).run(now, vendedorId ?? userId, req.params.id);
+
   if (result.changes === 0) {
     res.status(404).json({ error: 'Borrador no encontrado o sin permisos' });
     return;
   }
+
+  // Insert payment_plans records for each unit in the draft
+  try {
+    const data = JSON.parse(draft.data || '{}') as {
+      selectedUnits?: Array<{ id: string; numero: string; precioLista: number }>;
+      adjustments?: Array<{ key: string; value: Record<string, unknown> }>;
+      adjustDrafts?: Record<string, { type: '%' | 'UF'; rawValue: string; applied: boolean }>;
+    };
+    const paymentConfig = (data.adjustments ?? []).find(a => a.key === 'paymentConfig')?.value as Record<string, unknown> | undefined;
+
+    if (paymentConfig?.includePaymentPlan) {
+      const promesaPct  = parseFloat(String(paymentConfig.promesaPct  ?? 0));
+      const cuotasPct   = parseFloat(String(paymentConfig.cuotasPct   ?? 0));
+      const escrituraPct = parseFloat(String(paymentConfig.escrituraPct ?? 0));
+      const cuotasN     = parseInt(String(paymentConfig.nCuotasNew    ?? 0), 10);
+      const bonoPiePct  = parseFloat(String(paymentConfig.bonoPct     ?? 0));
+      const creditoPct  = Math.max(0, 100 - promesaPct - cuotasPct - escrituraPct);
+      const bonoPieUnits: string[] = Array.isArray(paymentConfig.bonoPieUnits) ? (paymentConfig.bonoPieUnits as string[]) : [];
+
+      const insertPlan = db.prepare(`
+        INSERT OR REPLACE INTO payment_plans
+          (id, quotation_id, unit_numero, project_id, cliente_id, cliente_rut, cliente_nombre,
+           precio_venta_final, promesa_pct, cuotas_pct, cuotas_n, escritura_pct, credito_pct,
+           bono_pie_pct, aplica_bono_pie, descuento_pct, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      for (const unit of (data.selectedUnits ?? [])) {
+        const adj = data.adjustDrafts?.[unit.id];
+        let descuentoPct = 0;
+        if (adj?.applied) {
+          if (adj.type === '%') descuentoPct = parseFloat(adj.rawValue) || 0;
+          else if (adj.type === 'UF' && unit.precioLista > 0) {
+            descuentoPct = (parseFloat(adj.rawValue) / unit.precioLista) * 100;
+          }
+        }
+        const precioVentaFinal = unit.precioLista * (1 - descuentoPct / 100);
+        const aplicaBonoPie = bonoPieUnits.includes(unit.id) ? 1 : 0;
+
+        insertPlan.run(
+          crypto.randomUUID(),
+          draft.id,
+          unit.numero,
+          draft.project_id,
+          draft.cliente_id || null,
+          draft.cliente_rut || null,
+          draft.cliente_nombre || null,
+          precioVentaFinal,
+          promesaPct,
+          cuotasPct,
+          cuotasN,
+          escrituraPct,
+          creditoPct,
+          bonoPiePct,
+          aplicaBonoPie,
+          descuentoPct,
+          now
+        );
+      }
+    }
+  } catch {
+    // Non-fatal: payment_plans insertion failed, but the draft was already marked generada
+  }
+
   res.json({ ok: true, fechaGenerada: now });
+});
+
+app.get('/api/payment-plans', requireAuth, (req, res) => {
+  const { unitNumero, projectId, clienteRut } = req.query as Record<string, string>;
+  if (!unitNumero || !projectId) {
+    res.status(400).json({ error: 'unitNumero y projectId son requeridos' });
+    return;
+  }
+  const conditions: string[] = ['unit_numero = ?', 'project_id = ?'];
+  const params: unknown[] = [unitNumero, projectId];
+  if (clienteRut) {
+    conditions.push('cliente_rut = ?');
+    params.push(clienteRut);
+  }
+  const rows = db.prepare(
+    `SELECT id, quotation_id, unit_numero, project_id, cliente_id, cliente_rut, cliente_nombre,
+            precio_venta_final, promesa_pct, cuotas_pct, cuotas_n, escritura_pct, credito_pct,
+            bono_pie_pct, aplica_bono_pie, descuento_pct, created_at
+     FROM payment_plans WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC`
+  ).all(...params) as Array<Record<string, unknown>>;
+
+  res.json(rows.map(r => ({
+    id:               r.id,
+    quotationId:      r.quotation_id,
+    unitNumero:       r.unit_numero,
+    projectId:        r.project_id,
+    clienteId:        r.cliente_id,
+    clienteRut:       r.cliente_rut,
+    clienteNombre:    r.cliente_nombre,
+    precioVentaFinal: r.precio_venta_final,
+    promesaPct:       r.promesa_pct,
+    cuotasPct:        r.cuotas_pct,
+    cuotasN:          r.cuotas_n,
+    escrituraPct:     r.escritura_pct,
+    creditoPct:       r.credito_pct,
+    bonoPiePct:       r.bono_pie_pct,
+    aplicaBonoPie:    Boolean(r.aplica_bono_pie),
+    descuentoPct:     r.descuento_pct,
+    createdAt:        r.created_at,
+  })));
 });
 
 // Stub para compatibilidad con Quoter.tsx
@@ -1177,6 +1329,13 @@ app.get('/api/projects', requireAuth, (_req, res) => {
 });
 
 app.post('/api/projects', requireAuth, requireRole('Admin'), (req, res) => {
+  const recentProjects = db.prepare(
+    `SELECT COUNT(*) as cnt FROM projects WHERE created_at > datetime('now', '-60 seconds')`
+  ).get() as { cnt: number };
+  if (recentProjects.cnt > 3) {
+    return res.status(429).json({ error: 'Demasiadas creaciones de proyecto. Espera un momento.' });
+  }
+
   const { id, nombre, fechaCreacion } = req.body as Record<string, string>;
   const now = new Date().toISOString();
   const pid = id || crypto.randomUUID();
@@ -1345,6 +1504,47 @@ app.patch('/api/clients/:id', requireAuth, (req, res) => {
       now, req.params.id
     );
   res.json({ ok: true });
+});
+
+// GET /api/clients/:id/quotations — ACCIÓN 1: cotizaciones generadas del cliente
+app.get('/api/clients/:id/quotations', requireAuth, (req, res) => {
+  const client = db.prepare('SELECT id, rut, nombre FROM clients WHERE id = ?').get(req.params.id) as { id: string; rut: string; nombre: string } | undefined;
+  if (!client) { res.status(404).json({ error: 'Cliente no encontrado' }); return; }
+
+  const rows = db.prepare(`
+    SELECT * FROM quotation_drafts
+    WHERE estado = 'generada'
+      AND (
+        (cliente_rut IS NOT NULL AND cliente_rut = ?)
+        OR (cliente_nombre IS NOT NULL AND cliente_nombre = ?)
+        OR (cliente_id IS NOT NULL AND cliente_id = ?)
+      )
+    ORDER BY fecha_generada DESC
+  `).all(client.rut || '', client.nombre || '', client.id) as Array<Record<string, unknown>>;
+
+  const result = rows.map(r => {
+    let parsedData: Record<string, unknown> = {};
+    try { parsedData = JSON.parse((r.data as string) || '{}'); } catch { /* datos corruptos, usar vacío */ }
+
+    const selectedUnits = parsedData.selectedUnits as Array<Record<string, unknown>> | undefined;
+    const unitsResumen = selectedUnits
+      ? selectedUnits.map(u => ({ id: u.id, numero: u.numero, type: u.type }))
+      : [];
+
+    return {
+      id: r.id,
+      projectId: r.project_id,
+      clienteRut: r.cliente_rut,
+      clienteNombre: r.cliente_nombre,
+      clienteId: r.cliente_id,
+      fechaGenerada: r.fecha_generada,
+      generadaPor: r.generada_por,
+      selectedUnits: unitsResumen,
+      data: parsedData,
+    };
+  });
+
+  res.json(result);
 });
 
 app.delete('/api/clients/:id', requireAuth, requireRole('Admin', 'Supervisor'), (req, res) => {
