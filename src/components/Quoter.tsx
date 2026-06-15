@@ -373,62 +373,68 @@ export const Quoter: React.FC<QuoterProps> = ({
   // ── C1: Auto-save draft (BUG 3 fix: .trim()) ────────────────────────────
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const buildPayload = useCallback(() => ({
+    id: draftId || undefined,
+    projectId: currentProjectId,
+    clienteRut: selectedClient.rut || '',
+    clienteNombre: selectedClient.nombre || '',
+    clienteId: selectedClient.id || undefined,
+    selectedUnits,
+    adjustments: [
+      { key: 'adjustDrafts', value: adjustDrafts },
+      { key: 'detachedAccessories', value: detachedAccessories },
+      { key: 'selectedClient', value: selectedClient },
+      { key: 'quoteId', value: quoteIdRef.current },
+      {
+        key: 'paymentConfig', value: {
+          reservaCLP, pieCuotasDropdown, pieCuotasManual,
+          bonoPieUnits: Array.from(bonoPieUnits),
+          bonoPct, mortgageFinPct,
+          promesaPct, cuotasPct, escrituraPct, nCuotasNew,
+          includePaymentPlan, includeMortgageSimulation,
+        },
+      },
+    ],
+    mortgageInputs,
+    showMortgage: includePaymentPlan || includeMortgageSimulation,
+  }), [
+    draftId, currentProjectId, selectedClient, selectedUnits, adjustDrafts,
+    detachedAccessories, mortgageInputs, includePaymentPlan, includeMortgageSimulation,
+    reservaCLP, pieCuotasDropdown, pieCuotasManual,
+    bonoPieUnits, bonoPct, mortgageFinPct,
+    promesaPct, cuotasPct, escrituraPct, nCuotasNew,
+  ]);
+
+  const saveImmediately = useCallback(async (): Promise<void> => {
+    const token = localStorage.getItem('dw_token');
+    if (!token || !currentProjectId) return;
+    if (!selectedClient.nombre?.trim() && !selectedClient.rut?.trim()) return;
+    setIsSavingDraft(true);
+    try {
+      const res = await fetch('/api/quotation-drafts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(buildPayload()),
+      });
+      if (res.ok) {
+        const saved = await res.json() as { id: string };
+        if (!draftId) {
+          setDraftId(saved.id);
+          onDraftStateChange?.(saved.id);
+        }
+      }
+    } catch { /* silencioso */ }
+    finally { setIsSavingDraft(false); }
+  }, [currentProjectId, selectedClient, draftId, onDraftStateChange, buildPayload]);
+
   const triggerAutoSave = useCallback(() => {
     // BUG 3 fix: use .trim() so empty strings don't satisfy the guard
     if (!currentProjectId ||
         (!selectedClient.nombre?.trim() && !selectedClient.rut?.trim())) return;
 
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
-    autoSaveTimerRef.current = setTimeout(async () => {
-      const token = localStorage.getItem('dw_token');
-      if (!token) return;
-      setIsSavingDraft(true);
-      try {
-        const payload = {
-          id: draftId || undefined,
-          projectId: currentProjectId,
-          clienteRut: selectedClient.rut || '',
-          clienteNombre: selectedClient.nombre || '',
-          selectedUnits,
-          adjustments: [
-            { key: 'adjustDrafts', value: adjustDrafts },
-            { key: 'detachedAccessories', value: detachedAccessories },
-            { key: 'selectedClient', value: selectedClient },
-            { key: 'quoteId', value: quoteIdRef.current },
-            {
-              key: 'paymentConfig', value: {
-                reservaCLP, pieCuotasDropdown, pieCuotasManual,
-                bonoPieUnits: Array.from(bonoPieUnits),
-                bonoPct, mortgageFinPct,
-                promesaPct, cuotasPct, escrituraPct, nCuotasNew,
-                includePaymentPlan, includeMortgageSimulation,
-              },
-            },
-          ],
-          mortgageInputs,
-          showMortgage: includePaymentPlan || includeMortgageSimulation,
-        };
-        const res = await fetch('/api/quotation-drafts', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify(payload),
-        });
-        if (res.ok) {
-          const saved = await res.json() as { id: string };
-          if (!draftId) {
-            setDraftId(saved.id);
-            onDraftStateChange?.(saved.id);
-          }
-        }
-      } catch { /* silencioso */ }
-      finally { setIsSavingDraft(false); }
-    }, 1500);
-  }, [
-    currentProjectId, selectedClient, selectedUnits, adjustDrafts,
-    detachedAccessories, mortgageInputs, includePaymentPlan, includeMortgageSimulation,
-    reservaCLP, pieCuotasDropdown, pieCuotasManual,
-    bonoPieUnits, bonoPct, draftId, onDraftStateChange,
-  ]);
+    autoSaveTimerRef.current = setTimeout(() => { saveImmediately(); }, 1500);
+  }, [currentProjectId, selectedClient, saveImmediately]);
 
   useEffect(() => { triggerAutoSave(); }, [
     selectedClient, selectedUnits, mortgageInputs,
@@ -739,13 +745,18 @@ export const Quoter: React.FC<QuoterProps> = ({
 
   // ── Available units ──────────────────────────────────────────────────────
   const availableUnits = useMemo(() => {
-    const candidates = units.filter(u => u.estado === 'Disponible' || u.estado === 'Libre Asignación');
+    const ownClientId = selectedClient?.id;
+    const candidates = units.filter(u =>
+      u.estado === 'Disponible' ||
+      u.estado === 'Libre Asignación' ||
+      (!!ownClientId && u.clienteId === ownClientId)
+    );
     if (!unitFilter) return candidates;
     const lf = unitFilter.toLowerCase();
     return candidates.filter(u =>
       u.numero.toLowerCase().includes(lf) || u.type.toLowerCase().includes(lf),
     );
-  }, [units, unitFilter]);
+  }, [units, unitFilter, selectedClient?.id]);
 
   const detachedUnits = useMemo(
     () => units.filter(u => detachedAccessories.includes(u.id)),
@@ -1178,6 +1189,16 @@ export const Quoter: React.FC<QuoterProps> = ({
   };
 
   const handleDownloadPDF = async () => {
+    // Cancelar el timer pendiente del autosave
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    // Forzar guardado inmediato si aún no hay draft
+    if (!draftId && currentProjectId &&
+        (selectedClient.nombre?.trim() || selectedClient.rut?.trim())) {
+      await saveImmediately();
+    }
     await promoteDraft();
     const blob = await generatePDFBlob();
     if (!blob) return;
@@ -1706,10 +1727,18 @@ export const Quoter: React.FC<QuoterProps> = ({
                 <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
                   {availableUnits.map(unit => {
                     const isSel = selectedUnits.some(u => u.id === unit.id);
+                    const isOwnClient = !!selectedClient?.id && unit.clienteId === selectedClient.id;
                     return (
                       <button key={unit.id} onClick={() => toggleUnitSelection(unit)}
-                        className={`w-full p-3 text-left rounded-xl border transition-all ${isSel ? 'border-blue-500 bg-blue-50' : 'border-gray-100 hover:border-gray-200'}`}>
-                        <div className="font-bold text-sm">{unit.type} {unit.numero}</div>
+                        className={`w-full p-3 text-left rounded-xl border transition-all ${isSel ? 'border-blue-500 bg-blue-50' : isOwnClient ? 'border-blue-200 bg-blue-50/30 hover:border-blue-300' : 'border-gray-100 hover:border-gray-200'}`}>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="font-bold text-sm">{unit.type} {unit.numero}</div>
+                          {isOwnClient && (
+                            <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-600 uppercase tracking-wide shrink-0">
+                              Tu cliente
+                            </span>
+                          )}
+                        </div>
                         <div className="text-xs text-blue-600 font-bold">{formatUF(unit.precioLista)} UF</div>
                         {unit.type === 'Departamento' && (unit.bodegas.length + unit.estacionamientos.length) > 0 && (
                           <div className="text-[10px] text-gray-400 mt-1">
