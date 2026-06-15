@@ -22,6 +22,7 @@ const ApprovalsView = React.lazy(() =>
 const SalesPerformanceView = React.lazy(() =>
   import('./components/SalesPerformanceView').then(m => ({ default: m.SalesPerformanceView })));
 import { Shield, User as UserIcon, ChevronUp, ChevronDown, RefreshCw } from 'lucide-react';
+import { ToastContainer, ToastMessage } from './components/Toast';
 
 // Lazy-loaded heavy module — jsPDF only downloads when user opens the Quoter
 const Quoter = React.lazy(() => import('./components/Quoter').then(m => ({ default: m.Quoter })));
@@ -147,6 +148,14 @@ const App: React.FC = () => {
   const [darkMode, setDarkMode] = useState(false);
   const [expandedClientId, setExpandedClientId] = useState<string | null>(null);
   const [isSimulatorExpanded, setIsSimulatorExpanded] = useState(false);
+
+  // ── Toast notifications ───────────────────────────────────────────────────
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const showToast = (message: string, type: ToastMessage['type'] = 'success') => {
+    const id = Date.now().toString();
+    setToasts(prev => [...prev.slice(-2), { id, type, message }]);
+  };
+  const removeToast = (id: string) => setToasts(prev => prev.filter(t => t.id !== id));
 
   // ── Auth: Restaurar sesión al montar ─────────────────────────────────────
   useEffect(() => {
@@ -393,108 +402,133 @@ const App: React.FC = () => {
   }, [units, syncClientsStates]);
 
   const handleUpdateUnit = (updatedUnit: RealEstateUnit) => {
-    const oldUnit = units.find(u => u.id === updatedUnit.id);
-    setUnits(prev => prev.map(u => u.id === updatedUnit.id ? updatedUnit : u));
-    if (selectedUnit?.id === updatedUnit.id) setSelectedUnit(updatedUnit);
-    persistUnit(updatedUnit);
-    if (oldUnit && oldUnit.estado !== updatedUnit.estado) {
-        addAuditLog('Inventario', 'Cambio Estado', `${updatedUnit.type} ${updatedUnit.numero}`, `Estado actualizado: ${oldUnit.estado} → ${updatedUnit.estado}`);
-    } else {
-        addAuditLog('Inventario', 'Actualización', `${updatedUnit.type} ${updatedUnit.numero}`, `Datos de la unidad modificados.`);
+    try {
+      const oldUnit = units.find(u => u.id === updatedUnit.id);
+      setUnits(prev => prev.map(u => u.id === updatedUnit.id ? updatedUnit : u));
+      if (selectedUnit?.id === updatedUnit.id) setSelectedUnit(updatedUnit);
+      persistUnit(updatedUnit);
+      if (oldUnit && oldUnit.estado !== updatedUnit.estado) {
+          addAuditLog('Inventario', 'Cambio Estado', `${updatedUnit.type} ${updatedUnit.numero}`, `Estado actualizado: ${oldUnit.estado} → ${updatedUnit.estado}`);
+      } else {
+          addAuditLog('Inventario', 'Actualización', `${updatedUnit.type} ${updatedUnit.numero}`, `Datos de la unidad modificados.`);
+      }
+      showToast('Unidad actualizada');
+    } catch {
+      showToast('Error al actualizar unidad', 'error');
     }
   };
 
   const handleAddClient = (client: Client) => {
-      const existingClient = clients.find(c => c.id === client.id || c.rut === client.rut);
-      if (existingClient) {
-          const merged = {
-            ...existingClient,
-            ...client,
-            historial: [...(existingClient.historial || []), ...(client.historial || [])],
-            documents: [...(existingClient.documents || []), ...(client.documents || [])],
-          };
-          setClients(prev => prev.map(c => c.id === existingClient.id ? merged : c));
-          persistClient(merged);
-          addAuditLog('Clientes', 'Actualización', client.nombre, `Prospecto actualizado con nuevos datos/documentos.`);
-      } else {
-          const clientWithProject = {
-            ...client,
-            projectId: currentProjectId || '',
-            ejecutivoId: client.estado === 'Activo' ? currentUser.id : client.ejecutivoId
-          };
-          setClients(prev => [clientWithProject, ...prev]);
-          createClient(clientWithProject);
-          addAuditLog('Clientes', 'Creación', client.nombre, `Nuevo prospecto registrado.`);
+      try {
+        const existingClient = clients.find(c => c.id === client.id || c.rut === client.rut);
+        if (existingClient) {
+            const merged = {
+              ...existingClient,
+              ...client,
+              historial: [...(existingClient.historial || []), ...(client.historial || [])],
+              documents: [...(existingClient.documents || []), ...(client.documents || [])],
+            };
+            setClients(prev => prev.map(c => c.id === existingClient.id ? merged : c));
+            persistClient(merged);
+            addAuditLog('Clientes', 'Actualización', client.nombre, `Prospecto actualizado con nuevos datos/documentos.`);
+        } else {
+            const clientWithProject = {
+              ...client,
+              projectId: currentProjectId || '',
+              ejecutivoId: client.estado === 'Activo' ? currentUser.id : client.ejecutivoId
+            };
+            setClients(prev => [clientWithProject, ...prev]);
+            createClient(clientWithProject);
+            addAuditLog('Clientes', 'Creación', client.nombre, `Nuevo prospecto registrado.`);
+        }
+        showToast('Cliente creado');
+      } catch {
+        showToast('Error al crear cliente', 'error');
       }
   };
 
   const handleUpdateClient = (client: Client) => {
-      setClients(prev => prev.map(c => c.id === client.id ? client : c));
-      persistClient(client);
-      addAuditLog('Clientes', 'Actualización', client.nombre, `Ficha de cliente modificada.`);
+      try {
+        setClients(prev => prev.map(c => c.id === client.id ? client : c));
+        persistClient(client);
+        addAuditLog('Clientes', 'Actualización', client.nombre, `Ficha de cliente modificada.`);
+        showToast('Cliente actualizado');
+      } catch {
+        showToast('Error al actualizar cliente', 'error');
+      }
   };
 
   const handleAssignUnit = (clientId: string, unitId: string) => {
-    const nowDate = new Date();
-    const isoDate = nowDate.toISOString().split('T')[0];
-    const todayLocal = nowDate.toLocaleDateString('es-CL');
+    try {
+      const nowDate = new Date();
+      const isoDate = nowDate.toISOString().split('T')[0];
+      const todayLocal = nowDate.toLocaleDateString('es-CL');
 
-    // Fix B: función pura para aplicar los cambios de asignación
-    const applyAssignment = (u: RealEstateUnit) => ({
-      ...u,
-      clienteId: clientId,
-      estado: 'Reservado' as const,
-      asignadoPor: currentUser.name,
-      fechaAsignacion: todayLocal,
-      fechaReserva: u.fechaReserva || isoDate,
-    });
+      // Fix B: función pura para aplicar los cambios de asignación
+      const applyAssignment = (u: RealEstateUnit) => ({
+        ...u,
+        clienteId: clientId,
+        estado: 'Reservado' as const,
+        asignadoPor: currentUser.name,
+        fechaAsignacion: todayLocal,
+        fechaReserva: u.fechaReserva || isoDate,
+      });
 
-    setUnits(prev => prev.map(u => u.id === unitId ? applyAssignment(u) : u));
-    setClients(prev => prev.map(c => c.id === clientId ? { ...c, ejecutivoId: currentUser.id } : c));
+      setUnits(prev => prev.map(u => u.id === unitId ? applyAssignment(u) : u));
+      setClients(prev => prev.map(c => c.id === clientId ? { ...c, ejecutivoId: currentUser.id } : c));
 
-    // Fix B: actualizar selectedUnit para que UnitDetail reciba props frescos inmediatamente
-    if (selectedUnit?.id === unitId) {
-      setSelectedUnit(prev => prev ? applyAssignment(prev) : null);
-    }
+      // Fix B: actualizar selectedUnit para que UnitDetail reciba props frescos inmediatamente
+      if (selectedUnit?.id === unitId) {
+        setSelectedUnit(prev => prev ? applyAssignment(prev) : null);
+      }
 
-    const unit = units.find(u => u.id === unitId);
-    const client = clients.find(c => c.id === clientId);
+      const unit = units.find(u => u.id === unitId);
+      const client = clients.find(c => c.id === clientId);
 
-    // persist
-    const tok = tokenRef.current;
-    if (tok) {
-      fetch(`/api/units/${unitId}/assign`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
-        body: JSON.stringify({ clienteId: clientId, asignadoPor: currentUser.name }),
-      }).catch(() => {});
-      if (client) persistClient({ ...client, ejecutivoId: currentUser.id });
-    }
+      // persist
+      const tok = tokenRef.current;
+      if (tok) {
+        fetch(`/api/units/${unitId}/assign`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+          body: JSON.stringify({ clienteId: clientId, asignadoPor: currentUser.name }),
+        }).catch(() => {});
+        if (client) persistClient({ ...client, ejecutivoId: currentUser.id });
+      }
 
-    if (unit && client) {
-      addAuditLog('Clientes', 'Asignación', client.nombre, `Asignación de unidad ${unit.numero}. Ejecutivo: ${currentUser.name}.`);
+      if (unit && client) {
+        addAuditLog('Clientes', 'Asignación', client.nombre, `Asignación de unidad ${unit.numero}. Ejecutivo: ${currentUser.name}.`);
+      }
+      showToast('Unidad asignada correctamente');
+    } catch {
+      showToast('Error al asignar unidad', 'error');
     }
   };
 
   const handleUnassignUnit = (unitId: string) => {
-    const unit = units.find(u => u.id === unitId);
-    const clearFields = (u: RealEstateUnit) => ({
-      ...u, clienteId: undefined, estado: 'Disponible' as const,
-      asignadoPor: undefined, fechaAsignacion: undefined,
-    });
-    setUnits(prev => prev.map(u => u.id === unitId ? clearFields(u) : u));
-    if (selectedUnit?.id === unitId) {
-      setSelectedUnit(prev => prev ? clearFields(prev) : null);
-    }
-    const tok = tokenRef.current;
-    if (tok) {
-      fetch(`/api/units/${unitId}/unassign`, {
-        method: 'PATCH',
-        headers: { Authorization: `Bearer ${tok}` },
-      }).catch(() => {});
-    }
-    if (unit) {
-      addAuditLog('Inventario', 'Desasignación', `${unit.type} ${unit.numero}`, `Cliente desasignado por ${currentUser.name}.`);
+    try {
+      const unit = units.find(u => u.id === unitId);
+      const clearFields = (u: RealEstateUnit) => ({
+        ...u, clienteId: undefined, estado: 'Disponible' as const,
+        asignadoPor: undefined, fechaAsignacion: undefined,
+      });
+      setUnits(prev => prev.map(u => u.id === unitId ? clearFields(u) : u));
+      if (selectedUnit?.id === unitId) {
+        setSelectedUnit(prev => prev ? clearFields(prev) : null);
+      }
+      const tok = tokenRef.current;
+      if (tok) {
+        fetch(`/api/units/${unitId}/unassign`, {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${tok}` },
+        }).catch(() => {});
+      }
+      if (unit) {
+        addAuditLog('Inventario', 'Desasignación', `${unit.type} ${unit.numero}`, `Cliente desasignado por ${currentUser.name}.`);
+      }
+      showToast('Asignación removida');
+    } catch {
+      showToast('Error al remover asignación', 'error');
     }
   };
 
@@ -528,13 +562,18 @@ const App: React.FC = () => {
   };
 
   const handleCreateProject = (project: Project, newUnits: RealEstateUnit[]) => {
-    setProjects(prev => [...prev, project]);
-    setUnits(prev => [...prev, ...newUnits]);
-    setCurrentProjectId(project.id);
-    setCurrentView('summary');
-    createProject(project);
-    newUnits.forEach(u => createUnit(u));
-    addAuditLog('Administración', 'Crear Proyecto', project.nombre, `Proyecto creado con ${newUnits.length} unidades.`);
+    try {
+      setProjects(prev => [...prev, project]);
+      setUnits(prev => [...prev, ...newUnits]);
+      setCurrentProjectId(project.id);
+      setCurrentView('summary');
+      createProject(project);
+      newUnits.forEach(u => createUnit(u));
+      addAuditLog('Administración', 'Crear Proyecto', project.nombre, `Proyecto creado con ${newUnits.length} unidades.`);
+      showToast('Proyecto creado');
+    } catch {
+      showToast('Error al crear proyecto', 'error');
+    }
   };
 
   const handleSelectUnitFromClient = (unit: RealEstateUnit) => {
@@ -642,16 +681,17 @@ const App: React.FC = () => {
             onSelectClient={(id) => { setExpandedClientId(id); setCurrentView('clients'); setSelectedUnit(null); }}
             onAssignClient={handleAssignUnit}
             onUnassignClient={handleUnassignUnit}
+            showToast={showToast}
           />
         ) : (
           <>
             {currentView === 'summary' && <SummaryDashboard units={currentProjectUnits} />}
             {currentView === 'clients' && (
-              <ClientList 
-                clients={currentProjectClients} 
-                units={currentProjectUnits} 
-                onAddClient={handleAddClient} 
-                onUpdateClient={handleUpdateClient} 
+              <ClientList
+                clients={currentProjectClients}
+                units={currentProjectUnits}
+                onAddClient={handleAddClient}
+                onUpdateClient={handleUpdateClient}
                 onUpdateUnit={handleUpdateUnit}
                 onAssignUnit={handleAssignUnit}
                 onProcessDesist={handleProcessDesist}
@@ -659,6 +699,7 @@ const App: React.FC = () => {
                 users={users}
                 onSelectUnit={handleSelectUnitFromClient}
                 initialExpandedId={expandedClientId}
+                showToast={showToast}
               />
             )}
             {currentView === 'inventory' && <UnitList units={currentProjectUnits} clients={currentProjectClients} onSelectUnit={setSelectedUnit} />}
@@ -734,6 +775,9 @@ const App: React.FC = () => {
           </>
         )}
       </main>
+
+      {/* Toast notifications */}
+      <ToastContainer toasts={toasts} onRemove={removeToast} />
 
       {process.env.NODE_ENV === 'development' && (
       <div className="fixed bottom-6 right-6 z-[9999] flex flex-col items-end">

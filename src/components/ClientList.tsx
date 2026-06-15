@@ -40,6 +40,7 @@ interface ClientListProps {
   users?: User[];
   onSelectUnit?: (unit: RealEstateUnit) => void;
   initialExpandedId?: string | null;
+  showToast?: (message: string, type?: 'success' | 'error' | 'warning') => void;
 }
 
 const parseDate = (dateStr: string): number => {
@@ -79,23 +80,39 @@ const CLIENT_TEMPLATE_HEADERS = [
   'Nacionalidad Representante'
 ];
 
-export const ClientList: React.FC<ClientListProps> = ({ 
-  clients, 
-  units, 
-  onAddClient, 
-  onUpdateClient, 
+export const ClientList: React.FC<ClientListProps> = ({
+  clients,
+  units,
+  onAddClient,
+  onUpdateClient,
   onUpdateUnit,
-  onAssignUnit, 
-  onProcessDesist, 
-  currentUser, 
+  onAssignUnit,
+  onProcessDesist,
+  currentUser,
   users = [],
   onSelectUnit,
-  initialExpandedId
+  initialExpandedId,
+  showToast,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('Todos');
   const [expandedClientId, setExpandedClientId] = useState<string | null>(null);
   const [openMenuClientId, setOpenMenuClientId] = useState<string | null>(null);
+
+  // ── Cotizaciones por cliente (ACCIÓN 5) ─────────────────────────────────
+  interface ClientQuotation {
+    id: string;
+    projectId: string;
+    clienteRut: string | null;
+    clienteNombre: string | null;
+    fechaGenerada: string | null;
+    generadaPor: string | null;
+    selectedUnits: Array<{ id: string; numero: string; type: string }>;
+    data: Record<string, unknown>;
+  }
+  const [clientQuotations, setClientQuotations] = useState<Record<string, ClientQuotation[]>>({});
+  const [quotationsLoading, setQuotationsLoading] = useState<Record<string, boolean>>({});
+  const [expandedQuotationId, setExpandedQuotationId] = useState<string | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bulkFileInputRef = useRef<HTMLInputElement>(null);
@@ -126,6 +143,28 @@ export const ClientList: React.FC<ClientListProps> = ({
       setExpandedClientId(initialExpandedId);
     }
   }, [initialExpandedId]);
+
+  // Carga cotizaciones cuando se expande un cliente (ACCIÓN 5)
+  useEffect(() => {
+    if (!expandedClientId) return;
+    if (clientQuotations[expandedClientId] !== undefined) return; // ya cargadas
+    const token = localStorage.getItem('dw_token');
+    if (!token) return;
+    setQuotationsLoading(prev => ({ ...prev, [expandedClientId]: true }));
+    fetch(`/api/clients/${expandedClientId}/quotations`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(r => r.ok ? r.json() : [])
+      .then((data: unknown) => {
+        setClientQuotations(prev => ({ ...prev, [expandedClientId]: data as ClientQuotation[] }));
+      })
+      .catch(() => {
+        setClientQuotations(prev => ({ ...prev, [expandedClientId]: [] }));
+      })
+      .finally(() => {
+        setQuotationsLoading(prev => ({ ...prev, [expandedClientId]: false }));
+      });
+  }, [expandedClientId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Cierra el menú al hacer clic fuera
   useEffect(() => {
@@ -237,7 +276,7 @@ export const ClientList: React.FC<ClientListProps> = ({
           
           setBulkParsedClients(newClients);
         } catch (err) {
-          alert("Error al leer el archivo Excel. Verifique el formato.");
+          showToast?.('Error al leer el archivo Excel. Verifique el formato.', 'error');
         }
       };
       reader.readAsBinaryString(file);
@@ -245,10 +284,11 @@ export const ClientList: React.FC<ClientListProps> = ({
   };
 
   const handleConfirmBulkUpload = () => {
+    const count = bulkParsedClients.length;
     bulkParsedClients.forEach(c => onAddClient(c));
     setBulkParsedClients([]);
     setIsBulkModalOpen(false);
-    alert(`${bulkParsedClients.length} prospectos importados correctamente.`);
+    showToast?.(`${count} prospectos importados correctamente.`);
   };
 
   const handleTriggerUpload = () => { if (fileInputRef.current) fileInputRef.current.click(); };
@@ -274,7 +314,7 @@ export const ClientList: React.FC<ClientListProps> = ({
         document.body.appendChild(link); 
         link.click(); 
         document.body.removeChild(link);
-    } else { alert(`Error: La URL del documento ${doc.name} no es válida.`); }
+    } else { showToast?.(`Error: La URL del documento ${doc.name} no es válida.`, 'error'); }
   };
 
   const openDeleteModal = (docId: string, docName: string, source: 'client' | 'unit', sourceId: string) => {
@@ -304,20 +344,26 @@ export const ClientList: React.FC<ClientListProps> = ({
   const handleSaveClient = (e: React.FormEvent) => {
     e.preventDefault();
     if (editingClient) {
-      if (editingClient.id) {
-        onUpdateClient(editingClient as Client);
-      } else {
-        const newClient: Client = {
-          ...(editingClient as Client),
-          id: Math.random().toString(36).substr(2, 9),
-          fechaRegistro: new Date().toLocaleDateString('es-CL'),
-          historial: [{ fecha: new Date().toLocaleDateString('es-CL'), tipo: 'Creación', descripcion: 'Cliente registrado manualmente', usuario: currentUser.name }],
-          documents: []
-        };
-        onAddClient(newClient);
+      try {
+        if (editingClient.id) {
+          onUpdateClient(editingClient as Client);
+          showToast?.('Cliente guardado');
+        } else {
+          const newClient: Client = {
+            ...(editingClient as Client),
+            id: Math.random().toString(36).substr(2, 9),
+            fechaRegistro: new Date().toLocaleDateString('es-CL'),
+            historial: [{ fecha: new Date().toLocaleDateString('es-CL'), tipo: 'Creación', descripcion: 'Cliente registrado manualmente', usuario: currentUser.name }],
+            documents: []
+          };
+          onAddClient(newClient);
+          showToast?.('Prospecto creado');
+        }
+        setIsClientModalOpen(false);
+        setEditingClient(null);
+      } catch {
+        showToast?.('Error al guardar cliente', 'error');
       }
-      setIsClientModalOpen(false);
-      setEditingClient(null);
     }
   };
 
@@ -553,7 +599,7 @@ export const ClientList: React.FC<ClientListProps> = ({
                                 </div>
                               </div>
                             </div>
-                            
+
                             <div className="space-y-6">
                               <div>
                                 <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2"><FolderOpen className="w-4 h-4 text-blue-600" /> Carpeta Digital</h4>
@@ -578,7 +624,7 @@ export const ClientList: React.FC<ClientListProps> = ({
                                 </button>
                               </div>
                             </div>
-                            
+
                             <div className="space-y-6">
                               <div>
                                 <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2"><Clock className="w-4 h-4 text-blue-600" /> Bitácora Histórica</h4>
@@ -597,6 +643,88 @@ export const ClientList: React.FC<ClientListProps> = ({
                                 </div>
                               </div>
                             </div>
+                          </div>
+
+                          {/* ── Sección Cotizaciones (ACCIÓN 5) ─────────────────────────────── */}
+                          <div className="mt-8 pt-8 border-t border-gray-100">
+                            <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                              <FileText className="w-4 h-4 text-blue-600" /> Cotizaciones Generadas
+                            </h4>
+                            {quotationsLoading[client.id] ? (
+                              <p className="text-center py-4 text-gray-400 text-[11px] font-medium italic">Cargando cotizaciones…</p>
+                            ) : !clientQuotations[client.id] || clientQuotations[client.id].length === 0 ? (
+                              <p className="text-center py-4 text-gray-300 italic text-[11px] font-medium">Sin cotizaciones generadas</p>
+                            ) : (
+                              <div className="overflow-x-auto rounded-xl border border-gray-100">
+                                <table className="min-w-full text-left text-xs">
+                                  <thead className="bg-gray-50/80 border-b border-gray-100">
+                                    <tr className="text-[9px] font-black text-gray-400 uppercase tracking-widest">
+                                      <th className="px-4 py-3">N°</th>
+                                      <th className="px-4 py-3">Proyecto</th>
+                                      <th className="px-4 py-3">Unidades</th>
+                                      <th className="px-4 py-3">Fecha</th>
+                                      <th className="px-4 py-3 text-right">Acciones</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-gray-50">
+                                    {clientQuotations[client.id].map((q, idx) => {
+                                      const isQExpanded = expandedQuotationId === q.id;
+                                      const fechaFmt = q.fechaGenerada
+                                        ? (() => { try { const d = new Date(q.fechaGenerada); return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`; } catch { return q.fechaGenerada; } })()
+                                        : '—';
+                                      const unitsStr = q.selectedUnits.length > 0
+                                        ? q.selectedUnits.map(u => `${u.type} ${u.numero}`).join(', ')
+                                        : '—';
+                                      return (
+                                        <React.Fragment key={q.id}>
+                                          <tr className={`hover:bg-blue-50/20 transition-colors ${isQExpanded ? 'bg-blue-50/30' : ''}`}>
+                                            <td className="px-4 py-3 font-mono font-black text-gray-600 text-[10px]">#{idx + 1}</td>
+                                            <td className="px-4 py-3 font-bold text-gray-700">{q.projectId || '—'}</td>
+                                            <td className="px-4 py-3 text-gray-500 max-w-[200px] truncate" title={unitsStr}>{unitsStr}</td>
+                                            <td className="px-4 py-3 text-gray-500">{fechaFmt}</td>
+                                            <td className="px-4 py-3 text-right">
+                                              <button
+                                                onClick={() => setExpandedQuotationId(isQExpanded ? null : q.id)}
+                                                className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wide transition-all ${isQExpanded ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-700 hover:bg-blue-100'}`}
+                                              >
+                                                {isQExpanded ? 'Ocultar' : 'Ver detalles'}
+                                              </button>
+                                            </td>
+                                          </tr>
+                                          {isQExpanded && (
+                                            <tr className="bg-blue-50/10">
+                                              <td colSpan={5} className="px-6 py-4">
+                                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-[11px]">
+                                                  <div>
+                                                    <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-1">Generada por</p>
+                                                    <p className="font-bold text-gray-700">{q.generadaPor || '—'}</p>
+                                                  </div>
+                                                  <div>
+                                                    <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-1">ID Cotización</p>
+                                                    <p className="font-mono font-bold text-gray-700 text-[10px]">{q.id}</p>
+                                                  </div>
+                                                  <div>
+                                                    <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-1">Unidades detalle</p>
+                                                    <div className="flex flex-wrap gap-1">
+                                                      {q.selectedUnits.map(u => (
+                                                        <span key={u.id} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 text-[10px] font-black border border-blue-200">
+                                                          {u.type} {u.numero}
+                                                        </span>
+                                                      ))}
+                                                      {q.selectedUnits.length === 0 && <span className="text-gray-400 italic">Sin unidades registradas</span>}
+                                                    </div>
+                                                  </div>
+                                                </div>
+                                              </td>
+                                            </tr>
+                                          )}
+                                        </React.Fragment>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
                           </div>
                         </td>
                       </tr>
