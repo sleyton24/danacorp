@@ -94,7 +94,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </button>
             {menuItems.map((item) => {
               if (item.adminOnly && currentUser.role !== 'Admin') return null;
-              if (currentUser.role === 'Ventas' && !['quoter', 'clients', 'prices'].includes(item.id)) return null;
+              if (currentUser.role === 'Ventas' && !['quoter', 'clients', 'prices', 'inventory'].includes(item.id)) return null;
               const Icon = item.icon;
               const isActive = currentView === item.id;
               return (

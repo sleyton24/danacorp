@@ -696,6 +696,7 @@ app.post('/api/auth/login', (req, res) => {
   }
   const { password: _pw, ...userWithoutPassword } = user;
   const token = jwt.sign({ userId: user.id, role: user.role }, JWT_SECRET, { expiresIn: '8h' });
+  createAuditLog(user.id, user.name, user.role, 'Login', 'Auth', user.id, `Login exitoso desde ${req.ip || 'IP desconocida'}`);
   res.json({ token, user: userWithoutPassword });
 });
 
@@ -881,6 +882,10 @@ app.post('/api/quotation-drafts/:id/generate', requireAuth, (req, res) => {
     // Non-fatal: payment_plans insertion failed, but the draft was already marked generada
   }
 
+  const genUser = USERS.find(u => u.id === userId);
+  createAuditLog(userId, genUser?.name || '', genUser?.role || '', 'Cotización generada', 'Quotation', req.params.id,
+    `Cotización generada para ${draft.cliente_nombre || 'sin cliente'}`);
+
   res.json({ ok: true, fechaGenerada: now });
 });
 
@@ -956,6 +961,25 @@ function createNotification(opts: {
     now,
   );
   return id;
+}
+
+// Helper: Audit log automático — silencioso, no rompe la operación principal
+function createAuditLog(
+  userId: string,
+  userName: string,
+  userRole: string,
+  action: string,
+  entityType: string,
+  entityId: string,
+  description: string,
+  ipAddress?: string
+) {
+  try {
+    db.prepare(`
+      INSERT INTO audit_logs (id, user_id, user_name, user_role, action, entity_type, entity_id, description, ip_address)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(crypto.randomUUID(), userId, userName, userRole, action, entityType, entityId, description, ipAddress || null);
+  } catch { /* silencioso — no romper la operación principal */ }
 }
 
 // Helper: Get project discount config — real table first, fall back to app_state blob
@@ -1151,6 +1175,11 @@ app.post('/api/discount-requests/:id/approve', requireAuth, requireRole('Admin',
     });
   }
 
+  if (newEstado) {
+    const userName = USERS.find(u => u.id === userId)?.name || '';
+    createAuditLog(userId, userName, userRole, `Aprobación descuento (${newEstado})`, 'Discount', req.params.id,
+      `Descuento ${(dr.descuento_pct as number).toFixed(1)}% en unidad ${dr.unit_numero} → ${newEstado}`);
+  }
   const updated = db.prepare('SELECT * FROM discount_requests WHERE id = ?').get(req.params.id);
   res.json({ ok: true, estado: newEstado || dr.estado, dr: updated });
 });
@@ -1158,6 +1187,7 @@ app.post('/api/discount-requests/:id/approve', requireAuth, requireRole('Admin',
 // Reject discount request
 app.post('/api/discount-requests/:id/reject', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor'), (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
+  const userRole = (req as AuthenticatedRequest).userRole;
   const { motivo } = req.body as { motivo?: string };
   const now = new Date().toISOString();
 
@@ -1170,6 +1200,10 @@ app.post('/api/discount-requests/:id/reject', requireAuth, requireRole('Admin', 
       rechazado_por_id = ?, rechazado_por_at = ?, rechazo_motivo = ?, updated_at = ?
     WHERE id = ?
   `).run(userId, now, motivo || '', now, req.params.id);
+
+  const userName = USERS.find(u => u.id === userId)?.name || '';
+  createAuditLog(userId, userName, userRole, 'Rechazo descuento', 'Discount', req.params.id,
+    `Rechazado por ${userName}: ${motivo || 'sin motivo'}`);
 
   // Notify vendedor
   createNotification({
@@ -1332,7 +1366,7 @@ app.post('/api/projects', requireAuth, requireRole('Admin'), (req, res) => {
   const recentProjects = db.prepare(
     `SELECT COUNT(*) as cnt FROM projects WHERE created_at > datetime('now', '-60 seconds')`
   ).get() as { cnt: number };
-  if (recentProjects.cnt > 3) {
+  if (recentProjects.cnt >= 3) {
     return res.status(429).json({ error: 'Demasiadas creaciones de proyecto. Espera un momento.' });
   }
 
@@ -1357,6 +1391,33 @@ app.patch('/api/projects/:id', requireAuth, requireRole('Admin'), (req, res) => 
   const { nombre } = req.body as { nombre: string };
   const now = new Date().toISOString();
   db.prepare('UPDATE projects SET nombre = ?, updated_at = ? WHERE id = ?').run(nombre, now, req.params.id);
+  res.json({ ok: true });
+});
+
+app.delete('/api/projects/:id', requireAuth, requireRole('Admin'), (req, res) => {
+  const { id } = req.params;
+  const userId = (req as AuthenticatedRequest).userId;
+  const userRole = (req as AuthenticatedRequest).userRole;
+
+  const project = db.prepare('SELECT id, nombre FROM projects WHERE id = ?').get(id) as { id: string; nombre: string } | undefined;
+  if (!project) { res.status(404).json({ error: 'Proyecto no encontrado' }); return; }
+
+  const deleteAll = db.transaction(() => {
+    db.prepare('DELETE FROM payment_plans WHERE project_id = ?').run(id);
+    db.prepare(`DELETE FROM notifications WHERE related_id IN (SELECT id FROM discount_requests WHERE project_id = ?)`).run(id);
+    db.prepare('DELETE FROM discount_requests WHERE project_id = ?').run(id);
+    db.prepare('DELETE FROM quotation_drafts WHERE project_id = ?').run(id);
+    db.prepare('DELETE FROM units WHERE project_id = ?').run(id);
+    db.prepare('DELETE FROM clients WHERE project_id = ?').run(id);
+    db.prepare('DELETE FROM project_configs WHERE project_id = ?').run(id);
+    db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+  });
+
+  deleteAll();
+
+  const userName = USERS.find(u => u.id === userId)?.name || '';
+  createAuditLog(userId, userName, userRole, 'Eliminar proyecto', 'Project', id, `Proyecto "${project.nombre}" eliminado con cascada`);
+
   res.json({ ok: true });
 });
 
@@ -1547,6 +1608,71 @@ app.get('/api/clients/:id/quotations', requireAuth, (req, res) => {
   res.json(result);
 });
 
+app.post('/api/clients/bulk-import', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), (req, res) => {
+  const { clients: clientList, projectId } = req.body as { clients: Array<Record<string, unknown>>; projectId: string };
+
+  if (!Array.isArray(clientList) || clientList.length === 0) {
+    res.status(400).json({ error: 'Lista de clientes vacía' });
+    return;
+  }
+
+  const results = { success: 0, errors: [] as string[] };
+  const now = new Date().toISOString();
+
+  const importAll = db.transaction(() => {
+    for (let idx = 0; idx < clientList.length; idx++) {
+      const c = clientList[idx];
+      try {
+        if (!c.nombre || !(c.nombre as string).trim()) {
+          results.errors.push(`Fila ${idx + 2}: nombre requerido`);
+          continue;
+        }
+        const id = (c.id as string | undefined) || crypto.randomUUID();
+        db.prepare(`
+          INSERT OR IGNORE INTO clients (
+            id, project_id, tipo_persona, nombre, rut,
+            email, telefono, direccion, ciudad, comuna,
+            region, profesion, sueldo_range, fecha_nacimiento,
+            nacionalidad, representante_nombre, representante_rut,
+            estado, fecha_registro, historial, documents, created_at, updated_at
+          ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          )
+        `).run(
+          id, (projectId || c.projectId) as string,
+          (c.tipoPersona as string | undefined) || 'Natural',
+          (c.nombre as string).trim(),
+          (c.rut as string | undefined) || '',
+          (c.email as string | undefined) || '',
+          (c.telefono as string | undefined) || '',
+          (c.direccion as string | undefined) || null,
+          (c.ciudad as string | undefined) || null,
+          (c.comuna as string | undefined) || null,
+          (c.region as string | undefined) || null,
+          (c.profesion as string | undefined) || null,
+          (c.sueldoRange as string | undefined) || null,
+          (c.fechaNacimiento as string | undefined) || null,
+          (c.nacionalidad as string | undefined) || 'Chilena',
+          (c.representanteNombre as string | undefined) || null,
+          (c.representanteRut as string | undefined) || null,
+          (c.estado as string | undefined) || 'Prospecto',
+          now,
+          JSON.stringify(c.historial || []),
+          JSON.stringify(c.documents || []),
+          now, now
+        );
+        results.success++;
+      } catch (err) {
+        results.errors.push(`Fila ${idx + 2}: ${(err as Error).message}`);
+      }
+    }
+  });
+
+  importAll();
+  res.json(results);
+});
+
 app.delete('/api/clients/:id', requireAuth, requireRole('Admin', 'Supervisor'), (req, res) => {
   const result = db.prepare('DELETE FROM clients WHERE id = ?').run(req.params.id);
   if (result.changes === 0) { res.status(404).json({ error: 'Cliente no encontrado' }); return; }
@@ -1557,14 +1683,27 @@ app.delete('/api/clients/:id', requireAuth, requireRole('Admin', 'Supervisor'), 
 
 app.get('/api/units', requireAuth, (req, res) => {
   const { projectId, estado, type } = req.query as Record<string, string>;
-  let sql = 'SELECT * FROM units WHERE 1=1';
-  const params: Array<string | number | null> = [];
-  if (projectId) { sql += ' AND project_id = ?'; params.push(projectId); }
-  if (estado) { sql += ' AND estado = ?'; params.push(estado); }
-  if (type) { sql += ' AND type = ?'; params.push(type); }
-  sql += ' ORDER BY numero ASC';
+  const userRole = (req as AuthenticatedRequest).userRole;
+  const userId = (req as AuthenticatedRequest).userId;
 
-  const rows = db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+  let rows: Array<Record<string, unknown>>;
+  if (userRole === 'Ventas') {
+    let ventasSql = `SELECT u.* FROM units u WHERE (u.estado IN ('Disponible', 'Libre Asignación') OR u.cliente_id IN (SELECT id FROM clients WHERE ejecutivo_id = ?))`;
+    const ventasParams: Array<string | number | null> = [userId];
+    if (projectId) { ventasSql += ' AND u.project_id = ?'; ventasParams.push(projectId); }
+    if (estado) { ventasSql += ' AND u.estado = ?'; ventasParams.push(estado); }
+    if (type) { ventasSql += ' AND u.type = ?'; ventasParams.push(type); }
+    ventasSql += ' ORDER BY u.numero ASC';
+    rows = db.prepare(ventasSql).all(...ventasParams) as Array<Record<string, unknown>>;
+  } else {
+    let sql = 'SELECT * FROM units WHERE 1=1';
+    const params: Array<string | number | null> = [];
+    if (projectId) { sql += ' AND project_id = ?'; params.push(projectId); }
+    if (estado) { sql += ' AND estado = ?'; params.push(estado); }
+    if (type) { sql += ' AND type = ?'; params.push(type); }
+    sql += ' ORDER BY numero ASC';
+    rows = db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+  }
   res.json(rows.map(r => ({
     id: r.id,
     projectId: r.project_id,
@@ -1637,11 +1776,23 @@ app.post('/api/units', requireAuth, requireRole('Admin'), (req, res) => {
   res.json({ id, ...body });
 });
 
-app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor'), (req, res) => {
+app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), (req, res) => {
   const body = req.body as Record<string, unknown>;
+  const userRole = (req as AuthenticatedRequest).userRole;
   const now = new Date().toISOString();
   const existing = db.prepare('SELECT * FROM units WHERE id = ?').get(req.params.id) as Record<string, unknown> | undefined;
   if (!existing) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
+
+  if (userRole === 'Ventas') {
+    if (body.estado === 'Escriturado') {
+      res.status(403).json({ error: 'Ventas no puede marcar una unidad como Escriturada' });
+      return;
+    }
+    if ('precioLista' in body && body.precioLista !== existing.precio_lista) {
+      res.status(403).json({ error: 'Ventas no puede modificar el precio de lista' });
+      return;
+    }
+  }
 
   const updates: string[] = [];
   const params: Array<string | number | null> = [];
@@ -1686,18 +1837,25 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
 app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), (req, res) => {
   const { clienteId, asignadoPor } = req.body as { clienteId: string; asignadoPor?: string };
   const userId = (req as AuthenticatedRequest).userId;
+  const userRole = (req as AuthenticatedRequest).userRole;
+  const userName = USERS.find(u => u.id === userId)?.name || '';
   const now = new Date().toISOString();
   const result = db.prepare(`UPDATE units SET cliente_id = ?, asignado_por = ?, fecha_asignacion = ?, estado = 'Reservado', updated_at = ? WHERE id = ?`)
     .run(clienteId, asignadoPor || userId, now, now, req.params.id);
   if (result.changes === 0) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
+  createAuditLog(userId, userName, userRole, 'Asignación', 'Unit', req.params.id, `Unidad asignada a cliente ${clienteId}`);
   res.json({ ok: true });
 });
 
 app.patch('/api/units/:id/unassign', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), (req, res) => {
+  const userId = (req as AuthenticatedRequest).userId;
+  const userRole = (req as AuthenticatedRequest).userRole;
+  const userName = USERS.find(u => u.id === userId)?.name || '';
   const now = new Date().toISOString();
   const result = db.prepare(`UPDATE units SET cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, estado = 'Disponible', updated_at = ? WHERE id = ?`)
     .run(now, req.params.id);
   if (result.changes === 0) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
+  createAuditLog(userId, userName, userRole, 'Desasignación', 'Unit', req.params.id, 'Cliente desasignado de la unidad');
   res.json({ ok: true });
 });
 

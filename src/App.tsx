@@ -34,63 +34,7 @@ const LazyFallback = () => (
   </div>
 );
 
-const dummyPdfUrl = 'data:application/pdf;base64,JVBERi0xLjQKJdPr6eEKMSAwIG9iaiA8PC9UaXRsZSAoQ29udHJhdG8gRGVtbW8pL0NyZWF0b3IgKERhbmFXb3Jrcyk+PgplbmRvYmoKMiAwIG9iaiA8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMyAwIFI+PgplbmRvYmoKMyAwIG9iaiA8PC9UeXBlL1BhZ2VzL0tpZHNbNCAwIFJdL0NvdW50IDE+PgplbmRvYmoKNCAwIG9iaiA8PC9UeXBlL1BhZ2UvUGFyZW50IDMgMCBSL01lZGlhQm94WzAgMCA1OTUgODQyXS9Db250ZW50cyA1IDAgUj4+ZW5kb2JqCjUgMCBvYmogPDwvTGVuZ3RoIDY4Pj5zdHJlYW0KQlQKICAvRjEgMjQgVGYKICA3MiA3MjAgVGQKICAoRG9jdW1lbnRvIGRlIE11ZXN0cmEgLSBEYW5hV29ya3MpIFRqCkVUCmVuZHN0cmVhbQplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNjkgMDAwMDAgbiAKMDAwMDAwMDExNiAwMDAwMCBuIAowMDAwMDAwMTczIDAwMDAwIG4gCjAwMDAwMDAwMjkyIDAwMDAwIG4gCHRyYWlsZXIgPDwvU2l6ZSA2L1Jvb3QgMiAwIFIvSW5mbyAxIDAgUj4+CnN0YXJ0eHJlZgowIDM2MQolJUVPRg==';
 
-const initialClients: Client[] = [
-  { 
-    id: '1', 
-    projectId: 'p1',
-    tipoPersona: 'Natural',
-    nombre: 'Rolando Fabio Bahamondes Rojas', 
-    rut: '18.555.261-6', 
-    nacionalidad: 'Chilena',
-    profesion: 'Ingeniero Civil',
-    fechaNacimiento: '1985-05-20',
-    email: 'rolandofabio@hotmail.com', 
-    telefono: '9 8815 5086', 
-    direccion: 'Av. Chacabuco 123, Depto 404',
-    ciudad: 'CONCEPCION', 
-    comuna: 'CONCEPCION', 
-    region: 'Biobío',
-    estado: 'Activo', 
-    fechaRegistro: '14-02-2024',
-    ejecutivoId: 'u2',
-    documents: [],
-    historial: [
-        { fecha: '14-02-2024', tipo: 'Creación', descripcion: 'Cliente registrado en sistema', usuario: 'Admin' },
-        { fecha: '15-02-2024', tipo: 'Cambio Estado', descripcion: 'Cambio a Activo por reserva de Depto 204', etapa: 'Reserva' },
-        { fecha: '25-03-2024', tipo: 'Pago', descripcion: 'Pago de Pie realizado (228.25 UF)', etapa: 'Promesa' }
-    ]
-  },
-  { 
-    id: '2', 
-    projectId: 'p1',
-    tipoPersona: 'Natural',
-    nombre: 'S.Silva-Paulina Figueroa', 
-    rut: '12.345.678-9', 
-    nacionalidad: 'Chilena',
-    profesion: 'Abogada',
-    fechaNacimiento: '1990-11-15',
-    email: 'paulina.silva@example.com', 
-    telefono: '9 1234 5678', 
-    direccion: 'Calle Falsa 123',
-    ciudad: 'SANTIAGO',
-    comuna: 'LAS CONDES',
-    region: 'Metropolitana',
-    estado: 'Cerrado', 
-    fechaRegistro: '15-02-2024',
-    ejecutivoId: 'u1',
-    documents: [],
-    historial: [
-        { fecha: '15-02-2024', tipo: 'Creación', descripcion: 'Registro inicial' },
-        { fecha: '20-05-2024', tipo: 'Cambio Estado', descripcion: 'Escrituración finalizada', etapa: 'Escritura' }
-    ]
-  },
-];
-
-const defaultProjects: Project[] = [
-  { id: 'p1', nombre: 'Edificio Valle Real', fechaCreacion: '2024-01-01' }
-];
 
 const defaultUsers: User[] = [
   { id: 'u1', name: 'Administrador Principal', email: 'admin@danacorp.cl',     role: 'Admin',      company: 'Danacorp' },
@@ -99,34 +43,6 @@ const defaultUsers: User[] = [
   { id: 'u2', name: 'Vendedor Demo',            email: 'vendedor@danacorp.cl',  role: 'Ventas',     company: 'Danacorp Ventas', assignedProjectIds: ['p1'] },
 ];
 
-const initialUnits: RealEstateUnit[] = [
-  {
-    id: 'u1', projectId: 'p1', type: 'Departamento', numero: '204', estado: 'Promesado',
-    superficie: 65.5, orientacion: 'Norte', piso: 2, dormitorios: 2, banos: 2, gastoComun: 125000,
-    bodegas: ['B-233', 'B-234'], estacionamientos: ['E-12', 'E-13'], clienteId: '1',
-    precioLista: 4565.00, precioVenta: 4565.00, pie: 4495.00, pieFormaPago: 'Contado', pieCuotas: 3, bonoDescuento: 70.00,
-    reservaMonto: 50, reservaFormaPago: 'Contado', creditoHipotecario: 4108.50, totalPagado: 4565.00, saldoPorPagar: 0.00,
-    banco: 'CHILE', notaria: 'GUTIERREZ', repertorio: '7,124', canalVenta: 'Corredor', intermediario: 'Propiedades Concepción Ltda.',
-    fechaReserva: '2024-02-14', fechaPromesa: '2024-03-23', fechaSolicitudCredito: '2024-04-01', fechaAprobacionCredito: '2024-04-15',
-    fechaEscritura: '2024-05-23', fechaTerminoPago: '2024-05-30', fechaEntrega: '2024-06-17', facturaNumero: '136', facturaFecha: '2024-05-22',
-    cbrFojas: '50206', cbrNumero: '70458', cbrAno: '2024',
-    planPagos: [
-        { id: 'F.1', date: '2024-02-14', amount: '16.34', status: 'Pagado', observacion: 'Cheque al día', fechaPagoReal: '2024-02-14' },
-        { id: 'F.2', date: '2024-03-25', amount: '228.25', status: 'Pagado', observacion: 'Transferencia', fechaPagoReal: '2024-03-25' },
-        { id: 'F.3', date: '2024-05-24', amount: '19.46', status: 'Pagado', fechaPagoReal: '2024-05-24' },
-    ],
-    observaciones: '***NOTA ESPECIAL OFERTA: SOBRE ESTACIONAMIENTO DE VISITA...',
-    documents: [
-      { id: 'd1', name: 'Contrato Promesa Unidad 204.pdf', type: 'pdf', category: 'Legal', url: dummyPdfUrl, date: '23-03-2024', size: '1.2 MB' }
-    ]
-  },
-  {
-    id: 'u2', projectId: 'p1', type: 'Departamento', numero: '305', estado: 'Disponible',
-    superficie: 54.0, orientacion: 'Poniente', piso: 3, dormitorios: 3, banos: 2,
-    precioLista: 3200.00, precioVenta: 3200.00, planPagos: [], bodegas: ['B-305'], estacionamientos: [], observaciones: '',
-    pie: 0, bonoDescuento: 0, reservaMonto: 0, creditoHipotecario: 0, totalPagado: 0, saldoPorPagar: 0
-  }
-];
 
 const App: React.FC = () => {
   // ── Auth ──────────────────────────────────────────────────────────────────
@@ -136,11 +52,11 @@ const App: React.FC = () => {
 
   // ── App State ─────────────────────────────────────────────────────────────
   const [currentView, setCurrentView] = useState<'clients' | 'inventory' | 'prices' | 'create_project' | 'summary' | 'settings' | 'audit' | 'profile_admin' | 'quoter' | 'notifications' | 'downloads' | 'approvals' | 'performance'>('summary');
-  const [clients, setClients] = useState<Client[]>(initialClients);
-  const [units, setUnits] = useState<RealEstateUnit[]>(initialUnits);
-  const [projects, setProjects] = useState<Project[]>(defaultProjects);
+  const [clients, setClients] = useState<Client[]>([]);
+  const [units, setUnits] = useState<RealEstateUnit[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [users, setUsers] = useState<User[]>(defaultUsers);
-  const [currentProjectId, setCurrentProjectId] = useState<string | null>(defaultProjects[0]?.id || null);
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [selectedUnit, setSelectedUnit] = useState<RealEstateUnit | null>(null);
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
@@ -191,7 +107,11 @@ const App: React.FC = () => {
           fetch('/api/clients', { headers }),
           fetch('/api/units', { headers }),
         ]);
-        if (projRes.ok) setProjects(await projRes.json() as Project[]);
+        if (projRes.ok) {
+          const projs = await projRes.json() as Project[];
+          setProjects(projs);
+          setCurrentProjectId(prev => prev ?? (projs[0]?.id ?? null));
+        }
         if (clientRes.ok) setClients(await clientRes.json() as Client[]);
         if (unitRes.ok) setUnits(await unitRes.json() as RealEstateUnit[]);
       } catch (err) { console.error('[App] Error cargando datos:', err); }
@@ -255,9 +175,35 @@ const App: React.FC = () => {
         }
       } catch { /* silencioso */ }
     };
+    let interval: ReturnType<typeof setInterval> | null = null;
+
+    const startPolling = () => {
+      if (interval) return;
+      interval = setInterval(fetchNotifications, 15000);
+    };
+
+    const stopPolling = () => {
+      if (interval) { clearInterval(interval); interval = null; }
+    };
+
     fetchNotifications();
-    const interval = setInterval(fetchNotifications, 15000);
-    return () => clearInterval(interval);
+    startPolling();
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchNotifications();
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      stopPolling();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, [currentUser]);
 
   const handleLogin = (user: User, tok: string) => {
@@ -713,7 +659,7 @@ const App: React.FC = () => {
             {currentView === 'settings' && <SettingsPanel currentUser={currentUser} users={users} onAddUser={u => setUsers(p => [...p, u])} onDeleteUser={id => setUsers(p => p.filter(u => u.id !== id))} onUpdateUser={u => setUsers(p => p.map(x => x.id === u.id ? u : x))} darkMode={darkMode} toggleDarkMode={() => setDarkMode(!darkMode)} />}
             {currentView === 'profile_admin' && (
               <React.Suspense fallback={<LazyFallback />}>
-                <ProfileAdministration users={users} projects={projects} onAddUser={u => setUsers(p => [...p, u])} onUpdateUser={u => setUsers(p => p.map(x => x.id === u.id ? u : x))} onDeleteUser={id => setUsers(p => p.filter(u => u.id !== id))} currentUser={currentUser} />
+                <ProfileAdministration users={users} projects={projects} onAddUser={u => setUsers(p => [...p, u])} onUpdateUser={u => setUsers(p => p.map(x => x.id === u.id ? u : x))} onDeleteUser={id => setUsers(p => p.filter(u => u.id !== id))} currentUser={currentUser} showToast={showToast} />
               </React.Suspense>
             )}
             {currentView === 'notifications' && <NotificationsView
