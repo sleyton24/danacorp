@@ -5,7 +5,9 @@
       "Bash(npx tsc *)",
       "Bash(npx vite *)",
       "Bash(npm run *)",
-      "Bash(node -e ' *)"
+      "Bash(node -e ' *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
     ]
   }
 }

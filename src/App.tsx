@@ -139,6 +139,7 @@ const App: React.FC = () => {
   // ── P6: Poll backend notifications every 15 s ─────────────────────────────
   useEffect(() => {
     if (!currentUser) return;
+
     const fetchNotifications = async () => {
       const tok = localStorage.getItem('dw_token');
       if (!tok) return;
@@ -175,35 +176,11 @@ const App: React.FC = () => {
         }
       } catch { /* silencioso */ }
     };
-    let interval: ReturnType<typeof setInterval> | null = null;
-
-    const startPolling = () => {
-      if (interval) return;
-      interval = setInterval(fetchNotifications, 15000);
-    };
-
-    const stopPolling = () => {
-      if (interval) { clearInterval(interval); interval = null; }
-    };
 
     fetchNotifications();
-    startPolling();
+    const interval = setInterval(fetchNotifications, 15000);
 
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        fetchNotifications();
-        startPolling();
-      } else {
-        stopPolling();
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    return () => {
-      stopPolling();
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
+    return () => clearInterval(interval);
   }, [currentUser]);
 
   const handleLogin = (user: User, tok: string) => {

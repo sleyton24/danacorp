@@ -797,44 +797,35 @@ app.delete('/api/quotation-drafts/:id', requireAuth, (req, res) => {
 
 app.post('/api/quotation-drafts/:id/generate', requireAuth, (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
+  const { id } = req.params;
   const { vendedorId } = req.body as { vendedorId?: string };
   const now = new Date().toISOString();
 
-  // Load the draft to extract payment config
-  const draft = db.prepare(
-    `SELECT id, project_id, cliente_id, cliente_nombre, cliente_rut, data FROM quotation_drafts WHERE id = ? AND user_id = ?`
-  ).get(req.params.id, userId) as { id: string; project_id: string; cliente_id: string; cliente_nombre: string; cliente_rut: string; data: string } | undefined;
+  const generateQuotation = db.transaction(() => {
+    const draft = db.prepare(
+      `SELECT id, project_id, cliente_id, cliente_nombre, cliente_rut, data FROM quotation_drafts WHERE id = ? AND user_id = ?`
+    ).get(id, userId) as { id: string; project_id: string; cliente_id: string; cliente_nombre: string; cliente_rut: string; data: string } | undefined;
 
-  if (!draft) {
-    res.status(404).json({ error: 'Borrador no encontrado o sin permisos' });
-    return;
-  }
+    if (!draft) throw new Error('DRAFT_NOT_FOUND');
 
-  const result = db.prepare(
-    `UPDATE quotation_drafts SET estado = 'generada', fecha_generada = ?, generada_por = ? WHERE id = ?`
-  ).run(now, vendedorId ?? userId, req.params.id);
+    db.prepare(
+      `UPDATE quotation_drafts SET estado = 'generada', fecha_generada = ?, generada_por = ? WHERE id = ?`
+    ).run(now, vendedorId ?? userId, id);
 
-  if (result.changes === 0) {
-    res.status(404).json({ error: 'Borrador no encontrado o sin permisos' });
-    return;
-  }
+    const data = (() => {
+      try { return JSON.parse(draft.data || '{}') as { selectedUnits?: Array<{ id: string; numero: string; precioLista: number }>; adjustments?: Array<{ key: string; value: Record<string, unknown> }>; adjustDrafts?: Record<string, { type: '%' | 'UF'; rawValue: string; applied: boolean }> }; }
+      catch { return {}; }
+    })();
 
-  // Insert payment_plans records for each unit in the draft
-  try {
-    const data = JSON.parse(draft.data || '{}') as {
-      selectedUnits?: Array<{ id: string; numero: string; precioLista: number }>;
-      adjustments?: Array<{ key: string; value: Record<string, unknown> }>;
-      adjustDrafts?: Record<string, { type: '%' | 'UF'; rawValue: string; applied: boolean }>;
-    };
     const paymentConfig = (data.adjustments ?? []).find(a => a.key === 'paymentConfig')?.value as Record<string, unknown> | undefined;
 
     if (paymentConfig?.includePaymentPlan) {
-      const promesaPct  = parseFloat(String(paymentConfig.promesaPct  ?? 0));
-      const cuotasPct   = parseFloat(String(paymentConfig.cuotasPct   ?? 0));
+      const promesaPct   = parseFloat(String(paymentConfig.promesaPct   ?? 0));
+      const cuotasPct    = parseFloat(String(paymentConfig.cuotasPct    ?? 0));
       const escrituraPct = parseFloat(String(paymentConfig.escrituraPct ?? 0));
-      const cuotasN     = parseInt(String(paymentConfig.nCuotasNew    ?? 0), 10);
-      const bonoPiePct  = parseFloat(String(paymentConfig.bonoPct     ?? 0));
-      const creditoPct  = Math.max(0, 100 - promesaPct - cuotasPct - escrituraPct);
+      const cuotasN      = parseInt(String(paymentConfig.nCuotasNew     ?? 0), 10);
+      const bonoPiePct   = parseFloat(String(paymentConfig.bonoPct      ?? 0));
+      const creditoPct   = Math.max(0, 100 - promesaPct - cuotasPct - escrituraPct);
       const bonoPieUnits: string[] = Array.isArray(paymentConfig.bonoPieUnits) ? (paymentConfig.bonoPieUnits as string[]) : [];
 
       const insertPlan = db.prepare(`
@@ -854,39 +845,32 @@ app.post('/api/quotation-drafts/:id/generate', requireAuth, (req, res) => {
             descuentoPct = (parseFloat(adj.rawValue) / unit.precioLista) * 100;
           }
         }
-        const precioVentaFinal = unit.precioLista * (1 - descuentoPct / 100);
-        const aplicaBonoPie = bonoPieUnits.includes(unit.id) ? 1 : 0;
-
         insertPlan.run(
-          crypto.randomUUID(),
-          draft.id,
-          unit.numero,
-          draft.project_id,
-          draft.cliente_id || null,
-          draft.cliente_rut || null,
-          draft.cliente_nombre || null,
-          precioVentaFinal,
-          promesaPct,
-          cuotasPct,
-          cuotasN,
-          escrituraPct,
-          creditoPct,
-          bonoPiePct,
-          aplicaBonoPie,
-          descuentoPct,
-          now
+          crypto.randomUUID(), draft.id, unit.numero, draft.project_id,
+          draft.cliente_id || null, draft.cliente_rut || null, draft.cliente_nombre || null,
+          unit.precioLista * (1 - descuentoPct / 100),
+          promesaPct, cuotasPct, cuotasN, escrituraPct, creditoPct,
+          bonoPiePct, bonoPieUnits.includes(unit.id) ? 1 : 0, descuentoPct, now
         );
       }
     }
-  } catch {
-    // Non-fatal: payment_plans insertion failed, but the draft was already marked generada
+
+    return draft;
+  });
+
+  try {
+    const draft = generateQuotation();
+    const genUser = USERS.find(u => u.id === userId);
+    // Audit log fuera de la transacción — no crítico
+    createAuditLog(userId, genUser?.name || '', genUser?.role || '', 'Cotización generada', 'Quotation', id,
+      `Cotización generada para ${draft.cliente_nombre || 'sin cliente'}`);
+    res.json({ ok: true, fechaGenerada: now });
+  } catch (err: unknown) {
+    const msg = (err as Error).message;
+    if (msg === 'DRAFT_NOT_FOUND') { res.status(404).json({ error: 'Borrador no encontrado o sin permisos' }); return; }
+    console.error('[generate quotation]', err);
+    res.status(500).json({ error: 'Error al generar la cotización' });
   }
-
-  const genUser = USERS.find(u => u.id === userId);
-  createAuditLog(userId, genUser?.name || '', genUser?.role || '', 'Cotización generada', 'Quotation', req.params.id,
-    `Cotización generada para ${draft.cliente_nombre || 'sin cliente'}`);
-
-  res.json({ ok: true, fechaGenerada: now });
 });
 
 app.get('/api/payment-plans', requireAuth, (req, res) => {
@@ -1835,16 +1819,53 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
 });
 
 app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), (req, res) => {
-  const { clienteId, asignadoPor } = req.body as { clienteId: string; asignadoPor?: string };
+  const body = req.body as { clienteId: string; asignadoPor?: string; fechaAsignacion?: string; fechaReserva?: string };
+  const { id } = req.params;
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
   const userName = USERS.find(u => u.id === userId)?.name || '';
   const now = new Date().toISOString();
-  const result = db.prepare(`UPDATE units SET cliente_id = ?, asignado_por = ?, fecha_asignacion = ?, estado = 'Reservado', updated_at = ? WHERE id = ?`)
-    .run(clienteId, asignadoPor || userId, now, now, req.params.id);
-  if (result.changes === 0) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
-  createAuditLog(userId, userName, userRole, 'Asignación', 'Unit', req.params.id, `Unidad asignada a cliente ${clienteId}`);
-  res.json({ ok: true });
+
+  const assignUnit = db.transaction(() => {
+    const unit = db.prepare(
+      'SELECT id, estado, cliente_id FROM units WHERE id = ?'
+    ).get(id) as { id: string; estado: string; cliente_id: string | null } | undefined;
+
+    if (!unit) throw new Error('UNIT_NOT_FOUND');
+
+    const isAvailable = ['Disponible', 'Libre Asignación'].includes(unit.estado);
+    const isSameClient = unit.cliente_id === body.clienteId;
+
+    if (!isAvailable && !isSameClient) throw new Error(`UNIT_NOT_AVAILABLE:${unit.estado}`);
+
+    db.prepare(`
+      UPDATE units SET
+        cliente_id = ?,
+        asignado_por = ?,
+        fecha_asignacion = ?,
+        fecha_reserva = COALESCE(fecha_reserva, ?),
+        estado = 'Reservado',
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(body.clienteId, body.asignadoPor ?? userId, body.fechaAsignacion ?? now, body.fechaReserva ?? now, id);
+
+    return db.prepare('SELECT * FROM units WHERE id = ?').get(id);
+  });
+
+  try {
+    const updatedUnit = assignUnit();
+    createAuditLog(userId, userName, userRole, 'Asignación', 'Unit', id, `Unidad asignada a cliente ${body.clienteId}`);
+    res.json({ ok: true, unit: updatedUnit });
+  } catch (err: unknown) {
+    const msg = (err as Error).message;
+    if (msg === 'UNIT_NOT_FOUND') { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
+    if (msg?.startsWith('UNIT_NOT_AVAILABLE')) {
+      const estado = msg.split(':')[1];
+      res.status(409).json({ error: `La unidad ya no está disponible (estado: ${estado})`, code: 'UNIT_NOT_AVAILABLE' });
+      return;
+    }
+    throw err;
+  }
 });
 
 app.patch('/api/units/:id/unassign', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), (req, res) => {
