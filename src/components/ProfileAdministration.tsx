@@ -4,11 +4,12 @@ import { Plus, Search, Shield, Trash2, Edit2, Check, X, Mail, Briefcase, User as
 
 interface ProfileAdministrationProps {
   users: User[];
-  projects?: Project[]; // Added to allow assignment
+  projects?: Project[];
   onAddUser: (user: User) => void;
   onUpdateUser: (user: User) => void;
   onDeleteUser: (id: string) => void;
   currentUser: User;
+  showToast?: (message: string, type?: 'success' | 'error' | 'warning') => void;
 }
 
 // ── P4: Project Configuration Section (full spec) ─────────────────────────
@@ -31,7 +32,11 @@ const DEFAULT_CFG: ProjectCfg = {
   nombreInmobiliaria: '', cantidadCuotasPie: 36,
 };
 
-const ProjectConfigSection: React.FC<{ projects: Project[]; currentUser: User }> = ({ projects, currentUser }) => {
+const ProjectConfigSection: React.FC<{
+  projects: Project[];
+  currentUser: User;
+  showToast?: (message: string, type?: 'success' | 'error' | 'warning') => void;
+}> = ({ projects, currentUser, showToast }) => {
   const [configs, setConfigs] = useState<Record<string, ProjectCfg>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
@@ -99,13 +104,23 @@ const ProjectConfigSection: React.FC<{ projects: Project[]; currentUser: User }>
       nombreInmobiliaria: cfg.nombreInmobiliaria,
       cantidadCuotasPie: cfg.cantidadCuotasPie,
     };
-    await fetch(`/api/projects/${projectId}/config`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify(payload),
-    }).catch(() => {});
-    setSaving(null); setSaved(projectId);
-    setTimeout(() => setSaved(null), 2500);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        showToast?.('✓ Configuración guardada');
+        setSaved(projectId);
+        setTimeout(() => setSaved(null), 2500);
+      } else {
+        showToast?.('Error al guardar configuración', 'error');
+      }
+    } catch {
+      showToast?.('Error al guardar configuración', 'error');
+    }
+    setSaving(null);
   };
 
   const upd = (projectId: string, field: keyof ProjectCfg, value: number) => {
@@ -275,13 +290,14 @@ const ProjectConfigSection: React.FC<{ projects: Project[]; currentUser: User }>
   );
 };
 
-export const ProfileAdministration: React.FC<ProfileAdministrationProps> = ({ 
-  users, 
+export const ProfileAdministration: React.FC<ProfileAdministrationProps> = ({
+  users,
   projects = [],
-  onAddUser, 
-  onUpdateUser, 
-  onDeleteUser, 
-  currentUser 
+  onAddUser,
+  onUpdateUser,
+  onDeleteUser,
+  currentUser,
+  showToast,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -320,28 +336,28 @@ export const ProfileAdministration: React.FC<ProfileAdministrationProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (editingUser) {
-        // Update existing
-        onUpdateUser({
-            ...editingUser,
-            name: formData.name,
-            email: formData.email,
-            company: formData.company,
-            role: formData.role,
-            assignedProjectIds: formData.assignedProjectIds
-        });
+      onUpdateUser({
+        ...editingUser,
+        name: formData.name,
+        email: formData.email,
+        company: formData.company,
+        role: formData.role,
+        assignedProjectIds: formData.assignedProjectIds,
+      });
+      showToast?.('✓ Usuario actualizado');
     } else {
-        // Create new
-        onAddUser({
-            id: crypto.randomUUID(),
-            name: formData.name,
-            email: formData.email,
-            company: formData.company,
-            role: formData.role,
-            avatar: undefined,
-            assignedProjectIds: formData.assignedProjectIds
-        });
+      onAddUser({
+        id: crypto.randomUUID(),
+        name: formData.name,
+        email: formData.email,
+        company: formData.company,
+        role: formData.role,
+        avatar: undefined,
+        assignedProjectIds: formData.assignedProjectIds,
+      });
+      showToast?.('✓ Usuario creado correctamente');
     }
     setIsModalOpen(false);
     setEditingUser(null);
@@ -485,8 +501,8 @@ export const ProfileAdministration: React.FC<ProfileAdministrationProps> = ({
                                          <Edit2 className="w-4 h-4" />
                                      </button>
                                      {user.id !== currentUser.id && (
-                                         <button 
-                                            onClick={() => onDeleteUser(user.id)}
+                                         <button
+                                            onClick={() => { onDeleteUser(user.id); showToast?.('✓ Usuario eliminado'); }}
                                             className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-colors"
                                             title="Eliminar usuario"
                                          >
@@ -504,7 +520,7 @@ export const ProfileAdministration: React.FC<ProfileAdministrationProps> = ({
 
       {/* C6: Project Configuration — bonoPiePct */}
       {(currentUser.role === 'Admin' || currentUser.role === 'JefeSala') && projects.length > 0 && (
-        <ProjectConfigSection projects={projects} currentUser={currentUser} />
+        <ProjectConfigSection projects={projects} currentUser={currentUser} showToast={showToast} />
       )}
 
       {/* User Modal */}

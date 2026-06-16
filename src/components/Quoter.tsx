@@ -1211,6 +1211,15 @@ export const Quoter: React.FC<QuoterProps> = ({
   };
 
   const handleSendEmail = async () => {
+    // Mismo patrón que handleDownloadPDF: cancelar autosave y forzar guardado
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    if (!draftId && currentProjectId &&
+        (selectedClient.nombre?.trim() || selectedClient.rut?.trim())) {
+      await saveImmediately();
+    }
     setIsEmailSending(true);
     setEmailSent(false);
     await promoteDraft();

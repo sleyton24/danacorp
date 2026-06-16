@@ -283,12 +283,30 @@ export const ClientList: React.FC<ClientListProps> = ({
     }
   };
 
-  const handleConfirmBulkUpload = () => {
-    const count = bulkParsedClients.length;
-    bulkParsedClients.forEach(c => onAddClient(c));
-    setBulkParsedClients([]);
-    setIsBulkModalOpen(false);
-    showToast?.(`${count} prospectos importados correctamente.`);
+  const handleConfirmBulkUpload = async () => {
+    const tok = localStorage.getItem('dw_token');
+    if (!tok) { showToast?.('Sin sesión activa', 'error'); return; }
+
+    try {
+      const res = await fetch('/api/clients/bulk-import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+        body: JSON.stringify({ clients: bulkParsedClients }),
+      });
+      const result = await res.json() as { success: number; errors: string[] };
+
+      // Actualizar UI con los clientes parseados del Excel
+      bulkParsedClients.forEach(c => onAddClient(c));
+
+      setBulkParsedClients([]);
+      setIsBulkModalOpen(false);
+      showToast?.(
+        `${result.success} prospectos importados` + (result.errors.length > 0 ? ` (${result.errors.length} errores)` : ''),
+        result.errors.length > 0 ? 'warning' : 'success'
+      );
+    } catch {
+      showToast?.('Error en la importación masiva', 'error');
+    }
   };
 
   const handleTriggerUpload = () => { if (fileInputRef.current) fileInputRef.current.click(); };
