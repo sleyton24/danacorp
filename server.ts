@@ -4,11 +4,15 @@ import { DatabaseSync } from 'node:sqlite';
 import jwt from 'jsonwebtoken';
 import path from 'path';
 import fs from 'fs';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import 'dotenv/config';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// ¿El módulo se ejecuta directamente (prod/dev) o se importa (tests)? Cuando se
+// importa para testear, NO se debe bindear el puerto ni arrancar los crons.
+const isMain = process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -31,7 +35,8 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 
 // ── SQLite (node:sqlite — Node.js 22.5+, sin dependencias nativas) ─────────
-const db = new DatabaseSync(path.join(__dirname, 'danacorp.db'));
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'danacorp.db');
+const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL;');
 
 // ── Transacciones ─────────────────────────────────────────────────────────────
@@ -761,8 +766,11 @@ function checkFollowUpAlerts() {
   }
 }
 
-checkReservasVencidas();
-setInterval(() => { checkReservasVencidas(); }, 60 * 60 * 1000);
+// El cron solo corre cuando el servidor se ejecuta directamente (no al importarlo en tests).
+if (isMain) {
+  checkReservasVencidas();
+  setInterval(() => { checkReservasVencidas(); }, 60 * 60 * 1000);
+}
 
 // ── UF Cache ────────────────────────────────────────────────────────────────
 let ufCache: { value: number; fecha: string; cachedAt: number } | null = null;
@@ -2253,8 +2261,13 @@ process.on('uncaughtException', (err) => {
 });
 
 // ── Arranque ─────────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`\n[DanaWorks Server] ✓ Escuchando en http://localhost:${PORT}`);
-  console.log(`[DanaWorks Server] ✓ BD: ${path.join(__dirname, 'danacorp.db')}`);
-  console.log(`[DanaWorks Server] ✓ CORS: ${FRONTEND_URL}\n`);
-});
+// Solo escucha cuando se ejecuta directamente; al importarlo (tests) se exporta `app`.
+if (isMain) {
+  app.listen(PORT, () => {
+    console.log(`\n[DanaWorks Server] ✓ Escuchando en http://localhost:${PORT}`);
+    console.log(`[DanaWorks Server] ✓ BD: ${DB_PATH}`);
+    console.log(`[DanaWorks Server] ✓ CORS: ${FRONTEND_URL}\n`);
+  });
+}
+
+export { app };
