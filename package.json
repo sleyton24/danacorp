@@ -8,7 +8,9 @@
     "server": "tsx watch server.ts",
     "dev:full": "concurrently \"npm run server\" \"npm run dev\"",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.server.json",
+    "typecheck:web": "tsc -p tsconfig.json"
   },
   "dependencies": {
     "@google/genai": "^1.30.0",

@@ -34,6 +34,26 @@ app.use(express.json({ limit: '10mb' }));
 const db = new DatabaseSync(path.join(__dirname, 'danacorp.db'));
 db.exec('PRAGMA journal_mode = WAL;');
 
+// ── Transacciones ─────────────────────────────────────────────────────────────
+// node:sqlite NO expone .transaction() (eso es de better-sqlite3): db.transaction
+// es undefined y llamarlo lanza TypeError. runTx ejecuta fn dentro de BEGIN/COMMIT
+// y hace ROLLBACK ante cualquier error. Devuelve una función sin argumentos, igual
+// que el patrón db.transaction(fn). (En la Fase 2 se reemplaza por withTx sobre el
+// pool de PostgreSQL.)
+function runTx<T>(fn: () => T): () => T {
+  return () => {
+    db.exec('BEGIN');
+    try {
+      const result = fn();
+      db.exec('COMMIT');
+      return result;
+    } catch (err) {
+      try { db.exec('ROLLBACK'); } catch { /* ignora errores de rollback */ }
+      throw err;
+    }
+  };
+}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS quotation_drafts (
     id             TEXT PRIMARY KEY,
@@ -269,6 +289,17 @@ try { db.exec(`ALTER TABLE quotation_drafts ADD COLUMN cliente_id TEXT`); } catc
 
 // Migrate existing NULL estado drafts to 'generada'
 db.exec(`UPDATE quotation_drafts SET estado = 'generada', fecha_generada = updated_at, generada_por = user_id WHERE estado IS NULL`);
+
+// Migrate units: cotización activa columns (obsolete, kept for DB compatibility)
+try { db.exec(`ALTER TABLE units ADD COLUMN cotizacion_activa_id TEXT`); } catch { /* already exists */ }
+try { db.exec(`ALTER TABLE units ADD COLUMN cotizacion_activa_vendedor_id TEXT`); } catch { /* already exists */ }
+try { db.exec(`ALTER TABLE units ADD COLUMN cotizacion_activa_expira TEXT`); } catch { /* already exists */ }
+// Migrate project_configs: duracion reserva (formerly duracion cotizacion)
+try { db.exec(`ALTER TABLE project_configs ADD COLUMN duracion_cotizacion_dias INTEGER DEFAULT 15`); } catch { /* already exists */ }
+// Migrate units: reserva columns
+try { db.exec(`ALTER TABLE units ADD COLUMN reserva_vendedor_id TEXT`); } catch { /* already exists */ }
+try { db.exec(`ALTER TABLE units ADD COLUMN reserva_expira TEXT`); } catch { /* already exists */ }
+try { db.exec(`ALTER TABLE units ADD COLUMN historial_ocupacion TEXT DEFAULT '[]'`); } catch { /* already exists */ }
 
 // ── Helper: upsert unit row ───────────────────────────────────────────────────
 function upsertUnit(u: Record<string, unknown>, stableId: string, now: string) {
@@ -602,6 +633,137 @@ function ensureProjectConfigs() {
 
 ensureProjectConfigs();
 
+function migrateReservas() {
+  const sinReserva = db.prepare(`
+    SELECT u.id, u.project_id, u.cliente_id, u.type, u.numero
+    FROM units u
+    WHERE u.estado = 'Reservado'
+    AND u.reserva_vendedor_id IS NULL
+  `).all() as Array<{ id: string; project_id: string; cliente_id: string | null; type: string; numero: string }>;
+
+  for (const unit of sinReserva) {
+    const config = db.prepare(
+      'SELECT duracion_cotizacion_dias FROM project_configs WHERE project_id = ?'
+    ).get(unit.project_id) as { duracion_cotizacion_dias?: number } | undefined;
+    const dias = config?.duracion_cotizacion_dias ?? 15;
+    const expira = new Date(Date.now() + dias * 24 * 60 * 60 * 1000).toISOString();
+
+    const cliente = unit.cliente_id ? db.prepare(
+      'SELECT ejecutivo_id FROM clients WHERE id = ?'
+    ).get(unit.cliente_id) as { ejecutivo_id?: string } | undefined : undefined;
+
+    db.prepare(`
+      UPDATE units SET reserva_vendedor_id = ?, reserva_expira = ? WHERE id = ?
+    `).run(cliente?.ejecutivo_id || 'system', expira, unit.id);
+  }
+
+  if (sinReserva.length > 0) {
+    console.log(`[Migración] ${sinReserva.length} reservas pre-existentes migradas`);
+  }
+}
+
+migrateReservas();
+
+function checkReservasVencidas() {
+  try {
+    const nowDate = new Date();
+    const nowISO = nowDate.toISOString();
+    const in24h = new Date(nowDate.getTime() + 24 * 60 * 60 * 1000).toISOString();
+
+    // Pre-expiry alerts: reservations expiring in next 24h, not already alerted
+    const expiringSoon = db.prepare(`
+      SELECT id, numero, type, reserva_vendedor_id, reserva_expira
+      FROM units
+      WHERE reserva_expira IS NOT NULL
+        AND reserva_expira > ?
+        AND reserva_expira <= ?
+        AND estado = 'Reservado'
+        AND NOT EXISTS (
+          SELECT 1 FROM notifications
+          WHERE related_id = units.id AND titulo = 'Reserva próxima a vencer'
+        )
+    `).all(nowISO, in24h) as Array<{ id: string; numero: string; type: string; reserva_vendedor_id: string | null; reserva_expira: string }>;
+
+    for (const u of expiringSoon) {
+      const fechaStr = new Date(u.reserva_expira).toLocaleDateString('es-CL');
+      if (u.reserva_vendedor_id) {
+        createNotification({ paraUserId: u.reserva_vendedor_id, titulo: 'Reserva próxima a vencer', mensaje: `La reserva de ${u.type} ${u.numero} vence el ${fechaStr}`, tipo: 'warning', linkView: 'inventory', relatedId: u.id });
+      }
+      createNotification({ paraRol: 'JefeSala', titulo: 'Reserva próxima a vencer', mensaje: `${u.type} ${u.numero} vence reserva el ${fechaStr}`, tipo: 'warning', linkView: 'inventory', relatedId: u.id });
+    }
+
+    // Auto-release expired reservations
+    const expired = db.prepare(`
+      SELECT id, numero, type, cliente_id, reserva_vendedor_id, historial_ocupacion
+      FROM units
+      WHERE reserva_expira IS NOT NULL AND reserva_expira < ? AND estado = 'Reservado'
+    `).all(nowISO) as Array<{ id: string; numero: string; type: string; cliente_id: string | null; reserva_vendedor_id: string | null; historial_ocupacion: string }>;
+
+    for (const u of expired) {
+      type HistEntry = { fechaFin?: string; [k: string]: unknown };
+      const hist = (() => { try { return JSON.parse(u.historial_ocupacion || '[]') as HistEntry[]; } catch { return [] as HistEntry[]; } })();
+      const updHist = hist.map((h, idx) => idx === hist.length - 1 && !h.fechaFin ? { ...h, fechaFin: nowISO, motivo: 'Vencimiento' } : h);
+      db.prepare(`UPDATE units SET estado = 'Disponible', cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, historial_ocupacion = ?, updated_at = ? WHERE id = ?`)
+        .run(JSON.stringify(updHist), nowISO, u.id);
+      if (u.cliente_id) {
+        db.prepare(`UPDATE clients SET estado = 'Prospecto' WHERE id = ?`).run(u.cliente_id);
+      }
+      if (u.reserva_vendedor_id) {
+        createNotification({ paraUserId: u.reserva_vendedor_id, titulo: 'Reserva vencida', mensaje: `La reserva de ${u.type} ${u.numero} ha vencido y fue liberada automáticamente`, tipo: 'error', linkView: 'inventory', relatedId: u.id });
+      }
+      createNotification({ paraRol: 'JefeSala', titulo: 'Reserva vencida', mensaje: `${u.type} ${u.numero} fue liberada por vencimiento`, tipo: 'warning', linkView: 'inventory', relatedId: u.id });
+    }
+    if (expired.length > 0) {
+      console.log(`[checkReservasVencidas] Liberadas ${expired.length} reserva(s) vencida(s)`);
+    }
+  } catch (err) {
+    console.error('[checkReservasVencidas]', err);
+  }
+  checkFollowUpAlerts();
+}
+
+function checkFollowUpAlerts() {
+  try {
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+    const fourDaysAgo = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString();
+    const items = db.prepare(`
+      SELECT qd.id, qd.user_id, qd.cliente_nombre, u.type, u.numero
+      FROM quotation_drafts qd
+      JOIN units u ON u.numero = (
+        SELECT json_extract(value, '$.numero')
+        FROM json_each(json_extract(qd.data, '$.selectedUnits'))
+        LIMIT 1
+      ) AND u.project_id = qd.project_id
+      WHERE qd.estado = 'generada'
+        AND qd.fecha_generada < ?
+        AND qd.fecha_generada > ?
+        AND u.estado = 'Disponible'
+        AND NOT EXISTS (
+          SELECT 1 FROM notifications
+          WHERE related_id = qd.id
+            AND titulo = 'Seguimiento cotización'
+        )
+    `).all(threeDaysAgo, fourDaysAgo) as Array<{ id: string; user_id: string; cliente_nombre: string; type: string; numero: string }>;
+    for (const item of items) {
+      createNotification({
+        paraUserId: item.user_id,
+        titulo: 'Seguimiento cotización',
+        mensaje: `¿Cómo te ha ido con la cotización de ${item.type} ${item.numero} para ${item.cliente_nombre || 'sin cliente'}?`,
+        tipo: 'info',
+        relatedId: item.id,
+      });
+    }
+    if (items.length > 0) {
+      console.log(`[checkFollowUpAlerts] Enviadas ${items.length} alerta(s) de seguimiento`);
+    }
+  } catch (err) {
+    console.error('[checkFollowUpAlerts]', err);
+  }
+}
+
+checkReservasVencidas();
+setInterval(() => { checkReservasVencidas(); }, 60 * 60 * 1000);
+
 // ── UF Cache ────────────────────────────────────────────────────────────────
 let ufCache: { value: number; fecha: string; cachedAt: number } | null = null;
 const UF_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hora
@@ -642,6 +804,18 @@ const requireRole = (...roles: string[]) => (req: express.Request, res: express.
   }
   next();
 };
+
+// ── Async error wrapper ───────────────────────────────────────────────────────
+// Express 4 NO captura errores de funciones async: una promesa rechazada dentro
+// de un handler se convierte en 'unhandledRejection' y, en Node moderno, tumba el
+// proceso. asyncHandler envuelve el handler y propaga cualquier rechazo al
+// middleware de errores global (definido al final del archivo). Sirve igual para
+// handlers síncronos y asíncronos.
+type Handler = (req: express.Request, res: express.Response, next: express.NextFunction) => unknown;
+const asyncHandler = (fn: Handler) =>
+  (req: express.Request, res: express.Response, next: express.NextFunction): void => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
 
 // Protected uploads route (auth required, path traversal prevented)
 app.use('/uploads', requireAuth, (req: express.Request, res: express.Response) => {
@@ -801,21 +975,21 @@ app.post('/api/quotation-drafts/:id/generate', requireAuth, (req, res) => {
   const { vendedorId } = req.body as { vendedorId?: string };
   const now = new Date().toISOString();
 
-  const generateQuotation = db.transaction(() => {
+  const generateQuotation = runTx(() => {
     const draft = db.prepare(
       `SELECT id, project_id, cliente_id, cliente_nombre, cliente_rut, data FROM quotation_drafts WHERE id = ? AND user_id = ?`
     ).get(id, userId) as { id: string; project_id: string; cliente_id: string; cliente_nombre: string; cliente_rut: string; data: string } | undefined;
 
     if (!draft) throw new Error('DRAFT_NOT_FOUND');
 
-    db.prepare(
-      `UPDATE quotation_drafts SET estado = 'generada', fecha_generada = ?, generada_por = ? WHERE id = ?`
-    ).run(now, vendedorId ?? userId, id);
-
     const data = (() => {
       try { return JSON.parse(draft.data || '{}') as { selectedUnits?: Array<{ id: string; numero: string; precioLista: number }>; adjustments?: Array<{ key: string; value: Record<string, unknown> }>; adjustDrafts?: Record<string, { type: '%' | 'UF'; rawValue: string; applied: boolean }> }; }
       catch { return {}; }
     })();
+
+    db.prepare(
+      `UPDATE quotation_drafts SET estado = 'generada', fecha_generada = ?, generada_por = ? WHERE id = ?`
+    ).run(now, vendedorId ?? userId, id);
 
     const paymentConfig = (data.adjustments ?? []).find(a => a.key === 'paymentConfig')?.value as Record<string, unknown> | undefined;
 
@@ -861,9 +1035,18 @@ app.post('/api/quotation-drafts/:id/generate', requireAuth, (req, res) => {
   try {
     const draft = generateQuotation();
     const genUser = USERS.find(u => u.id === userId);
-    // Audit log fuera de la transacción — no crítico
     createAuditLog(userId, genUser?.name || '', genUser?.role || '', 'Cotización generada', 'Quotation', id,
       `Cotización generada para ${draft.cliente_nombre || 'sin cliente'}`);
+    // Notify JefeSala about new quotation
+    const firstUnit = ((() => { try { return JSON.parse(draft.data || '{}'); } catch { return {}; } })() as { selectedUnits?: Array<{ type?: string; numero?: string }> }).selectedUnits?.[0];
+    createNotification({
+      paraRol: 'JefeSala',
+      titulo: 'Nueva cotización generada',
+      mensaje: `${genUser?.name || 'Vendedor'} cotizó ${firstUnit?.type || 'unidad'} ${firstUnit?.numero || ''} para ${draft.cliente_nombre || 'sin cliente'}`,
+      tipo: 'info',
+      linkView: 'inventory',
+      relatedId: id,
+    });
     res.json({ ok: true, fechaGenerada: now });
   } catch (err: unknown) {
     const msg = (err as Error).message;
@@ -880,7 +1063,7 @@ app.get('/api/payment-plans', requireAuth, (req, res) => {
     return;
   }
   const conditions: string[] = ['unit_numero = ?', 'project_id = ?'];
-  const params: unknown[] = [unitNumero, projectId];
+  const params: string[] = [unitNumero, projectId];
   if (clienteRut) {
     conditions.push('cliente_rut = ?');
     params.push(clienteRut);
@@ -968,7 +1151,7 @@ function createAuditLog(
 
 // Helper: Get project discount config — real table first, fall back to app_state blob
 function getProjectDiscountConfig(projectId: string): {
-  jefeMaxPct: number; supervisorMaxPct: number; bonoPiePct: number; vigenciaCotizacionDias: number;
+  jefeMaxPct: number; supervisorMaxPct: number; bonoPiePct: number; vigenciaCotizacionDias: number; duracionReservaDias: number;
 } {
   const cfgRow = db.prepare('SELECT * FROM project_configs WHERE project_id = ?').get(projectId) as Record<string, unknown> | undefined;
   if (cfgRow) {
@@ -977,6 +1160,7 @@ function getProjectDiscountConfig(projectId: string): {
       supervisorMaxPct: (cfgRow.supervisor_max_pct as number | undefined) ?? 8,
       bonoPiePct: (cfgRow.bono_pie_pct as number | undefined) ?? 10,
       vigenciaCotizacionDias: (cfgRow.vigencia_cotizacion_dias as number | undefined) ?? 7,
+      duracionReservaDias: (cfgRow.duracion_cotizacion_dias as number | undefined) ?? 15,
     };
   }
   // Fall back to app_state blob
@@ -990,10 +1174,11 @@ function getProjectDiscountConfig(projectId: string): {
         supervisorMaxPct: cfg.discountConfig?.supervisorMaxPct ?? 8,
         bonoPiePct: cfg.bonoPiePct ?? 10,
         vigenciaCotizacionDias: cfg.vigenciaCotizacionDias ?? 7,
+        duracionReservaDias: 15,
       };
     } catch { /* fall through */ }
   }
-  return { jefeMaxPct: 3, supervisorMaxPct: 8, bonoPiePct: 10, vigenciaCotizacionDias: 7 };
+  return { jefeMaxPct: 3, supervisorMaxPct: 8, bonoPiePct: 10, vigenciaCotizacionDias: 7, duracionReservaDias: 15 };
 }
 
 // ── 5. Solicitudes de Descuento ──────────────────────────────────────────────
@@ -1026,7 +1211,7 @@ app.post('/api/discount-requests', requireAuth, requireRole('Admin', 'JefeSala',
        cotizacion_id, precio_original, precio_solicitado, descuento_pct,
        descuento_monto, estado, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pendiente', ?, ?)
-  `).run(id, projectId, unitId, unitNumero, userId, user?.name || '',
+  `).run(id, projectId as string, unitId as string, unitNumero as string, userId, user?.name || '',
          (cotizacionId as string) || null,
          precioOriginal, precioSol, descuentoPct, descuentoMonto, now, now);
 
@@ -1386,7 +1571,7 @@ app.delete('/api/projects/:id', requireAuth, requireRole('Admin'), (req, res) =>
   const project = db.prepare('SELECT id, nombre FROM projects WHERE id = ?').get(id) as { id: string; nombre: string } | undefined;
   if (!project) { res.status(404).json({ error: 'Proyecto no encontrado' }); return; }
 
-  const deleteAll = db.transaction(() => {
+  const deleteAll = runTx(() => {
     db.prepare('DELETE FROM payment_plans WHERE project_id = ?').run(id);
     db.prepare(`DELETE FROM notifications WHERE related_id IN (SELECT id FROM discount_requests WHERE project_id = ?)`).run(id);
     db.prepare('DELETE FROM discount_requests WHERE project_id = ?').run(id);
@@ -1423,6 +1608,7 @@ app.get('/api/projects/:id/config', requireAuth, (req, res) => {
     ciudadProyecto: row.ciudad_proyecto,
     nombreInmobiliaria: row.nombre_inmobiliaria,
     cantidadCuotasPie: row.cantidad_cuotas_pie,
+    duracionReservaDias: row.duracion_cotizacion_dias,
   });
 });
 
@@ -1430,6 +1616,10 @@ app.post('/api/projects/:id/config', requireAuth, requireRole('Admin', 'Supervis
   const body = req.body as Record<string, unknown>;
   const now = new Date().toISOString();
   syncProjectConfigToTable(req.params.id, body, now);
+  if (body.duracionReservaDias != null) {
+    db.prepare('UPDATE project_configs SET duracion_cotizacion_dias = ? WHERE project_id = ?')
+      .run(body.duracionReservaDias as number, req.params.id);
+  }
   res.json({ ok: true });
 });
 
@@ -1514,7 +1704,7 @@ app.post('/api/clients', requireAuth, requireRole('Admin', 'JefeSala', 'Supervis
 app.patch('/api/clients/:id', requireAuth, (req, res) => {
   const body = req.body as Record<string, unknown>;
   const now = new Date().toISOString();
-  const existing = db.prepare('SELECT * FROM clients WHERE id = ?').get(req.params.id) as Record<string, unknown> | undefined;
+  const existing = db.prepare('SELECT * FROM clients WHERE id = ?').get(req.params.id) as Record<string, string | null> | undefined;
   if (!existing) { res.status(404).json({ error: 'Cliente no encontrado' }); return; }
 
   db.prepare(`UPDATE clients SET tipo_persona = ?, nombre = ?, rut = ?, nacionalidad = ?, profesion = ?, sueldo_range = ?,
@@ -1603,7 +1793,7 @@ app.post('/api/clients/bulk-import', requireAuth, requireRole('Admin', 'JefeSala
   const results = { success: 0, errors: [] as string[] };
   const now = new Date().toISOString();
 
-  const importAll = db.transaction(() => {
+  const importAll = runTx(() => {
     for (let idx = 0; idx < clientList.length; idx++) {
       const c = clientList[idx];
       try {
@@ -1749,6 +1939,9 @@ app.get('/api/units', requireAuth, (req, res) => {
     descuentoPendiente: r.descuento_pendiente === 1,
     descuentoSolicitudId: r.descuento_solicitud_id,
     aplicaBonoPie: r.aplica_bono_pie === 1,
+    reservaVendedorId: r.reserva_vendedor_id,
+    reservaExpira: r.reserva_expira,
+    historialOcupacion: (() => { try { return JSON.parse((r.historial_ocupacion as string) || '[]'); } catch { return []; } })(),
   })));
 });
 
@@ -1762,7 +1955,9 @@ app.post('/api/units', requireAuth, requireRole('Admin'), (req, res) => {
 
 app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), (req, res) => {
   const body = req.body as Record<string, unknown>;
+  const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
+  const userName = USERS.find(u => u.id === userId)?.name || '';
   const now = new Date().toISOString();
   const existing = db.prepare('SELECT * FROM units WHERE id = ?').get(req.params.id) as Record<string, unknown> | undefined;
   if (!existing) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
@@ -1774,6 +1969,14 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
     }
     if ('precioLista' in body && body.precioLista !== existing.precio_lista) {
       res.status(403).json({ error: 'Ventas no puede modificar el precio de lista' });
+      return;
+    }
+  }
+
+  // Restrict resciliación (Promesado → Disponible) to Admin/Supervisor
+  if ('estado' in body && body.estado === 'Disponible' && existing.estado === 'Promesado') {
+    if (!['Admin', 'Supervisor'].includes(userRole)) {
+      res.status(403).json({ error: 'Solo Admin o Supervisor pueden resciliar una unidad Promesada' });
       return;
     }
   }
@@ -1815,6 +2018,40 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
   if (updates.length === 0) { res.json({ ok: true }); return; }
   updates.push('updated_at = ?'); params.push(now); params.push(req.params.id);
   db.prepare(`UPDATE units SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+
+  // Notify JefeSala when estado changes (Paso 11)
+  if ('estado' in body && body.estado !== existing.estado) {
+    createNotification({
+      paraRol: 'JefeSala',
+      titulo: 'Cambio de estado en unidad',
+      mensaje: `${existing.type as string} ${existing.numero as string} cambió a ${body.estado as string}`,
+      tipo: 'info',
+      linkView: 'inventory',
+    });
+  }
+
+  // Handle resciliación: Promesado → Disponible (close historial, unlink client)
+  if ('estado' in body && body.estado === 'Disponible' && existing.estado === 'Promesado') {
+    type HistEntry = { fechaFin?: string; [k: string]: unknown };
+    const hist = (() => { try { return JSON.parse((existing.historial_ocupacion as string) || '[]') as HistEntry[]; } catch { return [] as HistEntry[]; } })();
+    const updHist = hist.map((h, idx) => idx === hist.length - 1 && !h.fechaFin ? { ...h, fechaFin: now, motivo: 'Resciliación' } : h);
+    db.prepare(`UPDATE units SET historial_ocupacion = ?, cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, updated_at = ? WHERE id = ?`)
+      .run(JSON.stringify(updHist), now, req.params.id);
+    createAuditLog(userId, userName, userRole, 'Resciliación', 'Unit', req.params.id, `Unidad ${existing.type as string} ${existing.numero as string} resciliada por ${userName}`);
+    createNotification({ paraRol: 'JefeSala', titulo: 'Resciliación registrada', mensaje: `${existing.type as string} ${existing.numero as string} fue resciliada por ${userName}`, tipo: 'warning', linkView: 'inventory', relatedId: req.params.id });
+  }
+
+  // Notify JefeSala when a planPagos item is marked Pagado (Paso 11)
+  if ('planPagos' in body && Array.isArray(body.planPagos)) {
+    type PlanItem = { id: string; status: string };
+    const prevPlan = (() => { try { return JSON.parse((existing.plan_pagos as string) || '[]') as PlanItem[]; } catch { return [] as PlanItem[]; } })();
+    const newPlan = body.planPagos as PlanItem[];
+    const newlyPaid = newPlan.filter(item => item.status === 'Pagado' && prevPlan.find(p => p.id === item.id)?.status !== 'Pagado');
+    if (newlyPaid.length > 0) {
+      createNotification({ paraRol: 'JefeSala', titulo: 'Pago registrado', mensaje: `Se registró ${newlyPaid.length} pago(s) en ${existing.type as string} ${existing.numero as string}`, tipo: 'success', linkView: 'inventory', relatedId: req.params.id });
+    }
+  }
+
   res.json({ ok: true });
 });
 
@@ -1826,17 +2063,40 @@ app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala',
   const userName = USERS.find(u => u.id === userId)?.name || '';
   const now = new Date().toISOString();
 
-  const assignUnit = db.transaction(() => {
+  const assignUnit = runTx(() => {
     const unit = db.prepare(
-      'SELECT id, estado, cliente_id FROM units WHERE id = ?'
-    ).get(id) as { id: string; estado: string; cliente_id: string | null } | undefined;
+      'SELECT id, estado, cliente_id, project_id, numero, type, historial_ocupacion FROM units WHERE id = ?'
+    ).get(id) as { id: string; estado: string; cliente_id: string | null; project_id: string; numero: string; type: string; historial_ocupacion: string } | undefined;
 
     if (!unit) throw new Error('UNIT_NOT_FOUND');
 
     const isAvailable = ['Disponible', 'Libre Asignación'].includes(unit.estado);
     const isSameClient = unit.cliente_id === body.clienteId;
+    const canReassign = ['Admin', 'JefeSala', 'Supervisor'].includes(userRole);
 
-    if (!isAvailable && !isSameClient) throw new Error(`UNIT_NOT_AVAILABLE:${unit.estado}`);
+    if (!isAvailable && !isSameClient && !(canReassign && unit.estado === 'Reservado')) {
+      throw new Error(`UNIT_NOT_AVAILABLE:${unit.estado}`);
+    }
+
+    // Get client info for historial
+    const cliente = db.prepare('SELECT id, nombre, rut FROM clients WHERE id = ?').get(body.clienteId) as { id: string; nombre: string; rut?: string } | undefined;
+    const clienteNombre = cliente?.nombre || '';
+    const clienteRut = cliente?.rut || '';
+
+    // Calculate reservation expiry
+    const config = getProjectDiscountConfig(unit.project_id);
+    const expira = new Date(new Date(now).getTime() + config.duracionReservaDias * 24 * 60 * 60 * 1000).toISOString();
+
+    // Build historial
+    type HistEntry = { fechaFin?: string; [k: string]: unknown };
+    const hist = (() => { try { return JSON.parse(unit.historial_ocupacion || '[]') as HistEntry[]; } catch { return [] as HistEntry[]; } })();
+    if (unit.cliente_id && unit.cliente_id !== body.clienteId) {
+      const lastIdx = hist.length - 1;
+      if (lastIdx >= 0 && !hist[lastIdx].fechaFin) {
+        hist[lastIdx] = { ...hist[lastIdx], fechaFin: now, motivo: 'Reasignación' };
+      }
+    }
+    hist.push({ tipo: 'Reserva', clienteId: body.clienteId, clienteNombre, clienteRut, vendedorId: userId, vendedorNombre: userName, fechaInicio: now });
 
     db.prepare(`
       UPDATE units SET
@@ -1845,17 +2105,21 @@ app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala',
         fecha_asignacion = ?,
         fecha_reserva = COALESCE(fecha_reserva, ?),
         estado = 'Reservado',
+        reserva_vendedor_id = ?,
+        reserva_expira = ?,
+        historial_ocupacion = ?,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).run(body.clienteId, body.asignadoPor ?? userId, body.fechaAsignacion ?? now, body.fechaReserva ?? now, id);
+    `).run(body.clienteId, body.asignadoPor ?? userId, body.fechaAsignacion ?? now, body.fechaReserva ?? now, userId, expira, JSON.stringify(hist), id);
 
-    return db.prepare('SELECT * FROM units WHERE id = ?').get(id);
+    return { numero: unit.numero, type: unit.type };
   });
 
   try {
-    const updatedUnit = assignUnit();
+    const { numero, type } = assignUnit() as { numero: string; type: string };
     createAuditLog(userId, userName, userRole, 'Asignación', 'Unit', id, `Unidad asignada a cliente ${body.clienteId}`);
-    res.json({ ok: true, unit: updatedUnit });
+    createNotification({ paraRol: 'JefeSala', titulo: 'Unidad reservada', mensaje: `${userName} reservó ${type} ${numero}`, tipo: 'info', linkView: 'inventory', relatedId: id });
+    res.json({ ok: true });
   } catch (err: unknown) {
     const msg = (err as Error).message;
     if (msg === 'UNIT_NOT_FOUND') { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
@@ -1877,6 +2141,49 @@ app.patch('/api/units/:id/unassign', requireAuth, requireRole('Admin', 'JefeSala
     .run(now, req.params.id);
   if (result.changes === 0) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
   createAuditLog(userId, userName, userRole, 'Desasignación', 'Unit', req.params.id, 'Cliente desasignado de la unidad');
+  res.json({ ok: true });
+});
+
+app.post('/api/units/:id/liberar', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor'), (req, res) => {
+  const userId = (req as AuthenticatedRequest).userId;
+  const userRole = (req as AuthenticatedRequest).userRole;
+  const userName = USERS.find(u => u.id === userId)?.name || '';
+  const now = new Date().toISOString();
+
+  const unit = db.prepare('SELECT id, estado, numero, type, cliente_id, reserva_vendedor_id, historial_ocupacion FROM units WHERE id = ?')
+    .get(req.params.id) as { id: string; estado: string; numero: string; type: string; cliente_id: string | null; reserva_vendedor_id: string | null; historial_ocupacion: string } | undefined;
+  if (!unit) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
+  if (unit.estado !== 'Reservado') { res.status(400).json({ error: 'La unidad no está en estado Reservado' }); return; }
+
+  type HistEntry = { fechaFin?: string; [k: string]: unknown };
+  const hist = (() => { try { return JSON.parse(unit.historial_ocupacion || '[]') as HistEntry[]; } catch { return [] as HistEntry[]; } })();
+  const updHist = hist.map((h, idx) => idx === hist.length - 1 && !h.fechaFin ? { ...h, fechaFin: now, motivo: 'Liberación manual' } : h);
+
+  db.prepare(`
+    UPDATE units SET
+      estado = 'Disponible',
+      cliente_id = NULL,
+      asignado_por = NULL,
+      fecha_asignacion = NULL,
+      reserva_vendedor_id = NULL,
+      reserva_expira = NULL,
+      historial_ocupacion = ?,
+      updated_at = ?
+    WHERE id = ?
+  `).run(JSON.stringify(updHist), now, req.params.id);
+
+  if (unit.cliente_id) {
+    db.prepare(`UPDATE clients SET estado = 'Prospecto' WHERE id = ?`).run(unit.cliente_id);
+  }
+
+  createAuditLog(userId, userName, userRole, 'Liberación reserva', 'Unit', req.params.id,
+    `Reserva liberada manualmente en ${unit.type} ${unit.numero} por ${userName}`);
+
+  if (unit.reserva_vendedor_id) {
+    createNotification({ paraUserId: unit.reserva_vendedor_id, titulo: 'Reserva liberada', mensaje: `${unit.type} ${unit.numero} fue liberada por ${userName}`, tipo: 'warning', linkView: 'inventory', relatedId: req.params.id });
+  }
+  createNotification({ paraRol: 'JefeSala', titulo: 'Reserva liberada manualmente', mensaje: `${unit.type} ${unit.numero} fue liberada por ${userName}`, tipo: 'info', linkView: 'inventory', relatedId: req.params.id });
+
   res.json({ ok: true });
 });
 
@@ -1917,6 +2224,32 @@ app.get('/api/sync/:key', requireAuth, (req, res) => {
     .get(`${userId}:${req.params.key}`) as { value: string; updated_at: string } | undefined;
   if (!row) { res.status(404).json({ error: 'No encontrado' }); return; }
   res.json({ key: req.params.key, value: JSON.parse(row.value), updatedAt: row.updated_at });
+});
+
+// ── Manejo global de errores ──────────────────────────────────────────────────
+// 404 JSON para rutas /api no encontradas (en vez del HTML por defecto de Express).
+app.use('/api', (_req: express.Request, res: express.Response) => {
+  if (res.headersSent) return;
+  res.status(404).json({ error: 'Endpoint no encontrado' });
+});
+
+// Error handler global (4 argumentos). Captura lo que propaga asyncHandler y
+// cualquier throw síncrono. Responde 500 genérico SIN filtrar el stack al cliente.
+app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[ERROR no controlado]', err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: 'Error interno del servidor' });
+});
+
+// Red de seguridad a nivel de proceso: evita que una promesa rechazada o una
+// excepción no capturada que se escape de los handlers tumbe el servidor.
+// NOTA: cuando exista el process manager (systemd Restart=always, Fase 3), conviene
+// que uncaughtException haga un cierre ordenado + exit(1) en vez de seguir vivo.
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err);
 });
 
 // ── Arranque ─────────────────────────────────────────────────────────────────

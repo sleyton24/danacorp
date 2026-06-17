@@ -8,7 +8,9 @@
     "types": ["node"],
     "allowJs": true,
     "outDir": "dist-server",
-    "esModuleInterop": true
+    "esModuleInterop": true,
+    "strict": true,
+    "noEmit": true
   },
   "include": ["server.ts"]
 }
