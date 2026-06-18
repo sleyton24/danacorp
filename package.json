@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.server.json",
     "typecheck:web": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "migrate": "tsx scripts/migrate-sqlite-to-pg.ts"
   },
   "dependencies": {
     "@google/genai": "^1.30.0",
