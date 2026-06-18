@@ -2067,6 +2067,18 @@ app.use('/api', (_req: express.Request, res: express.Response) => {
   res.status(404).json({ error: 'Endpoint no encontrado' });
 });
 
+// ── Servir el frontend (producción) ───────────────────────────────────────────
+// Si existe el build (dist/), Express sirve los estáticos y hace fallback SPA a
+// index.html, same-origin (elimina CORS y simplifica el proxy, que solo termina TLS).
+// En dev, Vite sirve el frontend y dist/ no existe, así que este bloque no aplica.
+const DIST_DIR = path.join(__dirname, 'dist');
+if (fs.existsSync(DIST_DIR)) {
+  app.use(express.static(DIST_DIR));
+  app.get('*', (_req: express.Request, res: express.Response) => {
+    res.sendFile(path.join(DIST_DIR, 'index.html'));
+  });
+}
+
 // Error handler global (4 argumentos). Captura lo que propaga asyncHandler y
 // cualquier throw síncrono. Responde 500 genérico SIN filtrar el stack al cliente.
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

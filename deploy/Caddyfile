@@ -1,0 +1,11 @@
+# Caddyfile — terminación TLS automática (Let's Encrypt) + reverse proxy al backend.
+# El backend Express sirve TANTO la API (/api, /uploads) COMO el frontend (dist/),
+# así que basta con proxiar todo a localhost:3001 (same-origin, sin CORS).
+#
+# Uso: reemplazar el dominio, copiar a /etc/caddy/Caddyfile y `systemctl reload caddy`.
+# Caddy obtiene y renueva el certificado HTTPS solo.
+
+danacorp.tudominio.cl {
+    encode gzip
+    reverse_proxy localhost:3001
+}

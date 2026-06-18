@@ -12,7 +12,11 @@
     "typecheck": "tsc -p tsconfig.server.json",
     "typecheck:web": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "migrate": "tsx scripts/migrate-sqlite-to-pg.ts"
+    "migrate": "tsx scripts/migrate-sqlite-to-pg.ts",
+    "start": "tsx server.ts"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "dependencies": {
     "@google/genai": "^1.30.0",

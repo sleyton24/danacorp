@@ -1,0 +1,30 @@
+# systemd unit para el backend DanaCorp (Node + tsx).
+# Instalar: copiar a /etc/systemd/system/danacorp.service, ajustar rutas/usuario,
+#   sudo systemctl daemon-reload && sudo systemctl enable --now danacorp
+# Logs: journalctl -u danacorp -f
+#
+# IMPORTANTE: una sola instancia (el estado de los crons y caches vive en memoria).
+# No usar PM2 cluster ni varias réplicas sin externalizar los jobs.
+
+[Unit]
+Description=DanaCorp backend (Express + PostgreSQL)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=danacorp
+WorkingDirectory=/opt/danacorp
+EnvironmentFile=/opt/danacorp/.env
+Environment=NODE_ENV=production
+# tsx ejecuta el TypeScript directamente; usar la ruta del binario local o npx.
+ExecStart=/usr/bin/npm run start
+Restart=always
+RestartSec=3
+# Endurecimiento básico
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
