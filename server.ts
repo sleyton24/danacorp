@@ -1969,7 +1969,9 @@ app.patch('/api/units/:id/unassign', requireAuth, requireRole('Admin', 'JefeSala
   const userRole = (req as AuthenticatedRequest).userRole;
   const userName = (await getUserById(userId))?.name || '';
   const now = new Date().toISOString();
-  const result = await db.prepare(`UPDATE units SET cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, estado = 'Disponible', updated_at = ? WHERE id = ?`)
+  // Al desistir/desasignar también se limpian los datos de reserva (fecha, vendedor, expiración),
+  // si no la fecha de reserva quedaba pegada (bug reportado).
+  const result = await db.prepare(`UPDATE units SET cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, fecha_reserva = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, estado = 'Disponible', updated_at = ? WHERE id = ?`)
     .run(now, req.params.id);
   if (result.changes === 0) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
   createAuditLog(userId, userName, userRole, 'Desasignación', 'Unit', req.params.id, 'Cliente desasignado de la unidad');
@@ -1997,6 +1999,7 @@ app.post('/api/units/:id/liberar', requireAuth, requireRole('Admin', 'JefeSala',
       cliente_id = NULL,
       asignado_por = NULL,
       fecha_asignacion = NULL,
+      fecha_reserva = NULL,
       reserva_vendedor_id = NULL,
       reserva_expira = NULL,
       historial_ocupacion = ?,

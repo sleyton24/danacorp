@@ -97,6 +97,29 @@ describe('Flujo 2 — Asignar/reservar unidad (transacción withTx)', () => {
       .send({ clienteId: 'x' });
     expect(res.status).toBe(404);
   });
+
+  it('al desistir (unassign) se limpia fecha_reserva y vuelve a Disponible', async () => {
+    const projectId = 'p-test-desist';
+    const cli = await request(app).post('/api/clients').set(auth(adminToken))
+      .send({ projectId, nombre: 'Cliente Desiste', rut: '33.333.333-3' });
+    const unit = await request(app).post('/api/units').set(auth(adminToken))
+      .send({ projectId, numero: 'DES-1', precioLista: 1000, estado: 'Disponible' });
+
+    await request(app).patch(`/api/units/${unit.body.id}/assign`).set(auth(adminToken)).send({ clienteId: cli.body.id });
+    // Tras asignar, la unidad quedó Reservada con fecha_reserva seteada.
+    let units = await request(app).get('/api/units').set(auth(adminToken));
+    let u = (units.body as Array<Record<string, unknown>>).find(x => x.id === unit.body.id);
+    expect(u?.estado).toBe('Reservado');
+    expect(u?.fechaReserva).toBeTruthy();
+
+    // Al desistir, debe limpiarse fecha_reserva y volver a Disponible.
+    const un = await request(app).patch(`/api/units/${unit.body.id}/unassign`).set(auth(adminToken)).send({});
+    expect(un.status).toBe(200);
+    units = await request(app).get('/api/units').set(auth(adminToken));
+    u = (units.body as Array<Record<string, unknown>>).find(x => x.id === unit.body.id);
+    expect(u?.estado).toBe('Disponible');
+    expect(u?.fechaReserva ?? null).toBeNull();
+  });
 });
 
 describe('Flujo 3 — Generar cotización (transacción withTx + insertPlan en loop)', () => {
