@@ -1,17 +1,20 @@
 import React, { useState, useMemo } from 'react';
-import { RealEstateUnit, Client } from '../types';
-import { 
-  Search, Home, LayoutGrid, Car, Package, List, 
-  Layers, Bed, Bath, Ruler, Filter, ChevronRight, User as UserIcon, Link as LinkIcon, X, Compass
+import { RealEstateUnit, Client, User } from '../types';
+import {
+  Search, Home, LayoutGrid, Car, Package, List,
+  Layers, Bed, Bath, Ruler, Filter, ChevronRight, User as UserIcon, Link as LinkIcon, X, Compass, Unlock
 } from 'lucide-react';
 
 interface UnitListProps {
   units: RealEstateUnit[];
   clients: Client[];
+  currentUser?: User;
   onSelectUnit: (unit: RealEstateUnit) => void;
+  onReleaseUnit?: (unitId: string) => void;
+  showToast?: (message: string, type?: 'success' | 'error' | 'warning') => void;
 }
 
-export const UnitList: React.FC<UnitListProps> = ({ units, clients, onSelectUnit }) => {
+export const UnitList: React.FC<UnitListProps> = ({ units, clients, currentUser, onSelectUnit, onReleaseUnit, showToast }) => {
   const [filterType, setFilterType] = useState<string>('Todos');
   const [searchTerm, setSearchTerm] = useState('');
   const [viewMode, setViewMode] = useState<'table' | 'grid'>('table');
@@ -122,6 +125,33 @@ export const UnitList: React.FC<UnitListProps> = ({ units, clients, onSelectUnit
           return <span className="font-bold text-gray-600">{unit.superficie || 0} m²</span>;
       }
       return '-';
+  };
+
+  const now = new Date().toISOString();
+
+  const isReservadaOtroVendedor = (unit: RealEstateUnit): boolean =>
+    unit.estado === 'Reservado' &&
+    !!unit.reservaVendedorId &&
+    unit.reservaVendedorId !== currentUser?.id;
+
+  const handleLiberar = async (unitId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const tok = localStorage.getItem('dw_token');
+    if (!tok) return;
+    try {
+      const res = await fetch(`/api/units/${unitId}/liberar`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tok}` },
+      });
+      if (res.ok) {
+        onReleaseUnit?.(unitId);
+        showToast?.('Unidad liberada', 'success');
+      } else {
+        showToast?.('Error al liberar la unidad', 'error');
+      }
+    } catch {
+      showToast?.('Error al liberar la unidad', 'error');
+    }
   };
 
   const clearFilters = () => {
@@ -304,23 +334,57 @@ export const UnitList: React.FC<UnitListProps> = ({ units, clients, onSelectUnit
                         <th className="px-6 py-4">Atributos</th>
                         <th className="px-6 py-4">Titular</th>
                         <th className="px-6 py-4 text-right">Precio (UF)</th>
+                        <th className="px-6 py-4"></th>
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50 dark:divide-gray-700">
                     {filteredUnits.length === 0 ? (
-                        <tr><td colSpan={7} className="px-6 py-12 text-center text-gray-400">No se encontraron registros.</td></tr>
+                        <tr><td colSpan={8} className="px-6 py-12 text-center text-gray-400">No se encontraron registros.</td></tr>
                     ) : filteredUnits.map(unit => {
                         const owner = getUnitOwner(unit);
                         const effectiveStatus = getEffectiveStatus(unit);
+                        const reservadaOtro = isReservadaOtroVendedor(unit);
+                        const canLiberar = currentUser && ['Admin', 'Supervisor', 'JefeSala'].includes(currentUser.role) && unit.estado === 'Reservado';
+                        const isVentas = currentUser?.role === 'Ventas';
+                        const expiraDate = unit.reservaExpira ? new Date(unit.reservaExpira) : null;
+                        const expiraProxima = expiraDate && (expiraDate.getTime() - Date.now()) < 24 * 60 * 60 * 1000;
                         return (
-                        <tr key={unit.id} onClick={() => onSelectUnit(unit)} className="hover:bg-blue-50 dark:hover:bg-blue-900/10 cursor-pointer transition-colors group">
+                        <tr key={unit.id} onClick={() => !reservadaOtro && onSelectUnit(unit)} className={`hover:bg-blue-50 dark:hover:bg-blue-900/10 transition-colors group ${reservadaOtro ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
                             <td className="px-6 py-4 font-bold text-gray-900 dark:text-white">{unit.numero}</td>
                             <td className="px-6 py-4 text-gray-600 dark:text-gray-400">{unit.type}</td>
                             <td className="px-6 py-4">{getUnitAsociados(unit)}</td>
-                            <td className="px-6 py-4"><span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${getStatusColor(effectiveStatus)}`}>{effectiveStatus}</span></td>
+                            <td className="px-6 py-4">
+                              <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${getStatusColor(effectiveStatus)}`}>{effectiveStatus}</span>
+                              {unit.estado === 'Reservado' && (
+                                <div className="mt-1">
+                                  {isVentas && reservadaOtro ? (
+                                    <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500">Reservada</span>
+                                  ) : !isVentas && expiraDate ? (
+                                    <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium border ${expiraProxima ? 'bg-red-100 text-red-800 border-red-200' : 'bg-amber-100 text-amber-800 border-amber-200'}`}>
+                                      Reservada · vence {expiraDate.toLocaleDateString('es-CL')}
+                                    </span>
+                                  ) : (
+                                    <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 border border-amber-200">
+                                      Reservada
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </td>
                             <td className="px-6 py-4 text-gray-500 text-xs">{getUnitAttributes(unit)}</td>
                             <td className="px-6 py-4 text-gray-600 dark:text-gray-400 text-xs truncate max-w-[150px]">{owner ? owner.nombre : '—'}</td>
                             <td className="px-6 py-4 text-right font-mono font-bold text-blue-600 dark:text-blue-400">{formatPrice(unit.precioLista)}</td>
+                            <td className="px-6 py-4">
+                              {canLiberar && (
+                                <button
+                                  onClick={(e) => handleLiberar(unit.id, e)}
+                                  className="flex items-center gap-1 px-2 py-1 text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded hover:bg-amber-100 transition-colors whitespace-nowrap"
+                                  title="Liberar reserva"
+                                >
+                                  <Unlock className="w-3 h-3" /> Liberar Unidad
+                                </button>
+                              )}
+                            </td>
                         </tr>
                     )})}
                 </tbody>

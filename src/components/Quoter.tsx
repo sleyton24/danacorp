@@ -746,17 +746,22 @@ export const Quoter: React.FC<QuoterProps> = ({
   // ── Available units ──────────────────────────────────────────────────────
   const availableUnits = useMemo(() => {
     const ownClientId = selectedClient?.id;
-    const candidates = units.filter(u =>
-      u.estado === 'Disponible' ||
-      u.estado === 'Libre Asignación' ||
-      (!!ownClientId && u.clienteId === ownClientId)
-    );
+    const candidates = units.filter(u => {
+      const isCandidate =
+        u.estado === 'Disponible' ||
+        u.estado === 'Libre Asignación' ||
+        (!!ownClientId && u.clienteId === ownClientId);
+      if (!isCandidate) return false;
+      // Block Reservado units owned by another vendor
+      if (u.estado === 'Reservado' && u.reservaVendedorId && u.reservaVendedorId !== currentUser.id) return false;
+      return true;
+    });
     if (!unitFilter) return candidates;
     const lf = unitFilter.toLowerCase();
     return candidates.filter(u =>
       u.numero.toLowerCase().includes(lf) || u.type.toLowerCase().includes(lf),
     );
-  }, [units, unitFilter, selectedClient?.id]);
+  }, [units, unitFilter, selectedClient?.id, currentUser.id]);
 
   const detachedUnits = useMemo(
     () => units.filter(u => detachedAccessories.includes(u.id)),
@@ -872,15 +877,15 @@ export const Quoter: React.FC<QuoterProps> = ({
     doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(50, 50, 50);
     doc.text('1.  INMUEBLES', mg, y); y += 5;
 
-    // Helper: label "Bono Pie X% en [unidades]" dinámico
+    // Helper: label "Descuento Adicional Departamento X% en [unidades]" dinámico
     const bonoTypesArr = [...new Set(bonoPieBreakdown.conBono.map(x => x.unit.type))] as string[];
     const btLbls: string[] = [];
     if (bonoTypesArr.includes('Departamento')) btLbls.push('Depto.');
     if (bonoTypesArr.includes('Estacionamiento')) btLbls.push('Estac.');
     if (bonoTypesArr.includes('Bodega')) btLbls.push('Bodega');
     const bonoLabelPDF = btLbls.length === 0 ? '' :
-      btLbls.length === 1 ? `Bono Pie ${bonoPct}% en ${btLbls[0]}` :
-      `Bono Pie ${bonoPct}% en ${btLbls.slice(0,-1).join(', ')} y ${btLbls[btLbls.length-1]}`;
+      btLbls.length === 1 ? `Descuento Adicional Departamento ${bonoPct}% en ${btLbls[0]}` :
+      `Descuento Adicional Departamento ${bonoPct}% en ${btLbls.slice(0,-1).join(', ')} y ${btLbls[btLbls.length-1]}`;
 
     // Per-unit rows: precio INFLADO (con bono incorporado), badge dcto manual si aplica
     const unitRowsPDF: unknown[][] = selectedUnits.map(u => {

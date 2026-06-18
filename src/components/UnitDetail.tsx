@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { RealEstateUnit, Client, PaymentItem, User, PaymentPlan } from '../types';
+import { RealEstateUnit, Client, PaymentItem, User, PaymentPlan, OcupacionEntry } from '../types';
 import {
   ArrowLeft, Save, Trash2, Building2,
   AlertTriangle, CreditCard, RefreshCw,
@@ -291,7 +291,8 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   };
 
   const isReadOnly = currentUser.role === 'Lectura';
-  const canAssign = currentUser.role !== 'Lectura';
+  const puedeReasignar = ['Admin', 'Supervisor', 'JefeSala'].includes(currentUser.role);
+  const canAssign = currentUser.role !== 'Lectura' && (!formData.clienteId || puedeReasignar);
 
   // Cierra el menú al hacer clic fuera
   useEffect(() => {
@@ -646,7 +647,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                             onClick={() => { setClientMenuOpen(false); setAssignSearch(''); setIsAssignModalOpen(true); }}
                             className="w-full px-4 py-3 text-sm font-medium text-left hover:bg-gray-50 flex items-center gap-3"
                           >
-                            <UserPlus className="w-4 h-4 text-green-500" /> Cambiar Cliente
+                            <UserPlus className="w-4 h-4 text-green-500" /> Reasignar Cliente
                           </button>
                         )}
                         {canAssign && onUnassignClient && (
@@ -1121,8 +1122,48 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                 </div>
             </div>
           </div>
+
+          {/* Historial de Ocupación */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+              <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50">
+                <h3 className="text-xs font-bold text-gray-500 flex items-center gap-2 uppercase tracking-widest"><History className="w-4 h-4 text-indigo-600" /> Historial de Ocupación</h3>
+              </div>
+              {(!unit.historialOcupacion || unit.historialOcupacion.length === 0) ? (
+                <p className="text-xs text-gray-400 italic px-4 py-3">Sin historial de ocupación registrado.</p>
+              ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-xs">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-100 text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                      <th className="px-4 py-3 text-left">Tipo</th>
+                      <th className="px-4 py-3 text-left">Cliente</th>
+                      <th className="px-4 py-3 text-left">Vendedor</th>
+                      <th className="px-4 py-3 text-left">Desde</th>
+                      <th className="px-4 py-3 text-left">Hasta</th>
+                      <th className="px-4 py-3 text-left">Motivo</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {[...unit.historialOcupacion].reverse().map((entry: OcupacionEntry, idx: number) => {
+                      const isActive = !entry.fechaFin;
+                      return (
+                        <tr key={idx} className={`${isActive ? 'bg-blue-50/40' : ''}`}>
+                          <td className="px-4 py-3 font-bold text-gray-700">{entry.tipo}</td>
+                          <td className="px-4 py-3 text-gray-600">{entry.clienteNombre}{entry.clienteRut && <span className="text-gray-400 ml-1 font-mono text-[10px]">{entry.clienteRut}</span>}</td>
+                          <td className="px-4 py-3 text-gray-600">{entry.vendedorNombre}</td>
+                          <td className="px-4 py-3 text-gray-500 font-mono">{new Date(entry.fechaInicio).toLocaleDateString('es-CL')}</td>
+                          <td className="px-4 py-3 text-gray-500 font-mono">{entry.fechaFin ? new Date(entry.fechaFin).toLocaleDateString('es-CL') : <span className="text-blue-600 font-bold">Activo</span>}</td>
+                          <td className="px-4 py-3 text-gray-400 italic">{entry.motivo || '—'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              )}
+          </div>
         </div>
-        
+
         {/* Desglose Financiero - COLUMNA DERECHA */}
         <div className="xl:col-span-4 space-y-6">
           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 space-y-4 sticky top-8">

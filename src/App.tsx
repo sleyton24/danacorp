@@ -625,7 +625,14 @@ const App: React.FC = () => {
                 showToast={showToast}
               />
             )}
-            {currentView === 'inventory' && <UnitList units={currentProjectUnits} clients={currentProjectClients} onSelectUnit={setSelectedUnit} />}
+            {currentView === 'inventory' && <UnitList
+              units={currentProjectUnits}
+              clients={currentProjectClients}
+              currentUser={currentUser}
+              onSelectUnit={setSelectedUnit}
+              onReleaseUnit={(unitId) => setUnits(prev => prev.map(u => u.id === unitId ? { ...u, reservaVendedorId: undefined, reservaExpira: undefined, estado: 'Disponible' as const } : u))}
+              showToast={showToast}
+            />}
             {currentView === 'prices' && <PriceManager units={currentProjectUnits} onUpdateUnit={handleUpdateUnit} currentUser={currentUser} />}
             {currentView === 'create_project' && <ProjectCreationWizard onSave={handleCreateProject} onCancel={() => setCurrentView('summary')} />}
             {currentView === 'audit' && (

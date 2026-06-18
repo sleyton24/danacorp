@@ -174,6 +174,22 @@ export interface RealEstateUnit {
   descuentoSolicitudId?: string;
 
   aplicaBonoPie?: boolean;
+
+  reservaVendedorId?: string;
+  reservaExpira?: string;
+  historialOcupacion?: OcupacionEntry[];
+}
+
+export interface OcupacionEntry {
+  tipo: 'Reserva' | 'Promesa' | 'Escritura';
+  clienteId: string;
+  clienteNombre: string;
+  clienteRut?: string;
+  vendedorId: string;
+  vendedorNombre: string;
+  fechaInicio: string;
+  fechaFin?: string;
+  motivo?: string;
 }
 
 export interface DiscountConfig {
@@ -194,6 +210,7 @@ export interface ProjectConfig {
   ciudadProyecto?: string;
   nombreInmobiliaria?: string;
   cantidadCuotasPie?: number;
+  duracionReservaDias?: number;
 }
 
 export interface DiscountRequestRecord {

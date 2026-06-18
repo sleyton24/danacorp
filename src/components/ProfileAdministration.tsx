@@ -18,6 +18,7 @@ type ProjectCfg = {
   supervisorMaxPct: number;
   bonoPiePct: number;
   vigenciaCotizacionDias: number;
+  duracionReservaDias: number;
   // SSilva PDF fields
   reservaCLP: number;
   direccionProyecto: string;
@@ -28,6 +29,7 @@ type ProjectCfg = {
 };
 const DEFAULT_CFG: ProjectCfg = {
   jefeMaxPct: 3, supervisorMaxPct: 8, bonoPiePct: 10, vigenciaCotizacionDias: 7,
+  duracionReservaDias: 15,
   reservaCLP: 0, direccionProyecto: '', comunaProyecto: '', ciudadProyecto: '',
   nombreInmobiliaria: '', cantidadCuotasPie: 36,
 };
@@ -52,16 +54,17 @@ const ProjectConfigSection: React.FC<{
           setConfigs(prev => ({
             ...prev,
             [p.id]: d ? {
-              jefeMaxPct:             d.discountConfig?.jefeMaxPct ?? DEFAULT_CFG.jefeMaxPct,
-              supervisorMaxPct:       d.discountConfig?.supervisorMaxPct ?? DEFAULT_CFG.supervisorMaxPct,
-              bonoPiePct:             d.bonoPiePct ?? DEFAULT_CFG.bonoPiePct,
-              vigenciaCotizacionDias: d.discountConfig?.vigenciaCotizacionDias ?? DEFAULT_CFG.vigenciaCotizacionDias,
-              reservaCLP:             d.reservaCLP ?? DEFAULT_CFG.reservaCLP,
-              direccionProyecto:      d.direccionProyecto ?? DEFAULT_CFG.direccionProyecto,
-              comunaProyecto:         d.comunaProyecto ?? DEFAULT_CFG.comunaProyecto,
-              ciudadProyecto:         d.ciudadProyecto ?? DEFAULT_CFG.ciudadProyecto,
-              nombreInmobiliaria:     d.nombreInmobiliaria ?? DEFAULT_CFG.nombreInmobiliaria,
-              cantidadCuotasPie:      d.cantidadCuotasPie ?? DEFAULT_CFG.cantidadCuotasPie,
+              jefeMaxPct:              d.discountConfig?.jefeMaxPct ?? DEFAULT_CFG.jefeMaxPct,
+              supervisorMaxPct:        d.discountConfig?.supervisorMaxPct ?? DEFAULT_CFG.supervisorMaxPct,
+              bonoPiePct:              d.bonoPiePct ?? DEFAULT_CFG.bonoPiePct,
+              vigenciaCotizacionDias:  d.discountConfig?.vigenciaCotizacionDias ?? DEFAULT_CFG.vigenciaCotizacionDias,
+              duracionReservaDias:  d.duracionReservaDias ?? DEFAULT_CFG.duracionReservaDias,
+              reservaCLP:              d.reservaCLP ?? DEFAULT_CFG.reservaCLP,
+              direccionProyecto:       d.direccionProyecto ?? DEFAULT_CFG.direccionProyecto,
+              comunaProyecto:          d.comunaProyecto ?? DEFAULT_CFG.comunaProyecto,
+              ciudadProyecto:          d.ciudadProyecto ?? DEFAULT_CFG.ciudadProyecto,
+              nombreInmobiliaria:      d.nombreInmobiliaria ?? DEFAULT_CFG.nombreInmobiliaria,
+              cantidadCuotasPie:       d.cantidadCuotasPie ?? DEFAULT_CFG.cantidadCuotasPie,
             } : (prev[p.id] || DEFAULT_CFG),
           }));
         })
@@ -103,6 +106,7 @@ const ProjectConfigSection: React.FC<{
       ciudadProyecto: cfg.ciudadProyecto,
       nombreInmobiliaria: cfg.nombreInmobiliaria,
       cantidadCuotasPie: cfg.cantidadCuotasPie,
+      duracionReservaDias: cfg.duracionReservaDias,
     };
     try {
       const res = await fetch(`/api/projects/${projectId}/config`, {
@@ -205,6 +209,16 @@ const ProjectConfigSection: React.FC<{
                         value={cfg.vigenciaCotizacionDias}
                         onChange={e => upd(p.id, 'vigenciaCotizacionDias', Number(e.target.value))}
                         className="w-24 px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono text-center outline-none focus:ring-2 focus:ring-blue-100" />
+                      <span className="text-sm text-gray-500">días</span>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Duración de reservas (días)</label>
+                    <div className="flex items-center gap-2">
+                      <input type="number" step="1" min="1" max="180"
+                        value={cfg.duracionReservaDias}
+                        onChange={e => upd(p.id, 'duracionReservaDias', Number(e.target.value))}
+                        className="w-24 px-3 py-2 border border-amber-200 rounded-lg text-sm font-mono text-center outline-none focus:ring-2 focus:ring-amber-100" />
                       <span className="text-sm text-gray-500">días</span>
                     </div>
                   </div>

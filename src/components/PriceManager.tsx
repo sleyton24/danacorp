@@ -291,7 +291,7 @@ export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit,
             <div className="flex justify-between items-start mb-4">
                 <div className="flex items-center gap-3">
                     <div className={`w-12 h-12 rounded-lg flex items-center justify-center transition-colors ${unit.type === 'Departamento' ? 'bg-blue-50 text-blue-600' : unit.type === 'Estacionamiento' ? 'bg-gray-100 text-gray-600' : 'bg-orange-50 text-orange-600'}`}>{getUnitIcon(unit.type)}</div>
-                    <div><h3 className="font-bold text-lg text-gray-900">{getUnitTitle(unit)}</h3><div className="flex gap-2"><span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${getStatusColor(effectiveStatus)}`}>{effectiveStatus}</span></div></div>
+                    <div><h3 className="font-bold text-lg text-gray-900">{getUnitTitle(unit)}</h3><div className="flex flex-wrap gap-1 mt-1"><span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${getStatusColor(effectiveStatus)}`}>{effectiveStatus}</span></div></div>
                 </div>
                 {!isEditable && <div title="Edición bloqueada" className="text-gray-300"><Lock className="w-5 h-5" /></div>}
             </div>
@@ -328,7 +328,9 @@ export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit,
                                   <td className="px-6 py-4 font-bold text-gray-900 dark:text-white">{unit.numero}</td>
                                   <td className="px-6 py-4 text-gray-600 dark:text-gray-400">{unit.type}</td>
                                   <td className="px-6 py-4">{getUnitAsociados(unit)}</td>
-                                  <td className="px-6 py-4"><span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${getStatusColor(effectiveStatus)}`}>{effectiveStatus}</span></td>
+                                  <td className="px-6 py-4">
+                                    <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${getStatusColor(effectiveStatus)}`}>{effectiveStatus}</span>
+                                  </td>
                                   <td className="px-6 py-4 text-gray-500 text-xs">{getUnitAttributes(unit)}</td>
                                   <td className="px-6 py-4 text-right font-mono font-bold text-blue-700">{formatPrice(unit.precioLista)}</td>
                                   <td className="px-6 py-4 text-center">{isEditable ? <Edit2 className="w-4 h-4 text-blue-400" /> : <Lock className="w-4 h-4 text-gray-300" />}</td>

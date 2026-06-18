@@ -45,7 +45,18 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ on
     ]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Plantilla Carga");
-    XLSX.writeFile(wb, "Plantilla_Carga_Masiva.xlsx");
+    // XLSX.writeFile no dispara la descarga de forma fiable en bundles (Vite + build
+    // CDN de SheetJS). Generamos el archivo como blob y lo descargamos con un <a>.
+    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'Plantilla_Carga_Masiva.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const validateData = (jsonData: any[]): { units: RealEstateUnit[], errors: ValidationError[], colErrors: Record<string, string> } => {
@@ -161,8 +172,8 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ on
     
     reader.onload = (e) => {
       try {
-        const data = e.target?.result;
-        const workbook = XLSX.read(data, { type: 'binary' });
+        const data = new Uint8Array(e.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array' });
         const sheetName = workbook.SheetNames[0];
         const sheet = workbook.Sheets[sheetName];
         const jsonData = XLSX.utils.sheet_to_json(sheet);
@@ -181,7 +192,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ on
         setValidationErrors([{ row: 0, col: 'General', message: 'Error al leer Excel.' }]);
       }
     };
-    reader.readAsBinaryString(file);
+    reader.readAsArrayBuffer(file);
   };
 
   const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(true); };
