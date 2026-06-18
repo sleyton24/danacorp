@@ -1,11 +1,12 @@
 import express from 'express';
+import 'express-async-errors';
 import cors from 'cors';
-import { DatabaseSync } from 'node:sqlite';
 import jwt from 'jsonwebtoken';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
 import 'dotenv/config';
+import { db, withTx, ping, pool } from './db';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -34,281 +35,13 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10mb' }));
 
-// ── SQLite (node:sqlite — Node.js 22.5+, sin dependencias nativas) ─────────
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'danacorp.db');
-const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA journal_mode = WAL;');
-
-// ── Transacciones ─────────────────────────────────────────────────────────────
-// node:sqlite NO expone .transaction() (eso es de better-sqlite3): db.transaction
-// es undefined y llamarlo lanza TypeError. runTx ejecuta fn dentro de BEGIN/COMMIT
-// y hace ROLLBACK ante cualquier error. Devuelve una función sin argumentos, igual
-// que el patrón db.transaction(fn). (En la Fase 2 se reemplaza por withTx sobre el
-// pool de PostgreSQL.)
-function runTx<T>(fn: () => T): () => T {
-  return () => {
-    db.exec('BEGIN');
-    try {
-      const result = fn();
-      db.exec('COMMIT');
-      return result;
-    } catch (err) {
-      try { db.exec('ROLLBACK'); } catch { /* ignora errores de rollback */ }
-      throw err;
-    }
-  };
-}
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS quotation_drafts (
-    id             TEXT PRIMARY KEY,
-    project_id     TEXT,
-    user_id        TEXT NOT NULL,
-    cliente_rut    TEXT,
-    cliente_nombre TEXT,
-    data           TEXT NOT NULL DEFAULT '{}',
-    created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS discount_requests (
-    id                       TEXT PRIMARY KEY,
-    project_id               TEXT NOT NULL,
-    unit_id                  TEXT NOT NULL,
-    unit_numero              TEXT NOT NULL,
-    vendedor_id              TEXT NOT NULL,
-    vendedor_nombre          TEXT NOT NULL DEFAULT '',
-    cotizacion_id            TEXT,
-    precio_original          REAL NOT NULL,
-    precio_solicitado        REAL NOT NULL,
-    descuento_pct            REAL NOT NULL,
-    descuento_monto          REAL NOT NULL,
-    estado                   TEXT NOT NULL DEFAULT 'Pendiente',
-    aprobado_jefe_id         TEXT,
-    aprobado_jefe_at         DATETIME,
-    aprobado_supervisor_id   TEXT,
-    aprobado_supervisor_at   DATETIME,
-    rechazado_por_id         TEXT,
-    rechazado_por_at         DATETIME,
-    rechazo_motivo           TEXT,
-    created_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at               DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS notifications (
-    id          TEXT PRIMARY KEY,
-    para_user_id TEXT,
-    para_rol    TEXT,
-    titulo      TEXT NOT NULL,
-    mensaje     TEXT NOT NULL,
-    tipo        TEXT NOT NULL DEFAULT 'info',
-    leida       INTEGER NOT NULL DEFAULT 0,
-    link_view   TEXT,
-    related_id  TEXT,
-    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS app_state (
-    key        TEXT PRIMARY KEY,
-    value      TEXT NOT NULL DEFAULT '{}',
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS projects (
-    id             TEXT PRIMARY KEY,
-    nombre         TEXT NOT NULL,
-    fecha_creacion TEXT,
-    created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS project_configs (
-    id                       TEXT PRIMARY KEY,
-    project_id               TEXT NOT NULL,
-    jefe_max_pct             REAL NOT NULL DEFAULT 3,
-    supervisor_max_pct       REAL NOT NULL DEFAULT 8,
-    bono_pie_pct             REAL NOT NULL DEFAULT 10,
-    vigencia_cotizacion_dias INTEGER NOT NULL DEFAULT 7,
-    reserva_clp              REAL,
-    nombre_inmobiliaria      TEXT,
-    direccion_proyecto       TEXT,
-    comuna_proyecto          TEXT,
-    ciudad_proyecto          TEXT,
-    cantidad_cuotas_pie      INTEGER,
-    created_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at               DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS clients (
-    id                         TEXT PRIMARY KEY,
-    project_id                 TEXT NOT NULL,
-    tipo_persona               TEXT NOT NULL DEFAULT 'Natural',
-    nombre                     TEXT NOT NULL,
-    rut                        TEXT NOT NULL,
-    nacionalidad               TEXT,
-    profesion                  TEXT,
-    sueldo_range               TEXT,
-    fecha_nacimiento           TEXT,
-    email                      TEXT NOT NULL DEFAULT '',
-    telefono                   TEXT NOT NULL DEFAULT '',
-    direccion                  TEXT,
-    ciudad                     TEXT,
-    comuna                     TEXT,
-    region                     TEXT,
-    ejecutivo_id               TEXT,
-    estado                     TEXT NOT NULL DEFAULT 'Activo',
-    fecha_registro             TEXT,
-    representante_nombre       TEXT,
-    representante_rut          TEXT,
-    representante_nacionalidad TEXT,
-    representante_email        TEXT,
-    representante_telefono     TEXT,
-    representante_direccion    TEXT,
-    historial                  TEXT NOT NULL DEFAULT '[]',
-    documents                  TEXT NOT NULL DEFAULT '[]',
-    created_at                 DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at                 DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS units (
-    id                         TEXT PRIMARY KEY,
-    project_id                 TEXT NOT NULL,
-    type                       TEXT NOT NULL DEFAULT 'Departamento',
-    numero                     TEXT NOT NULL,
-    estado                     TEXT NOT NULL DEFAULT 'Disponible',
-    superficie                 REAL,
-    orientacion                TEXT,
-    piso                       INTEGER,
-    dormitorios                INTEGER,
-    banos                      INTEGER,
-    gasto_comun                REAL,
-    gastos_operacionales       REAL,
-    gastos_notariales          REAL,
-    gastos_conservador         REAL,
-    bodegas                    TEXT NOT NULL DEFAULT '[]',
-    estacionamientos           TEXT NOT NULL DEFAULT '[]',
-    cliente_id                 TEXT,
-    asignado_por               TEXT,
-    fecha_asignacion           TEXT,
-    precio_lista               REAL NOT NULL DEFAULT 0,
-    precio_venta               REAL NOT NULL DEFAULT 0,
-    pie                        REAL NOT NULL DEFAULT 0,
-    pie_forma_pago             TEXT,
-    pie_cuotas                 INTEGER,
-    bono_descuento             REAL NOT NULL DEFAULT 0,
-    reserva_monto              REAL NOT NULL DEFAULT 0,
-    reserva_forma_pago         TEXT,
-    reserva_cuotas             INTEGER,
-    credito_hipotecario        REAL NOT NULL DEFAULT 0,
-    tasa_financiamiento        REAL,
-    total_pagado               REAL NOT NULL DEFAULT 0,
-    saldo_por_pagar            REAL NOT NULL DEFAULT 0,
-    canal_venta                TEXT,
-    intermediario              TEXT,
-    banco                      TEXT,
-    notaria                    TEXT,
-    repertorio                 TEXT,
-    fecha_reserva              TEXT,
-    fecha_promesa              TEXT,
-    fecha_solicitud_credito    TEXT,
-    fecha_aprobacion_credito   TEXT,
-    fecha_escritura            TEXT,
-    fecha_termino_pago         TEXT,
-    fecha_alzamiento           TEXT,
-    fecha_entrega              TEXT,
-    fecha_pago                 TEXT,
-    factura_numero             TEXT,
-    factura_fecha              TEXT,
-    recepcion_municipal_numero TEXT,
-    recepcion_municipal_fecha  TEXT,
-    cbr_fojas                  TEXT,
-    cbr_numero                 TEXT,
-    cbr_ano                    TEXT,
-    plan_pagos                 TEXT NOT NULL DEFAULT '[]',
-    observaciones              TEXT NOT NULL DEFAULT '',
-    documents                  TEXT NOT NULL DEFAULT '[]',
-    descuento_pct              REAL,
-    descuento_pendiente        INTEGER,
-    descuento_solicitud_id     TEXT,
-    aplica_bono_pie            INTEGER,
-    extras                     TEXT NOT NULL DEFAULT '{}',
-    created_at                 DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at                 DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS audit_logs (
-    id          TEXT PRIMARY KEY,
-    user_id     TEXT NOT NULL,
-    user_name   TEXT,
-    user_role   TEXT,
-    action      TEXT NOT NULL,
-    entity_type TEXT,
-    entity_id   TEXT,
-    description TEXT,
-    ip_address  TEXT,
-    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS payment_plans (
-    id                 TEXT PRIMARY KEY,
-    quotation_id       TEXT NOT NULL,
-    unit_numero        TEXT NOT NULL,
-    project_id         TEXT NOT NULL,
-    cliente_id         TEXT,
-    cliente_rut        TEXT,
-    cliente_nombre     TEXT,
-    precio_venta_final REAL NOT NULL DEFAULT 0,
-    promesa_pct        REAL NOT NULL DEFAULT 0,
-    cuotas_pct         REAL NOT NULL DEFAULT 0,
-    cuotas_n           INTEGER NOT NULL DEFAULT 0,
-    escritura_pct      REAL NOT NULL DEFAULT 0,
-    credito_pct        REAL NOT NULL DEFAULT 0,
-    bono_pie_pct       REAL NOT NULL DEFAULT 0,
-    aplica_bono_pie    INTEGER NOT NULL DEFAULT 0,
-    descuento_pct      REAL NOT NULL DEFAULT 0,
-    created_at         DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-`);
-
-// Migrate old discount_requests columns if they exist in older schema
-try {
-  db.exec(`ALTER TABLE discount_requests ADD COLUMN vendedor_nombre TEXT NOT NULL DEFAULT ''`);
-} catch { /* column already exists */ }
-try {
-  db.exec(`ALTER TABLE discount_requests ADD COLUMN aprobado_jefe_id TEXT`);
-  db.exec(`ALTER TABLE discount_requests ADD COLUMN aprobado_jefe_at DATETIME`);
-  db.exec(`ALTER TABLE discount_requests ADD COLUMN aprobado_supervisor_id TEXT`);
-  db.exec(`ALTER TABLE discount_requests ADD COLUMN aprobado_supervisor_at DATETIME`);
-  db.exec(`ALTER TABLE discount_requests ADD COLUMN rechazado_por_id TEXT`);
-  db.exec(`ALTER TABLE discount_requests ADD COLUMN rechazado_por_at DATETIME`);
-  db.exec(`ALTER TABLE discount_requests ADD COLUMN rechazo_motivo TEXT`);
-  db.exec(`ALTER TABLE discount_requests ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP`);
-} catch { /* already migrated */ }
-
-// Migrate quotation_drafts: add estado/fecha_generada/generada_por columns
-try { db.exec(`ALTER TABLE quotation_drafts ADD COLUMN estado TEXT DEFAULT 'borrador'`); } catch { /* already exists */ }
-try { db.exec(`ALTER TABLE quotation_drafts ADD COLUMN fecha_generada TEXT`); } catch { /* already exists */ }
-try { db.exec(`ALTER TABLE quotation_drafts ADD COLUMN generada_por TEXT`); } catch { /* already exists */ }
-// Migrate quotation_drafts: add cliente_id column (ACCIÓN 2)
-try { db.exec(`ALTER TABLE quotation_drafts ADD COLUMN cliente_id TEXT`); } catch { /* already exists */ }
-
-// Migrate existing NULL estado drafts to 'generada'
-db.exec(`UPDATE quotation_drafts SET estado = 'generada', fecha_generada = updated_at, generada_por = user_id WHERE estado IS NULL`);
-
-// Migrate units: cotización activa columns (obsolete, kept for DB compatibility)
-try { db.exec(`ALTER TABLE units ADD COLUMN cotizacion_activa_id TEXT`); } catch { /* already exists */ }
-try { db.exec(`ALTER TABLE units ADD COLUMN cotizacion_activa_vendedor_id TEXT`); } catch { /* already exists */ }
-try { db.exec(`ALTER TABLE units ADD COLUMN cotizacion_activa_expira TEXT`); } catch { /* already exists */ }
-// Migrate project_configs: duracion reserva (formerly duracion cotizacion)
-try { db.exec(`ALTER TABLE project_configs ADD COLUMN duracion_cotizacion_dias INTEGER DEFAULT 15`); } catch { /* already exists */ }
-// Migrate units: reserva columns
-try { db.exec(`ALTER TABLE units ADD COLUMN reserva_vendedor_id TEXT`); } catch { /* already exists */ }
-try { db.exec(`ALTER TABLE units ADD COLUMN reserva_expira TEXT`); } catch { /* already exists */ }
-try { db.exec(`ALTER TABLE units ADD COLUMN historial_ocupacion TEXT DEFAULT '[]'`); } catch { /* already exists */ }
+// ── Base de datos ─────────────────────────────────────────────────────────────
+// El esquema vive en scripts/schema.sql y se aplica con `npm run migrate` (o ensureSchema).
+// db, withTx, ping y pool se importan desde ./db (adaptador PostgreSQL).
 
 // ── Helper: upsert unit row ───────────────────────────────────────────────────
-function upsertUnit(u: Record<string, unknown>, stableId: string, now: string) {
-  db.prepare(`INSERT INTO units (id, project_id, type, numero, estado, superficie, orientacion, piso, dormitorios, banos, gasto_comun, gastos_operacionales, gastos_notariales, gastos_conservador, bodegas, estacionamientos, cliente_id, asignado_por, fecha_asignacion, precio_lista, precio_venta, pie, pie_forma_pago, pie_cuotas, bono_descuento, reserva_monto, reserva_forma_pago, reserva_cuotas, credito_hipotecario, tasa_financiamiento, total_pagado, saldo_por_pagar, canal_venta, intermediario, banco, notaria, repertorio, fecha_reserva, fecha_promesa, fecha_solicitud_credito, fecha_aprobacion_credito, fecha_escritura, fecha_termino_pago, fecha_alzamiento, fecha_entrega, fecha_pago, factura_numero, factura_fecha, recepcion_municipal_numero, recepcion_municipal_fecha, cbr_fojas, cbr_numero, cbr_ano, plan_pagos, observaciones, documents, descuento_pct, descuento_pendiente, descuento_solicitud_id, aplica_bono_pie, extras, created_at, updated_at)
+async function upsertUnit(u: Record<string, unknown>, stableId: string, now: string) {
+  await db.prepare(`INSERT INTO units (id, project_id, type, numero, estado, superficie, orientacion, piso, dormitorios, banos, gasto_comun, gastos_operacionales, gastos_notariales, gastos_conservador, bodegas, estacionamientos, cliente_id, asignado_por, fecha_asignacion, precio_lista, precio_venta, pie, pie_forma_pago, pie_cuotas, bono_descuento, reserva_monto, reserva_forma_pago, reserva_cuotas, credito_hipotecario, tasa_financiamiento, total_pagado, saldo_por_pagar, canal_venta, intermediario, banco, notaria, repertorio, fecha_reserva, fecha_promesa, fecha_solicitud_credito, fecha_aprobacion_credito, fecha_escritura, fecha_termino_pago, fecha_alzamiento, fecha_entrega, fecha_pago, factura_numero, factura_fecha, recepcion_municipal_numero, recepcion_municipal_fecha, cbr_fojas, cbr_numero, cbr_ano, plan_pagos, observaciones, documents, descuento_pct, descuento_pendiente, descuento_solicitud_id, aplica_bono_pie, extras, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET estado = excluded.estado, precio_venta = excluded.precio_venta, cliente_id = excluded.cliente_id, asignado_por = excluded.asignado_por, fecha_asignacion = excluded.fecha_asignacion, descuento_pct = excluded.descuento_pct, descuento_pendiente = excluded.descuento_pendiente, descuento_solicitud_id = excluded.descuento_solicitud_id, updated_at = excluded.updated_at`
   ).run(
@@ -375,11 +108,11 @@ function upsertUnit(u: Record<string, unknown>, stableId: string, now: string) {
   );
 }
 
-function syncProjectConfigToTable(projectId: string, cfg: Record<string, unknown>, now: string) {
+async function syncProjectConfigToTable(projectId: string, cfg: Record<string, unknown>, now: string) {
   try {
     const dc = cfg.discountConfig as Record<string, unknown> | undefined;
     const cfgId = `cfg_${projectId}`;
-    db.prepare(`INSERT INTO project_configs (id, project_id, jefe_max_pct, supervisor_max_pct, bono_pie_pct, vigencia_cotizacion_dias, reserva_clp, nombre_inmobiliaria, direccion_proyecto, comuna_proyecto, ciudad_proyecto, cantidad_cuotas_pie, created_at, updated_at)
+    await db.prepare(`INSERT INTO project_configs (id, project_id, jefe_max_pct, supervisor_max_pct, bono_pie_pct, vigencia_cotizacion_dias, reserva_clp, nombre_inmobiliaria, direccion_proyecto, comuna_proyecto, ciudad_proyecto, cantidad_cuotas_pie, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET jefe_max_pct = excluded.jefe_max_pct, supervisor_max_pct = excluded.supervisor_max_pct, bono_pie_pct = excluded.bono_pie_pct, vigencia_cotizacion_dias = excluded.vigencia_cotizacion_dias, reserva_clp = excluded.reserva_clp, nombre_inmobiliaria = excluded.nombre_inmobiliaria, direccion_proyecto = excluded.direccion_proyecto, comuna_proyecto = excluded.comuna_proyecto, ciudad_proyecto = excluded.ciudad_proyecto, cantidad_cuotas_pie = excluded.cantidad_cuotas_pie, updated_at = excluded.updated_at`
     ).run(
@@ -401,20 +134,20 @@ function syncProjectConfigToTable(projectId: string, cfg: Record<string, unknown
   }
 }
 
-function syncAppStateToTables(state: Record<string, unknown>, now: string) {
+async function syncAppStateToTables(state: Record<string, unknown>, now: string) {
   try {
     const projects = (state.projects as Array<Record<string, unknown>>) || [];
     const clients = (state.clients as Array<Record<string, unknown>>) || [];
     const units = (state.units as Array<Record<string, unknown>>) || [];
 
     for (const p of projects) {
-      db.prepare(`INSERT INTO projects (id, nombre, fecha_creacion, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
+      await db.prepare(`INSERT INTO projects (id, nombre, fecha_creacion, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET nombre = excluded.nombre, updated_at = excluded.updated_at`
       ).run(p.id as string, (p.nombre as string | undefined) || '', (p.fechaCreacion as string | undefined) || now, now, now);
     }
 
     for (const c of clients) {
-      db.prepare(`INSERT INTO clients (id, project_id, tipo_persona, nombre, rut, nacionalidad, profesion, sueldo_range, fecha_nacimiento, email, telefono, direccion, ciudad, comuna, region, ejecutivo_id, estado, fecha_registro, representante_nombre, representante_rut, representante_nacionalidad, representante_email, representante_telefono, representante_direccion, historial, documents, created_at, updated_at)
+      await db.prepare(`INSERT INTO clients (id, project_id, tipo_persona, nombre, rut, nacionalidad, profesion, sueldo_range, fecha_nacimiento, email, telefono, direccion, ciudad, comuna, region, ejecutivo_id, estado, fecha_registro, representante_nombre, representante_rut, representante_nacionalidad, representante_email, representante_telefono, representante_direccion, historial, documents, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET nombre = excluded.nombre, rut = excluded.rut, email = excluded.email, telefono = excluded.telefono, estado = excluded.estado, ejecutivo_id = excluded.ejecutivo_id, historial = excluded.historial, documents = excluded.documents, updated_at = excluded.updated_at`
       ).run(
@@ -440,7 +173,7 @@ function syncAppStateToTables(state: Record<string, unknown>, now: string) {
     }
 
     const unitIdMapping: Record<string, string> = {};
-    const mappingRow = db.prepare("SELECT value FROM app_state WHERE key = 'unit_id_mapping'").get() as { value: string } | undefined;
+    const mappingRow = await db.prepare("SELECT value FROM app_state WHERE key = 'unit_id_mapping'").get() as { value: string } | undefined;
     if (mappingRow) { try { Object.assign(unitIdMapping, JSON.parse(mappingRow.value)); } catch { /* */ } }
 
     for (const u of units) {
@@ -454,7 +187,7 @@ function syncAppStateToTables(state: Record<string, unknown>, now: string) {
     }
 
     if (Object.keys(unitIdMapping).length > 0) {
-      db.prepare("INSERT INTO app_state (key, value) VALUES ('unit_id_mapping', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      await db.prepare("INSERT INTO app_state (key, value) VALUES ('unit_id_mapping', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .run(JSON.stringify(unitIdMapping));
     }
   } catch (err) {
@@ -462,13 +195,13 @@ function syncAppStateToTables(state: Record<string, unknown>, now: string) {
   }
 }
 
-function buildAppStateFromTables(): Record<string, unknown> | null {
-  const projects = db.prepare('SELECT * FROM projects ORDER BY created_at DESC').all() as Array<Record<string, unknown>>;
+async function buildAppStateFromTables(): Promise<Record<string, unknown> | null> {
+  const projects = await db.prepare('SELECT * FROM projects ORDER BY created_at DESC').all() as Array<Record<string, unknown>>;
   if (projects.length === 0) return null;
 
-  const clients = db.prepare('SELECT * FROM clients ORDER BY created_at DESC').all() as Array<Record<string, unknown>>;
-  const units = db.prepare('SELECT * FROM units ORDER BY numero ASC').all() as Array<Record<string, unknown>>;
-  const configs = db.prepare('SELECT * FROM project_configs').all() as Array<Record<string, unknown>>;
+  const clients = await db.prepare('SELECT * FROM clients ORDER BY created_at DESC').all() as Array<Record<string, unknown>>;
+  const units = await db.prepare('SELECT * FROM units ORDER BY numero ASC').all() as Array<Record<string, unknown>>;
+  const configs = await db.prepare('SELECT * FROM project_configs').all() as Array<Record<string, unknown>>;
   const cfgByProject: Record<string, Record<string, unknown>> = {};
   for (const c of configs) { cfgByProject[c.project_id as string] = c; }
 
@@ -529,17 +262,17 @@ function buildAppStateFromTables(): Record<string, unknown> | null {
   };
 }
 
-function migrateFromAppState() {
-  const flagRow = db.prepare("SELECT value FROM app_state WHERE key = 'migration_v1_complete'").get() as { value: string } | undefined;
+async function migrateFromAppState() {
+  const flagRow = await db.prepare("SELECT value FROM app_state WHERE key = 'migration_v1_complete'").get() as { value: string } | undefined;
   if (flagRow?.value === 'true') {
     console.log('[Migration] v1 already complete, skipping.');
     return;
   }
 
-  const stateRow = db.prepare("SELECT value FROM app_state WHERE key = 'u1:app_state'").get() as { value: string } | undefined;
+  const stateRow = await db.prepare("SELECT value FROM app_state WHERE key = 'u1:app_state'").get() as { value: string } | undefined;
   if (!stateRow) {
     console.log('[Migration] No u1:app_state blob found, marking v1 complete.');
-    db.prepare("INSERT INTO app_state (key, value) VALUES ('migration_v1_complete', 'true') ON CONFLICT(key) DO UPDATE SET value = 'true'").run();
+    await db.prepare("INSERT INTO app_state (key, value) VALUES ('migration_v1_complete', 'true') ON CONFLICT(key) DO UPDATE SET value = 'true'").run();
     return;
   }
 
@@ -556,17 +289,17 @@ function migrateFromAppState() {
 
   for (const p of projects) {
     const pid = p.id as string;
-    db.prepare(`INSERT INTO projects (id, nombre, fecha_creacion, created_at, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`)
+    await db.prepare(`INSERT INTO projects (id, nombre, fecha_creacion, created_at, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`)
       .run(pid, (p.nombre as string | undefined) || '', (p.fechaCreacion as string | undefined) || now, now, now);
 
-    const cfgRow = db.prepare("SELECT value FROM app_state WHERE key = ?").get(`u1:project_config_${pid}`) as { value: string } | undefined;
+    const cfgRow = await db.prepare("SELECT value FROM app_state WHERE key = ?").get(`u1:project_config_${pid}`) as { value: string } | undefined;
     if (cfgRow) {
       try { syncProjectConfigToTable(pid, JSON.parse(cfgRow.value) as Record<string, unknown>, now); } catch { /* */ }
     }
   }
 
   for (const c of clients) {
-    db.prepare(`INSERT INTO clients (id, project_id, tipo_persona, nombre, rut, nacionalidad, profesion, sueldo_range, fecha_nacimiento, email, telefono, direccion, ciudad, comuna, region, ejecutivo_id, estado, fecha_registro, representante_nombre, representante_rut, representante_nacionalidad, representante_email, representante_telefono, representante_direccion, historial, documents, created_at, updated_at)
+    await db.prepare(`INSERT INTO clients (id, project_id, tipo_persona, nombre, rut, nacionalidad, profesion, sueldo_range, fecha_nacimiento, email, telefono, direccion, ciudad, comuna, region, ejecutivo_id, estado, fecha_registro, representante_nombre, representante_rut, representante_nacionalidad, representante_email, representante_telefono, representante_direccion, historial, documents, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`)
       .run(
         c.id as string, (c.projectId as string | undefined) || '',
@@ -591,7 +324,7 @@ function migrateFromAppState() {
   }
 
   const unitIdMapping: Record<string, string> = {};
-  const mappingRow = db.prepare("SELECT value FROM app_state WHERE key = 'unit_id_mapping'").get() as { value: string } | undefined;
+  const mappingRow = await db.prepare("SELECT value FROM app_state WHERE key = 'unit_id_mapping'").get() as { value: string } | undefined;
   if (mappingRow) { try { Object.assign(unitIdMapping, JSON.parse(mappingRow.value)); } catch { /* */ } }
 
   for (const u of units) {
@@ -605,30 +338,30 @@ function migrateFromAppState() {
   }
 
   if (Object.keys(unitIdMapping).length > 0) {
-    db.prepare("INSERT INTO app_state (key, value) VALUES ('unit_id_mapping', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    await db.prepare("INSERT INTO app_state (key, value) VALUES ('unit_id_mapping', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
       .run(JSON.stringify(unitIdMapping));
   }
 
-  db.prepare("INSERT INTO app_state (key, value) VALUES ('migration_v1_complete', 'true') ON CONFLICT(key) DO UPDATE SET value = 'true'").run();
+  await db.prepare("INSERT INTO app_state (key, value) VALUES ('migration_v1_complete', 'true') ON CONFLICT(key) DO UPDATE SET value = 'true'").run();
   console.log(`[Migration] ✓ v1 complete: ${projects.length} projects, ${clients.length} clients, ${units.length} units`);
 }
+// migrateFromAppState/ensureProjectConfigs/migrateReservas se ejecutan en init() (abajo, solo isMain).
 
-migrateFromAppState();
-
-function ensureProjectConfigs() {
-  const orphans = db.prepare(`
+async function ensureProjectConfigs() {
+  const orphans = await db.prepare(`
     SELECT p.id FROM projects p
     LEFT JOIN project_configs pc ON pc.project_id = p.id
     WHERE pc.id IS NULL
   `).all() as Array<{ id: string }>;
   for (const p of orphans) {
-    db.prepare(`
-      INSERT OR IGNORE INTO project_configs (
+    await db.prepare(`
+      INSERT INTO project_configs (
         id, project_id, jefe_max_pct, supervisor_max_pct,
         bono_pie_pct, vigencia_cotizacion_dias, reserva_clp,
         nombre_inmobiliaria, direccion_proyecto, comuna_proyecto,
         ciudad_proyecto, cantidad_cuotas_pie
       ) VALUES (?, ?, 3, 8, 10, 7, 300000, '', '', '', '', 36)
+      ON CONFLICT (id) DO NOTHING
     `).run('cfg_' + p.id, p.id);
   }
   if (orphans.length > 0) {
@@ -636,10 +369,9 @@ function ensureProjectConfigs() {
   }
 }
 
-ensureProjectConfigs();
 
-function migrateReservas() {
-  const sinReserva = db.prepare(`
+async function migrateReservas() {
+  const sinReserva = await db.prepare(`
     SELECT u.id, u.project_id, u.cliente_id, u.type, u.numero
     FROM units u
     WHERE u.estado = 'Reservado'
@@ -647,17 +379,17 @@ function migrateReservas() {
   `).all() as Array<{ id: string; project_id: string; cliente_id: string | null; type: string; numero: string }>;
 
   for (const unit of sinReserva) {
-    const config = db.prepare(
+    const config = await db.prepare(
       'SELECT duracion_cotizacion_dias FROM project_configs WHERE project_id = ?'
     ).get(unit.project_id) as { duracion_cotizacion_dias?: number } | undefined;
     const dias = config?.duracion_cotizacion_dias ?? 15;
     const expira = new Date(Date.now() + dias * 24 * 60 * 60 * 1000).toISOString();
 
-    const cliente = unit.cliente_id ? db.prepare(
+    const cliente = unit.cliente_id ? await db.prepare(
       'SELECT ejecutivo_id FROM clients WHERE id = ?'
     ).get(unit.cliente_id) as { ejecutivo_id?: string } | undefined : undefined;
 
-    db.prepare(`
+    await db.prepare(`
       UPDATE units SET reserva_vendedor_id = ?, reserva_expira = ? WHERE id = ?
     `).run(cliente?.ejecutivo_id || 'system', expira, unit.id);
   }
@@ -667,16 +399,14 @@ function migrateReservas() {
   }
 }
 
-migrateReservas();
-
-function checkReservasVencidas() {
+async function checkReservasVencidas() {
   try {
     const nowDate = new Date();
     const nowISO = nowDate.toISOString();
     const in24h = new Date(nowDate.getTime() + 24 * 60 * 60 * 1000).toISOString();
 
     // Pre-expiry alerts: reservations expiring in next 24h, not already alerted
-    const expiringSoon = db.prepare(`
+    const expiringSoon = await db.prepare(`
       SELECT id, numero, type, reserva_vendedor_id, reserva_expira
       FROM units
       WHERE reserva_expira IS NOT NULL
@@ -698,7 +428,7 @@ function checkReservasVencidas() {
     }
 
     // Auto-release expired reservations
-    const expired = db.prepare(`
+    const expired = await db.prepare(`
       SELECT id, numero, type, cliente_id, reserva_vendedor_id, historial_ocupacion
       FROM units
       WHERE reserva_expira IS NOT NULL AND reserva_expira < ? AND estado = 'Reservado'
@@ -708,10 +438,10 @@ function checkReservasVencidas() {
       type HistEntry = { fechaFin?: string; [k: string]: unknown };
       const hist = (() => { try { return JSON.parse(u.historial_ocupacion || '[]') as HistEntry[]; } catch { return [] as HistEntry[]; } })();
       const updHist = hist.map((h, idx) => idx === hist.length - 1 && !h.fechaFin ? { ...h, fechaFin: nowISO, motivo: 'Vencimiento' } : h);
-      db.prepare(`UPDATE units SET estado = 'Disponible', cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, historial_ocupacion = ?, updated_at = ? WHERE id = ?`)
+      await db.prepare(`UPDATE units SET estado = 'Disponible', cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, historial_ocupacion = ?, updated_at = ? WHERE id = ?`)
         .run(JSON.stringify(updHist), nowISO, u.id);
       if (u.cliente_id) {
-        db.prepare(`UPDATE clients SET estado = 'Prospecto' WHERE id = ?`).run(u.cliente_id);
+        await db.prepare(`UPDATE clients SET estado = 'Prospecto' WHERE id = ?`).run(u.cliente_id);
       }
       if (u.reserva_vendedor_id) {
         createNotification({ paraUserId: u.reserva_vendedor_id, titulo: 'Reserva vencida', mensaje: `La reserva de ${u.type} ${u.numero} ha vencido y fue liberada automáticamente`, tipo: 'error', linkView: 'inventory', relatedId: u.id });
@@ -727,11 +457,11 @@ function checkReservasVencidas() {
   checkFollowUpAlerts();
 }
 
-function checkFollowUpAlerts() {
+async function checkFollowUpAlerts() {
   try {
     const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
     const fourDaysAgo = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString();
-    const items = db.prepare(`
+    const items = await db.prepare(`
       SELECT qd.id, qd.user_id, qd.cliente_nombre, u.type, u.numero
       FROM quotation_drafts qd
       JOIN units u ON u.numero = (
@@ -766,11 +496,7 @@ function checkFollowUpAlerts() {
   }
 }
 
-// El cron solo corre cuando el servidor se ejecuta directamente (no al importarlo en tests).
-if (isMain) {
-  checkReservasVencidas();
-  setInterval(() => { checkReservasVencidas(); }, 60 * 60 * 1000);
-}
+// El cron y las migraciones de arranque corren en init() (abajo), solo cuando isMain.
 
 // ── UF Cache ────────────────────────────────────────────────────────────────
 let ufCache: { value: number; fecha: string; cachedAt: number } | null = null;
@@ -869,7 +595,7 @@ app.get('/api/uf-hoy', async (_req, res) => {
 });
 
 // ── 2. POST /api/auth/login ──────────────────────────────────────────────────
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body as { email: string; password: string };
   const user = USERS.find(u => u.email === email && u.password === password);
   if (!user) {
@@ -883,7 +609,7 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 // ── 3. GET /api/me ───────────────────────────────────────────────────────────
-app.get('/api/me', requireAuth, (req, res) => {
+app.get('/api/me', requireAuth, async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const user = USERS.find(u => u.id === userId);
   if (!user) {
@@ -896,14 +622,14 @@ app.get('/api/me', requireAuth, (req, res) => {
 
 // ── 4. Borradores de Cotización ──────────────────────────────────────────────
 
-app.post('/api/quotation-drafts', requireAuth, (req, res) => {
+app.post('/api/quotation-drafts', requireAuth, async (req, res) => {
   const { id, projectId, clienteRut, clienteNombre, clienteId, ...rest } = req.body as Record<string, unknown>;
   const userId = (req as AuthenticatedRequest).userId;
   const draftId = (id as string) || crypto.randomUUID();
   const now = new Date().toISOString();
   const data = JSON.stringify({ projectId, clienteRut, clienteNombre, clienteId, ...rest });
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO quotation_drafts (id, project_id, user_id, cliente_rut, cliente_nombre, cliente_id, data, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
@@ -917,7 +643,7 @@ app.post('/api/quotation-drafts', requireAuth, (req, res) => {
   res.json({ id: draftId, projectId, clienteRut, clienteNombre, clienteId, updatedAt: now });
 });
 
-app.get('/api/quotation-drafts', requireAuth, (req, res) => {
+app.get('/api/quotation-drafts', requireAuth, async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
   const { unitNumero, projectId: qProjectId } = req.query as { unitNumero?: string; projectId?: string };
@@ -925,7 +651,7 @@ app.get('/api/quotation-drafts', requireAuth, (req, res) => {
   let rows: Array<Record<string, unknown>>;
 
   if (unitNumero && qProjectId) {
-    rows = db.prepare(
+    rows = await db.prepare(
       `SELECT * FROM quotation_drafts
        WHERE estado = 'generada'
          AND project_id = ?
@@ -936,24 +662,24 @@ app.get('/api/quotation-drafts', requireAuth, (req, res) => {
        ORDER BY updated_at DESC`
     ).all(qProjectId, unitNumero, unitNumero) as Array<Record<string, unknown>>;
   } else if (userRole === 'Admin' || userRole === 'Supervisor') {
-    rows = db.prepare(
+    rows = await db.prepare(
       'SELECT * FROM quotation_drafts ORDER BY updated_at DESC'
     ).all() as Array<Record<string, unknown>>;
   } else if (userRole === 'JefeSala') {
     const jefe = USERS.find(u => u.id === userId);
     const projectIds = (jefe?.assignedProjectIds ?? []) as readonly string[];
     if (projectIds.length === 0) {
-      rows = db.prepare(
+      rows = await db.prepare(
         'SELECT * FROM quotation_drafts WHERE user_id = ? ORDER BY updated_at DESC'
       ).all(userId) as Array<Record<string, unknown>>;
     } else {
       const placeholders = projectIds.map(() => '?').join(',');
-      rows = db.prepare(
+      rows = await db.prepare(
         `SELECT * FROM quotation_drafts WHERE project_id IN (${placeholders}) ORDER BY updated_at DESC`
       ).all(...(projectIds as string[])) as Array<Record<string, unknown>>;
     }
   } else {
-    rows = db.prepare(
+    rows = await db.prepare(
       'SELECT * FROM quotation_drafts WHERE user_id = ? ORDER BY updated_at DESC'
     ).all(userId) as Array<Record<string, unknown>>;
   }
@@ -964,9 +690,9 @@ app.get('/api/quotation-drafts', requireAuth, (req, res) => {
   })));
 });
 
-app.delete('/api/quotation-drafts/:id', requireAuth, (req, res) => {
+app.delete('/api/quotation-drafts/:id', requireAuth, async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
-  const result = db.prepare(
+  const result = await db.prepare(
     'DELETE FROM quotation_drafts WHERE id = ? AND user_id = ?'
   ).run(req.params.id, userId);
 
@@ -977,71 +703,71 @@ app.delete('/api/quotation-drafts/:id', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/quotation-drafts/:id/generate', requireAuth, (req, res) => {
+app.post('/api/quotation-drafts/:id/generate', requireAuth, async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const { id } = req.params;
   const { vendedorId } = req.body as { vendedorId?: string };
   const now = new Date().toISOString();
 
-  const generateQuotation = runTx(() => {
-    const draft = db.prepare(
-      `SELECT id, project_id, cliente_id, cliente_nombre, cliente_rut, data FROM quotation_drafts WHERE id = ? AND user_id = ?`
-    ).get(id, userId) as { id: string; project_id: string; cliente_id: string; cliente_nombre: string; cliente_rut: string; data: string } | undefined;
-
-    if (!draft) throw new Error('DRAFT_NOT_FOUND');
-
-    const data = (() => {
-      try { return JSON.parse(draft.data || '{}') as { selectedUnits?: Array<{ id: string; numero: string; precioLista: number }>; adjustments?: Array<{ key: string; value: Record<string, unknown> }>; adjustDrafts?: Record<string, { type: '%' | 'UF'; rawValue: string; applied: boolean }> }; }
-      catch { return {}; }
-    })();
-
-    db.prepare(
-      `UPDATE quotation_drafts SET estado = 'generada', fecha_generada = ?, generada_por = ? WHERE id = ?`
-    ).run(now, vendedorId ?? userId, id);
-
-    const paymentConfig = (data.adjustments ?? []).find(a => a.key === 'paymentConfig')?.value as Record<string, unknown> | undefined;
-
-    if (paymentConfig?.includePaymentPlan) {
-      const promesaPct   = parseFloat(String(paymentConfig.promesaPct   ?? 0));
-      const cuotasPct    = parseFloat(String(paymentConfig.cuotasPct    ?? 0));
-      const escrituraPct = parseFloat(String(paymentConfig.escrituraPct ?? 0));
-      const cuotasN      = parseInt(String(paymentConfig.nCuotasNew     ?? 0), 10);
-      const bonoPiePct   = parseFloat(String(paymentConfig.bonoPct      ?? 0));
-      const creditoPct   = Math.max(0, 100 - promesaPct - cuotasPct - escrituraPct);
-      const bonoPieUnits: string[] = Array.isArray(paymentConfig.bonoPieUnits) ? (paymentConfig.bonoPieUnits as string[]) : [];
-
-      const insertPlan = db.prepare(`
-        INSERT OR REPLACE INTO payment_plans
-          (id, quotation_id, unit_numero, project_id, cliente_id, cliente_rut, cliente_nombre,
-           precio_venta_final, promesa_pct, cuotas_pct, cuotas_n, escritura_pct, credito_pct,
-           bono_pie_pct, aplica_bono_pie, descuento_pct, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-
-      for (const unit of (data.selectedUnits ?? [])) {
-        const adj = data.adjustDrafts?.[unit.id];
-        let descuentoPct = 0;
-        if (adj?.applied) {
-          if (adj.type === '%') descuentoPct = parseFloat(adj.rawValue) || 0;
-          else if (adj.type === 'UF' && unit.precioLista > 0) {
-            descuentoPct = (parseFloat(adj.rawValue) / unit.precioLista) * 100;
-          }
-        }
-        insertPlan.run(
-          crypto.randomUUID(), draft.id, unit.numero, draft.project_id,
-          draft.cliente_id || null, draft.cliente_rut || null, draft.cliente_nombre || null,
-          unit.precioLista * (1 - descuentoPct / 100),
-          promesaPct, cuotasPct, cuotasN, escrituraPct, creditoPct,
-          bonoPiePct, bonoPieUnits.includes(unit.id) ? 1 : 0, descuentoPct, now
-        );
-      }
-    }
-
-    return draft;
-  });
-
   try {
-    const draft = generateQuotation();
+    const draft = await withTx(async (tx) => {
+      const d = await tx.prepare(
+        `SELECT id, project_id, cliente_id, cliente_nombre, cliente_rut, data FROM quotation_drafts WHERE id = ? AND user_id = ?`
+      ).get(id, userId) as { id: string; project_id: string; cliente_id: string; cliente_nombre: string; cliente_rut: string; data: string } | undefined;
+
+      if (!d) throw new Error('DRAFT_NOT_FOUND');
+
+      const data = (() => {
+        try { return JSON.parse(d.data || '{}') as { selectedUnits?: Array<{ id: string; numero: string; precioLista: number }>; adjustments?: Array<{ key: string; value: Record<string, unknown> }>; adjustDrafts?: Record<string, { type: '%' | 'UF'; rawValue: string; applied: boolean }> }; }
+        catch { return {}; }
+      })();
+
+      await tx.prepare(
+        `UPDATE quotation_drafts SET estado = 'generada', fecha_generada = ?, generada_por = ? WHERE id = ?`
+      ).run(now, vendedorId ?? userId, id);
+
+      const paymentConfig = (data.adjustments ?? []).find(a => a.key === 'paymentConfig')?.value as Record<string, unknown> | undefined;
+
+      if (paymentConfig?.includePaymentPlan) {
+        const promesaPct   = parseFloat(String(paymentConfig.promesaPct   ?? 0));
+        const cuotasPct    = parseFloat(String(paymentConfig.cuotasPct    ?? 0));
+        const escrituraPct = parseFloat(String(paymentConfig.escrituraPct ?? 0));
+        const cuotasN      = parseInt(String(paymentConfig.nCuotasNew     ?? 0), 10);
+        const bonoPiePct   = parseFloat(String(paymentConfig.bonoPct      ?? 0));
+        const creditoPct   = Math.max(0, 100 - promesaPct - cuotasPct - escrituraPct);
+        const bonoPieUnits: string[] = Array.isArray(paymentConfig.bonoPieUnits) ? (paymentConfig.bonoPieUnits as string[]) : [];
+
+        // id es un UUID nuevo en cada iteración: no hay conflicto, basta INSERT (antes INSERT OR REPLACE).
+        const insertPlan = tx.prepare(`
+          INSERT INTO payment_plans
+            (id, quotation_id, unit_numero, project_id, cliente_id, cliente_rut, cliente_nombre,
+             precio_venta_final, promesa_pct, cuotas_pct, cuotas_n, escritura_pct, credito_pct,
+             bono_pie_pct, aplica_bono_pie, descuento_pct, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        for (const unit of (data.selectedUnits ?? [])) {
+          const adj = data.adjustDrafts?.[unit.id];
+          let descuentoPct = 0;
+          if (adj?.applied) {
+            if (adj.type === '%') descuentoPct = parseFloat(adj.rawValue) || 0;
+            else if (adj.type === 'UF' && unit.precioLista > 0) {
+              descuentoPct = (parseFloat(adj.rawValue) / unit.precioLista) * 100;
+            }
+          }
+          await insertPlan.run(
+            crypto.randomUUID(), d.id, unit.numero, d.project_id,
+            d.cliente_id || null, d.cliente_rut || null, d.cliente_nombre || null,
+            unit.precioLista * (1 - descuentoPct / 100),
+            promesaPct, cuotasPct, cuotasN, escrituraPct, creditoPct,
+            bonoPiePct, bonoPieUnits.includes(unit.id) ? 1 : 0, descuentoPct, now
+          );
+        }
+      }
+
+      return d;
+    });
+
     const genUser = USERS.find(u => u.id === userId);
     createAuditLog(userId, genUser?.name || '', genUser?.role || '', 'Cotización generada', 'Quotation', id,
       `Cotización generada para ${draft.cliente_nombre || 'sin cliente'}`);
@@ -1064,7 +790,7 @@ app.post('/api/quotation-drafts/:id/generate', requireAuth, (req, res) => {
   }
 });
 
-app.get('/api/payment-plans', requireAuth, (req, res) => {
+app.get('/api/payment-plans', requireAuth, async (req, res) => {
   const { unitNumero, projectId, clienteRut } = req.query as Record<string, string>;
   if (!unitNumero || !projectId) {
     res.status(400).json({ error: 'unitNumero y projectId son requeridos' });
@@ -1076,7 +802,7 @@ app.get('/api/payment-plans', requireAuth, (req, res) => {
     conditions.push('cliente_rut = ?');
     params.push(clienteRut);
   }
-  const rows = db.prepare(
+  const rows = await db.prepare(
     `SELECT id, quotation_id, unit_numero, project_id, cliente_id, cliente_rut, cliente_nombre,
             precio_venta_final, promesa_pct, cuotas_pct, cuotas_n, escritura_pct, credito_pct,
             bono_pie_pct, aplica_bono_pie, descuento_pct, created_at
@@ -1105,12 +831,12 @@ app.get('/api/payment-plans', requireAuth, (req, res) => {
 });
 
 // Stub para compatibilidad con Quoter.tsx
-app.get('/api/quotation-drafts/:id/check-approvals', requireAuth, (_req, res) => {
+app.get('/api/quotation-drafts/:id/check-approvals', requireAuth, async (_req, res) => {
   res.json({ pending: [], rejected: [] });
 });
 
 // ── Helper: Notification factory ─────────────────────────────────────────────
-function createNotification(opts: {
+async function createNotification(opts: {
   paraUserId?: string;
   paraRol?: string;
   titulo: string;
@@ -1121,25 +847,27 @@ function createNotification(opts: {
 }) {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
-  db.prepare(`
-    INSERT INTO notifications (id, para_user_id, para_rol, titulo, mensaje, tipo, leida, link_view, related_id, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
-  `).run(
-    id,
-    opts.paraUserId || null,
-    opts.paraRol || null,
-    opts.titulo,
-    opts.mensaje,
-    opts.tipo || 'info',
-    opts.linkView || null,
-    opts.relatedId || null,
-    now,
-  );
+  try {
+    await db.prepare(`
+      INSERT INTO notifications (id, para_user_id, para_rol, titulo, mensaje, tipo, leida, link_view, related_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+    `).run(
+      id,
+      opts.paraUserId || null,
+      opts.paraRol || null,
+      opts.titulo,
+      opts.mensaje,
+      opts.tipo || 'info',
+      opts.linkView || null,
+      opts.relatedId || null,
+      now,
+    );
+  } catch (err) { console.error('[createNotification]', err); /* no romper la operación principal */ }
   return id;
 }
 
 // Helper: Audit log automático — silencioso, no rompe la operación principal
-function createAuditLog(
+async function createAuditLog(
   userId: string,
   userName: string,
   userRole: string,
@@ -1150,7 +878,7 @@ function createAuditLog(
   ipAddress?: string
 ) {
   try {
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO audit_logs (id, user_id, user_name, user_role, action, entity_type, entity_id, description, ip_address)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(crypto.randomUUID(), userId, userName, userRole, action, entityType, entityId, description, ipAddress || null);
@@ -1158,10 +886,10 @@ function createAuditLog(
 }
 
 // Helper: Get project discount config — real table first, fall back to app_state blob
-function getProjectDiscountConfig(projectId: string): {
+async function getProjectDiscountConfig(projectId: string): Promise<{
   jefeMaxPct: number; supervisorMaxPct: number; bonoPiePct: number; vigenciaCotizacionDias: number; duracionReservaDias: number;
-} {
-  const cfgRow = db.prepare('SELECT * FROM project_configs WHERE project_id = ?').get(projectId) as Record<string, unknown> | undefined;
+}> {
+  const cfgRow = await db.prepare('SELECT * FROM project_configs WHERE project_id = ?').get(projectId) as Record<string, unknown> | undefined;
   if (cfgRow) {
     return {
       jefeMaxPct: (cfgRow.jefe_max_pct as number | undefined) ?? 3,
@@ -1172,7 +900,7 @@ function getProjectDiscountConfig(projectId: string): {
     };
   }
   // Fall back to app_state blob
-  const adminRows = db.prepare(`SELECT key, value FROM app_state WHERE key LIKE '%project_config_${projectId}'`)
+  const adminRows = await db.prepare(`SELECT key, value FROM app_state WHERE key LIKE '%project_config_${projectId}'`)
     .all() as Array<{ key: string; value: string }>;
   if (adminRows.length > 0) {
     try {
@@ -1192,14 +920,14 @@ function getProjectDiscountConfig(projectId: string): {
 // ── 5. Solicitudes de Descuento ──────────────────────────────────────────────
 
 // Create discount request
-app.post('/api/discount-requests', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), (req, res) => {
+app.post('/api/discount-requests', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), async (req, res) => {
   const { projectId, unitId, unitNumero, precioSolicitado, cotizacionId } = req.body as Record<string, unknown>;
   const userId = (req as AuthenticatedRequest).userId;
   const user = USERS.find(u => u.id === userId);
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
 
-  const unit = db.prepare('SELECT precio_lista FROM units WHERE id = ?').get(unitId as string) as { precio_lista: number } | undefined;
+  const unit = await db.prepare('SELECT precio_lista FROM units WHERE id = ?').get(unitId as string) as { precio_lista: number } | undefined;
   if (!unit) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
 
   const precioOriginal = unit.precio_lista;
@@ -1207,13 +935,13 @@ app.post('/api/discount-requests', requireAuth, requireRole('Admin', 'JefeSala',
   const descuentoPct = Math.round(((precioOriginal - precioSol) / precioOriginal) * 10000) / 100;
   const descuentoMonto = Math.round((precioOriginal - precioSol) * 100) / 100;
 
-  const config = getProjectDiscountConfig(projectId as string);
+  const config = await getProjectDiscountConfig(projectId as string);
   if (descuentoPct > config.supervisorMaxPct) {
     res.status(403).json({ error: `Descuento ${descuentoPct}% supera el límite permitido (${config.supervisorMaxPct}%)` });
     return;
   }
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO discount_requests
       (id, project_id, unit_id, unit_numero, vendedor_id, vendedor_nombre,
        cotizacion_id, precio_original, precio_solicitado, descuento_pct,
@@ -1237,26 +965,26 @@ app.post('/api/discount-requests', requireAuth, requireRole('Admin', 'JefeSala',
 });
 
 // Get pending requests (filtered by role)
-app.get('/api/discount-requests/pending', requireAuth, (req, res) => {
+app.get('/api/discount-requests/pending', requireAuth, async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
 
   let rows: unknown[];
   if (userRole === 'Admin') {
-    rows = db.prepare(
+    rows = await db.prepare(
       `SELECT * FROM discount_requests WHERE estado NOT IN ('Cancelado') ORDER BY created_at DESC`
     ).all();
   } else if (userRole === 'JefeSala') {
-    rows = db.prepare(
+    rows = await db.prepare(
       `SELECT * FROM discount_requests WHERE estado = 'Pendiente' ORDER BY created_at DESC`
     ).all();
   } else if (userRole === 'Supervisor') {
-    rows = db.prepare(
+    rows = await db.prepare(
       `SELECT * FROM discount_requests WHERE estado = 'AprobadoJefe' ORDER BY created_at DESC`
     ).all();
   } else {
     // Ventas: only own requests
-    rows = db.prepare(
+    rows = await db.prepare(
       `SELECT * FROM discount_requests WHERE vendedor_id = ? ORDER BY created_at DESC`
     ).all(userId);
   }
@@ -1265,24 +993,24 @@ app.get('/api/discount-requests/pending', requireAuth, (req, res) => {
 });
 
 // Get single discount request
-app.get('/api/discount-requests/:id', requireAuth, (req, res) => {
-  const row = db.prepare('SELECT * FROM discount_requests WHERE id = ?').get(req.params.id);
+app.get('/api/discount-requests/:id', requireAuth, async (req, res) => {
+  const row = await db.prepare('SELECT * FROM discount_requests WHERE id = ?').get(req.params.id);
   if (!row) { res.status(404).json({ error: 'No encontrado' }); return; }
   res.json(row);
 });
 
 // Approve discount request
-app.post('/api/discount-requests/:id/approve', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor'), (req, res) => {
+app.post('/api/discount-requests/:id/approve', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor'), async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
   const { motivo } = req.body as { motivo?: string };
   const now = new Date().toISOString();
 
-  const dr = db.prepare('SELECT * FROM discount_requests WHERE id = ?')
+  const dr = await db.prepare('SELECT * FROM discount_requests WHERE id = ?')
     .get(req.params.id) as Record<string, unknown> | undefined;
   if (!dr) { res.status(404).json({ error: 'Solicitud no encontrada' }); return; }
 
-  const fullCfg = getProjectDiscountConfig(dr.project_id as string);
+  const fullCfg = await getProjectDiscountConfig(dr.project_id as string);
   const discountCfg = { jefeMaxPct: fullCfg.jefeMaxPct, supervisorMaxPct: fullCfg.supervisorMaxPct };
 
   const descuentoPct = dr.descuento_pct as number;
@@ -1290,7 +1018,7 @@ app.post('/api/discount-requests/:id/approve', requireAuth, requireRole('Admin',
 
   if (userRole === 'Admin') {
     newEstado = 'Aprobado';
-    db.prepare(`
+    await db.prepare(`
       UPDATE discount_requests SET estado = 'Aprobado',
         aprobado_supervisor_id = ?, aprobado_supervisor_at = ?, updated_at = ?
       WHERE id = ?
@@ -1300,7 +1028,7 @@ app.post('/api/discount-requests/:id/approve', requireAuth, requireRole('Admin',
     if (descuentoPct <= discountCfg.jefeMaxPct) {
       // Banda 1: JefeSala aprueba directamente
       newEstado = 'Aprobado';
-      db.prepare(`
+      await db.prepare(`
         UPDATE discount_requests SET estado = 'Aprobado',
           aprobado_jefe_id = ?, aprobado_jefe_at = ?, updated_at = ?
         WHERE id = ?
@@ -1308,7 +1036,7 @@ app.post('/api/discount-requests/:id/approve', requireAuth, requireRole('Admin',
     } else if (descuentoPct <= discountCfg.supervisorMaxPct) {
       // Banda 2: pasa a Supervisor
       newEstado = 'AprobadoJefe';
-      db.prepare(`
+      await db.prepare(`
         UPDATE discount_requests SET estado = 'AprobadoJefe',
           aprobado_jefe_id = ?, aprobado_jefe_at = ?, updated_at = ?
         WHERE id = ?
@@ -1333,7 +1061,7 @@ app.post('/api/discount-requests/:id/approve', requireAuth, requireRole('Admin',
       return;
     }
     newEstado = 'Aprobado';
-    db.prepare(`
+    await db.prepare(`
       UPDATE discount_requests SET estado = 'Aprobado',
         aprobado_supervisor_id = ?, aprobado_supervisor_at = ?, updated_at = ?
       WHERE id = ?
@@ -1357,22 +1085,22 @@ app.post('/api/discount-requests/:id/approve', requireAuth, requireRole('Admin',
     createAuditLog(userId, userName, userRole, `Aprobación descuento (${newEstado})`, 'Discount', req.params.id,
       `Descuento ${(dr.descuento_pct as number).toFixed(1)}% en unidad ${dr.unit_numero} → ${newEstado}`);
   }
-  const updated = db.prepare('SELECT * FROM discount_requests WHERE id = ?').get(req.params.id);
+  const updated = await db.prepare('SELECT * FROM discount_requests WHERE id = ?').get(req.params.id);
   res.json({ ok: true, estado: newEstado || dr.estado, dr: updated });
 });
 
 // Reject discount request
-app.post('/api/discount-requests/:id/reject', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor'), (req, res) => {
+app.post('/api/discount-requests/:id/reject', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor'), async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
   const { motivo } = req.body as { motivo?: string };
   const now = new Date().toISOString();
 
-  const dr = db.prepare('SELECT * FROM discount_requests WHERE id = ?')
+  const dr = await db.prepare('SELECT * FROM discount_requests WHERE id = ?')
     .get(req.params.id) as Record<string, unknown> | undefined;
   if (!dr) { res.status(404).json({ error: 'No encontrado' }); return; }
 
-  db.prepare(`
+  await db.prepare(`
     UPDATE discount_requests SET estado = 'Rechazado',
       rechazado_por_id = ?, rechazado_por_at = ?, rechazo_motivo = ?, updated_at = ?
     WHERE id = ?
@@ -1396,10 +1124,10 @@ app.post('/api/discount-requests/:id/reject', requireAuth, requireRole('Admin', 
 });
 
 // Cancel discount request (vendedor only)
-app.post('/api/discount-requests/:id/cancel', requireAuth, (req, res) => {
+app.post('/api/discount-requests/:id/cancel', requireAuth, async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const now = new Date().toISOString();
-  const result = db.prepare(
+  const result = await db.prepare(
     `UPDATE discount_requests SET estado = 'Cancelado', updated_at = ? WHERE id = ? AND vendedor_id = ?`
   ).run(now, req.params.id, userId);
   if (result.changes === 0) {
@@ -1410,11 +1138,11 @@ app.post('/api/discount-requests/:id/cancel', requireAuth, (req, res) => {
 
 // ── 5b. Notificaciones ────────────────────────────────────────────────────────
 
-app.get('/api/notifications', requireAuth, (req, res) => {
+app.get('/api/notifications', requireAuth, async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
 
-  const rows = db.prepare(`
+  const rows = await db.prepare(`
     SELECT * FROM notifications
     WHERE (para_user_id = ? OR para_rol = ? OR para_rol = 'All')
     ORDER BY created_at DESC
@@ -1424,15 +1152,15 @@ app.get('/api/notifications', requireAuth, (req, res) => {
   res.json(rows);
 });
 
-app.post('/api/notifications/:id/read', requireAuth, (req, res) => {
-  db.prepare('UPDATE notifications SET leida = 1 WHERE id = ?').run(req.params.id);
+app.post('/api/notifications/:id/read', requireAuth, async (req, res) => {
+  await db.prepare('UPDATE notifications SET leida = 1 WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
 
-app.post('/api/notifications/read-all', requireAuth, (req, res) => {
+app.post('/api/notifications/read-all', requireAuth, async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
-  db.prepare(`
+  await db.prepare(`
     UPDATE notifications SET leida = 1
     WHERE para_user_id = ? OR para_rol = ? OR para_rol = 'All'
   `).run(userId, userRole);
@@ -1441,21 +1169,21 @@ app.post('/api/notifications/read-all', requireAuth, (req, res) => {
 
 // ── 5c. Audit Logs ───────────────────────────────────────────────────────────
 
-app.post('/api/audit-logs', requireAuth, (req, res) => {
+app.post('/api/audit-logs', requireAuth, async (req, res) => {
   const { action, entityType, entityId, description } = req.body as Record<string, string>;
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
   const user = USERS.find(u => u.id === userId);
   const id = crypto.randomUUID();
   const ip = req.ip || req.socket.remoteAddress || null;
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO audit_logs (id, user_id, user_name, user_role, action, entity_type, entity_id, description, ip_address)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(id, userId, user?.name || '', userRole, action || '', entityType || null, entityId || null, description || null, ip);
   res.json({ ok: true, id });
 });
 
-app.get('/api/audit-logs', requireAuth, requireRole('Admin', 'Supervisor'), (req, res) => {
+app.get('/api/audit-logs', requireAuth, requireRole('Admin', 'Supervisor'), async (req, res) => {
   const { entityType, entityId, userId: filterUserId, limit = '100' } = req.query as Record<string, string>;
   let sql = 'SELECT * FROM audit_logs WHERE 1=1';
   const params: Array<string | number | null> = [];
@@ -1464,12 +1192,12 @@ app.get('/api/audit-logs', requireAuth, requireRole('Admin', 'Supervisor'), (req
   if (filterUserId) { sql += ' AND user_id = ?'; params.push(filterUserId); }
   sql += ' ORDER BY created_at DESC LIMIT ?';
   params.push(parseInt(limit) || 100);
-  res.json(db.prepare(sql).all(...params));
+  res.json(await db.prepare(sql).all(...params));
 });
 
 // ── 6. Documentos de Cotización ──────────────────────────────────────────────
 
-app.post('/api/quotations/documents', requireAuth, (req, res) => {
+app.post('/api/quotations/documents', requireAuth, async (req, res) => {
   const { client_rut, client_name, project_name, file_name, created_by } =
     req.query as Record<string, string>;
 
@@ -1504,7 +1232,7 @@ app.post('/api/quotations/documents', requireAuth, (req, res) => {
 });
 
 // ── 7. Email (stub) ──────────────────────────────────────────────────────────
-app.post('/api/quotations/send-email', requireAuth, (req, res) => {
+app.post('/api/quotations/send-email', requireAuth, async (req, res) => {
   const { to, clientName, projectName, fileName } = req.body as Record<string, string>;
   // TODO: configurar SMTP con Nodemailer
   // import nodemailer from 'nodemailer';
@@ -1515,8 +1243,8 @@ app.post('/api/quotations/send-email', requireAuth, (req, res) => {
 
 // ── 8. Projects ──────────────────────────────────────────────────────────────
 
-app.get('/api/projects', requireAuth, (_req, res) => {
-  const rows = db.prepare(`
+app.get('/api/projects', requireAuth, async (_req, res) => {
+  const rows = await db.prepare(`
     SELECT p.*, pc.jefe_max_pct, pc.supervisor_max_pct, pc.bono_pie_pct,
       pc.vigencia_cotizacion_dias, pc.reserva_clp, pc.nombre_inmobiliaria,
       pc.direccion_proyecto, pc.comuna_proyecto, pc.ciudad_proyecto, pc.cantidad_cuotas_pie
@@ -1539,9 +1267,9 @@ app.get('/api/projects', requireAuth, (_req, res) => {
   })));
 });
 
-app.post('/api/projects', requireAuth, requireRole('Admin'), (req, res) => {
-  const recentProjects = db.prepare(
-    `SELECT COUNT(*) as cnt FROM projects WHERE created_at > datetime('now', '-60 seconds')`
+app.post('/api/projects', requireAuth, requireRole('Admin'), async (req, res) => {
+  const recentProjects = await db.prepare(
+    `SELECT COUNT(*) as cnt FROM projects WHERE created_at > now() - interval '60 seconds'`
   ).get() as { cnt: number };
   if (recentProjects.cnt >= 3) {
     return res.status(429).json({ error: 'Demasiadas creaciones de proyecto. Espera un momento.' });
@@ -1550,47 +1278,46 @@ app.post('/api/projects', requireAuth, requireRole('Admin'), (req, res) => {
   const { id, nombre, fechaCreacion } = req.body as Record<string, string>;
   const now = new Date().toISOString();
   const pid = id || crypto.randomUUID();
-  db.prepare(`INSERT INTO projects (id, nombre, fecha_creacion, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
+  await db.prepare(`INSERT INTO projects (id, nombre, fecha_creacion, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET nombre = excluded.nombre, updated_at = excluded.updated_at`)
     .run(pid, nombre, fechaCreacion || now, now, now);
-  db.prepare(`
-    INSERT OR IGNORE INTO project_configs (
+  await db.prepare(`
+    INSERT INTO project_configs (
       id, project_id, jefe_max_pct, supervisor_max_pct,
       bono_pie_pct, vigencia_cotizacion_dias, reserva_clp,
       nombre_inmobiliaria, direccion_proyecto, comuna_proyecto,
       ciudad_proyecto, cantidad_cuotas_pie
     ) VALUES (?, ?, 3, 8, 10, 7, 300000, '', '', '', '', 36)
+    ON CONFLICT (id) DO NOTHING
   `).run('cfg_' + pid, pid);
   res.json({ id: pid, nombre, fechaCreacion: fechaCreacion || now });
 });
 
-app.patch('/api/projects/:id', requireAuth, requireRole('Admin'), (req, res) => {
+app.patch('/api/projects/:id', requireAuth, requireRole('Admin'), async (req, res) => {
   const { nombre } = req.body as { nombre: string };
   const now = new Date().toISOString();
-  db.prepare('UPDATE projects SET nombre = ?, updated_at = ? WHERE id = ?').run(nombre, now, req.params.id);
+  await db.prepare('UPDATE projects SET nombre = ?, updated_at = ? WHERE id = ?').run(nombre, now, req.params.id);
   res.json({ ok: true });
 });
 
-app.delete('/api/projects/:id', requireAuth, requireRole('Admin'), (req, res) => {
+app.delete('/api/projects/:id', requireAuth, requireRole('Admin'), async (req, res) => {
   const { id } = req.params;
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
 
-  const project = db.prepare('SELECT id, nombre FROM projects WHERE id = ?').get(id) as { id: string; nombre: string } | undefined;
+  const project = await db.prepare('SELECT id, nombre FROM projects WHERE id = ?').get(id) as { id: string; nombre: string } | undefined;
   if (!project) { res.status(404).json({ error: 'Proyecto no encontrado' }); return; }
 
-  const deleteAll = runTx(() => {
-    db.prepare('DELETE FROM payment_plans WHERE project_id = ?').run(id);
-    db.prepare(`DELETE FROM notifications WHERE related_id IN (SELECT id FROM discount_requests WHERE project_id = ?)`).run(id);
-    db.prepare('DELETE FROM discount_requests WHERE project_id = ?').run(id);
-    db.prepare('DELETE FROM quotation_drafts WHERE project_id = ?').run(id);
-    db.prepare('DELETE FROM units WHERE project_id = ?').run(id);
-    db.prepare('DELETE FROM clients WHERE project_id = ?').run(id);
-    db.prepare('DELETE FROM project_configs WHERE project_id = ?').run(id);
-    db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+  await withTx(async (tx) => {
+    await tx.prepare('DELETE FROM payment_plans WHERE project_id = ?').run(id);
+    await tx.prepare(`DELETE FROM notifications WHERE related_id IN (SELECT id FROM discount_requests WHERE project_id = ?)`).run(id);
+    await tx.prepare('DELETE FROM discount_requests WHERE project_id = ?').run(id);
+    await tx.prepare('DELETE FROM quotation_drafts WHERE project_id = ?').run(id);
+    await tx.prepare('DELETE FROM units WHERE project_id = ?').run(id);
+    await tx.prepare('DELETE FROM clients WHERE project_id = ?').run(id);
+    await tx.prepare('DELETE FROM project_configs WHERE project_id = ?').run(id);
+    await tx.prepare('DELETE FROM projects WHERE id = ?').run(id);
   });
-
-  deleteAll();
 
   const userName = USERS.find(u => u.id === userId)?.name || '';
   createAuditLog(userId, userName, userRole, 'Eliminar proyecto', 'Project', id, `Proyecto "${project.nombre}" eliminado con cascada`);
@@ -1598,8 +1325,8 @@ app.delete('/api/projects/:id', requireAuth, requireRole('Admin'), (req, res) =>
   res.json({ ok: true });
 });
 
-app.get('/api/projects/:id/config', requireAuth, (req, res) => {
-  const row = db.prepare('SELECT * FROM project_configs WHERE project_id = ?').get(req.params.id) as Record<string, unknown> | undefined;
+app.get('/api/projects/:id/config', requireAuth, async (req, res) => {
+  const row = await db.prepare('SELECT * FROM project_configs WHERE project_id = ?').get(req.params.id) as Record<string, unknown> | undefined;
   if (!row) { res.status(404).json({ error: 'Config no encontrada' }); return; }
   res.json({
     projectId: row.project_id,
@@ -1620,12 +1347,12 @@ app.get('/api/projects/:id/config', requireAuth, (req, res) => {
   });
 });
 
-app.post('/api/projects/:id/config', requireAuth, requireRole('Admin', 'Supervisor'), (req, res) => {
+app.post('/api/projects/:id/config', requireAuth, requireRole('Admin', 'Supervisor'), async (req, res) => {
   const body = req.body as Record<string, unknown>;
   const now = new Date().toISOString();
   syncProjectConfigToTable(req.params.id, body, now);
   if (body.duracionReservaDias != null) {
-    db.prepare('UPDATE project_configs SET duracion_cotizacion_dias = ? WHERE project_id = ?')
+    await db.prepare('UPDATE project_configs SET duracion_cotizacion_dias = ? WHERE project_id = ?')
       .run(body.duracionReservaDias as number, req.params.id);
   }
   res.json({ ok: true });
@@ -1633,7 +1360,7 @@ app.post('/api/projects/:id/config', requireAuth, requireRole('Admin', 'Supervis
 
 // ── 9. Clients ────────────────────────────────────────────────────────────────
 
-app.get('/api/clients', requireAuth, (req, res) => {
+app.get('/api/clients', requireAuth, async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
   const { projectId, estado, ejecutivoId } = req.query as Record<string, string>;
@@ -1650,7 +1377,7 @@ app.get('/api/clients', requireAuth, (req, res) => {
   }
   sql += ' ORDER BY created_at DESC';
 
-  const rows = db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+  const rows = await db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
   res.json(rows.map(r => ({
     id: r.id,
     projectId: r.project_id,
@@ -1681,11 +1408,11 @@ app.get('/api/clients', requireAuth, (req, res) => {
   })));
 });
 
-app.post('/api/clients', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), (req, res) => {
+app.post('/api/clients', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), async (req, res) => {
   const body = req.body as Record<string, unknown>;
   const now = new Date().toISOString();
   const id = (body.id as string | undefined) || crypto.randomUUID();
-  db.prepare(`INSERT INTO clients (id, project_id, tipo_persona, nombre, rut, nacionalidad, profesion, sueldo_range, fecha_nacimiento, email, telefono, direccion, ciudad, comuna, region, ejecutivo_id, estado, fecha_registro, representante_nombre, representante_rut, representante_nacionalidad, representante_email, representante_telefono, representante_direccion, historial, documents, created_at, updated_at)
+  await db.prepare(`INSERT INTO clients (id, project_id, tipo_persona, nombre, rut, nacionalidad, profesion, sueldo_range, fecha_nacimiento, email, telefono, direccion, ciudad, comuna, region, ejecutivo_id, estado, fecha_registro, representante_nombre, representante_rut, representante_nacionalidad, representante_email, representante_telefono, representante_direccion, historial, documents, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET nombre = excluded.nombre, rut = excluded.rut, email = excluded.email, telefono = excluded.telefono, estado = excluded.estado, ejecutivo_id = excluded.ejecutivo_id, historial = excluded.historial, documents = excluded.documents, updated_at = excluded.updated_at`)
     .run(
@@ -1709,13 +1436,13 @@ app.post('/api/clients', requireAuth, requireRole('Admin', 'JefeSala', 'Supervis
   res.json({ id, ...body });
 });
 
-app.patch('/api/clients/:id', requireAuth, (req, res) => {
+app.patch('/api/clients/:id', requireAuth, async (req, res) => {
   const body = req.body as Record<string, unknown>;
   const now = new Date().toISOString();
-  const existing = db.prepare('SELECT * FROM clients WHERE id = ?').get(req.params.id) as Record<string, string | null> | undefined;
+  const existing = await db.prepare('SELECT * FROM clients WHERE id = ?').get(req.params.id) as Record<string, string | null> | undefined;
   if (!existing) { res.status(404).json({ error: 'Cliente no encontrado' }); return; }
 
-  db.prepare(`UPDATE clients SET tipo_persona = ?, nombre = ?, rut = ?, nacionalidad = ?, profesion = ?, sueldo_range = ?,
+  await db.prepare(`UPDATE clients SET tipo_persona = ?, nombre = ?, rut = ?, nacionalidad = ?, profesion = ?, sueldo_range = ?,
     fecha_nacimiento = ?, email = ?, telefono = ?, direccion = ?, ciudad = ?, comuna = ?, region = ?,
     ejecutivo_id = ?, estado = ?, representante_nombre = ?, representante_rut = ?,
     representante_nacionalidad = ?, representante_email = ?, representante_telefono = ?,
@@ -1750,11 +1477,11 @@ app.patch('/api/clients/:id', requireAuth, (req, res) => {
 });
 
 // GET /api/clients/:id/quotations — ACCIÓN 1: cotizaciones generadas del cliente
-app.get('/api/clients/:id/quotations', requireAuth, (req, res) => {
-  const client = db.prepare('SELECT id, rut, nombre FROM clients WHERE id = ?').get(req.params.id) as { id: string; rut: string; nombre: string } | undefined;
+app.get('/api/clients/:id/quotations', requireAuth, async (req, res) => {
+  const client = await db.prepare('SELECT id, rut, nombre FROM clients WHERE id = ?').get(req.params.id) as { id: string; rut: string; nombre: string } | undefined;
   if (!client) { res.status(404).json({ error: 'Cliente no encontrado' }); return; }
 
-  const rows = db.prepare(`
+  const rows = await db.prepare(`
     SELECT * FROM quotation_drafts
     WHERE estado = 'generada'
       AND (
@@ -1790,7 +1517,7 @@ app.get('/api/clients/:id/quotations', requireAuth, (req, res) => {
   res.json(result);
 });
 
-app.post('/api/clients/bulk-import', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), (req, res) => {
+app.post('/api/clients/bulk-import', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), async (req, res) => {
   const { clients: clientList, projectId } = req.body as { clients: Array<Record<string, unknown>>; projectId: string };
 
   if (!Array.isArray(clientList) || clientList.length === 0) {
@@ -1801,69 +1528,70 @@ app.post('/api/clients/bulk-import', requireAuth, requireRole('Admin', 'JefeSala
   const results = { success: 0, errors: [] as string[] };
   const now = new Date().toISOString();
 
-  const importAll = runTx(() => {
-    for (let idx = 0; idx < clientList.length; idx++) {
-      const c = clientList[idx];
-      try {
-        if (!c.nombre || !(c.nombre as string).trim()) {
-          results.errors.push(`Fila ${idx + 2}: nombre requerido`);
-          continue;
-        }
-        const id = (c.id as string | undefined) || crypto.randomUUID();
-        db.prepare(`
-          INSERT OR IGNORE INTO clients (
-            id, project_id, tipo_persona, nombre, rut,
-            email, telefono, direccion, ciudad, comuna,
-            region, profesion, sueldo_range, fecha_nacimiento,
-            nacionalidad, representante_nombre, representante_rut,
-            estado, fecha_registro, historial, documents, created_at, updated_at
-          ) VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-          )
-        `).run(
-          id, (projectId || c.projectId) as string,
-          (c.tipoPersona as string | undefined) || 'Natural',
-          (c.nombre as string).trim(),
-          (c.rut as string | undefined) || '',
-          (c.email as string | undefined) || '',
-          (c.telefono as string | undefined) || '',
-          (c.direccion as string | undefined) || null,
-          (c.ciudad as string | undefined) || null,
-          (c.comuna as string | undefined) || null,
-          (c.region as string | undefined) || null,
-          (c.profesion as string | undefined) || null,
-          (c.sueldoRange as string | undefined) || null,
-          (c.fechaNacimiento as string | undefined) || null,
-          (c.nacionalidad as string | undefined) || 'Chilena',
-          (c.representanteNombre as string | undefined) || null,
-          (c.representanteRut as string | undefined) || null,
-          (c.estado as string | undefined) || 'Prospecto',
-          now,
-          JSON.stringify(c.historial || []),
-          JSON.stringify(c.documents || []),
-          now, now
-        );
-        results.success++;
-      } catch (err) {
-        results.errors.push(`Fila ${idx + 2}: ${(err as Error).message}`);
+  // Import best-effort por fila: cada INSERT es independiente (sin transacción única)
+  // para preservar el "continúa ante error". En PostgreSQL un error dentro de una
+  // transacción la aborta entera, por eso NO se envuelve en withTx.
+  // ON CONFLICT (id) DO NOTHING ignora duplicados (antes INSERT OR IGNORE).
+  for (let idx = 0; idx < clientList.length; idx++) {
+    const c = clientList[idx];
+    try {
+      if (!c.nombre || !(c.nombre as string).trim()) {
+        results.errors.push(`Fila ${idx + 2}: nombre requerido`);
+        continue;
       }
+      const id = (c.id as string | undefined) || crypto.randomUUID();
+      await db.prepare(`
+        INSERT INTO clients (
+          id, project_id, tipo_persona, nombre, rut,
+          email, telefono, direccion, ciudad, comuna,
+          region, profesion, sueldo_range, fecha_nacimiento,
+          nacionalidad, representante_nombre, representante_rut,
+          estado, fecha_registro, historial, documents, created_at, updated_at
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )
+        ON CONFLICT (id) DO NOTHING
+      `).run(
+        id, (projectId || c.projectId) as string,
+        (c.tipoPersona as string | undefined) || 'Natural',
+        (c.nombre as string).trim(),
+        (c.rut as string | undefined) || '',
+        (c.email as string | undefined) || '',
+        (c.telefono as string | undefined) || '',
+        (c.direccion as string | undefined) || null,
+        (c.ciudad as string | undefined) || null,
+        (c.comuna as string | undefined) || null,
+        (c.region as string | undefined) || null,
+        (c.profesion as string | undefined) || null,
+        (c.sueldoRange as string | undefined) || null,
+        (c.fechaNacimiento as string | undefined) || null,
+        (c.nacionalidad as string | undefined) || 'Chilena',
+        (c.representanteNombre as string | undefined) || null,
+        (c.representanteRut as string | undefined) || null,
+        (c.estado as string | undefined) || 'Prospecto',
+        now,
+        JSON.stringify(c.historial || []),
+        JSON.stringify(c.documents || []),
+        now, now
+      );
+      results.success++;
+    } catch (err) {
+      results.errors.push(`Fila ${idx + 2}: ${(err as Error).message}`);
     }
-  });
-
-  importAll();
+  }
   res.json(results);
 });
 
-app.delete('/api/clients/:id', requireAuth, requireRole('Admin', 'Supervisor'), (req, res) => {
-  const result = db.prepare('DELETE FROM clients WHERE id = ?').run(req.params.id);
+app.delete('/api/clients/:id', requireAuth, requireRole('Admin', 'Supervisor'), async (req, res) => {
+  const result = await db.prepare('DELETE FROM clients WHERE id = ?').run(req.params.id);
   if (result.changes === 0) { res.status(404).json({ error: 'Cliente no encontrado' }); return; }
   res.json({ ok: true });
 });
 
 // ── 10. Units ─────────────────────────────────────────────────────────────────
 
-app.get('/api/units', requireAuth, (req, res) => {
+app.get('/api/units', requireAuth, async (req, res) => {
   const { projectId, estado, type } = req.query as Record<string, string>;
   const userRole = (req as AuthenticatedRequest).userRole;
   const userId = (req as AuthenticatedRequest).userId;
@@ -1876,7 +1604,7 @@ app.get('/api/units', requireAuth, (req, res) => {
     if (estado) { ventasSql += ' AND u.estado = ?'; ventasParams.push(estado); }
     if (type) { ventasSql += ' AND u.type = ?'; ventasParams.push(type); }
     ventasSql += ' ORDER BY u.numero ASC';
-    rows = db.prepare(ventasSql).all(...ventasParams) as Array<Record<string, unknown>>;
+    rows = await db.prepare(ventasSql).all(...ventasParams) as Array<Record<string, unknown>>;
   } else {
     let sql = 'SELECT * FROM units WHERE 1=1';
     const params: Array<string | number | null> = [];
@@ -1884,7 +1612,7 @@ app.get('/api/units', requireAuth, (req, res) => {
     if (estado) { sql += ' AND estado = ?'; params.push(estado); }
     if (type) { sql += ' AND type = ?'; params.push(type); }
     sql += ' ORDER BY numero ASC';
-    rows = db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+    rows = await db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
   }
   res.json(rows.map(r => ({
     id: r.id,
@@ -1953,7 +1681,7 @@ app.get('/api/units', requireAuth, (req, res) => {
   })));
 });
 
-app.post('/api/units', requireAuth, requireRole('Admin'), (req, res) => {
+app.post('/api/units', requireAuth, requireRole('Admin'), async (req, res) => {
   const body = req.body as Record<string, unknown>;
   const now = new Date().toISOString();
   const id = (body.id as string | undefined) || crypto.randomUUID();
@@ -1961,13 +1689,13 @@ app.post('/api/units', requireAuth, requireRole('Admin'), (req, res) => {
   res.json({ id, ...body });
 });
 
-app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), (req, res) => {
+app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), async (req, res) => {
   const body = req.body as Record<string, unknown>;
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
   const userName = USERS.find(u => u.id === userId)?.name || '';
   const now = new Date().toISOString();
-  const existing = db.prepare('SELECT * FROM units WHERE id = ?').get(req.params.id) as Record<string, unknown> | undefined;
+  const existing = await db.prepare('SELECT * FROM units WHERE id = ?').get(req.params.id) as Record<string, unknown> | undefined;
   if (!existing) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
 
   if (userRole === 'Ventas') {
@@ -2025,7 +1753,7 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
 
   if (updates.length === 0) { res.json({ ok: true }); return; }
   updates.push('updated_at = ?'); params.push(now); params.push(req.params.id);
-  db.prepare(`UPDATE units SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+  await db.prepare(`UPDATE units SET ${updates.join(', ')} WHERE id = ?`).run(...params);
 
   // Notify JefeSala when estado changes (Paso 11)
   if ('estado' in body && body.estado !== existing.estado) {
@@ -2043,7 +1771,7 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
     type HistEntry = { fechaFin?: string; [k: string]: unknown };
     const hist = (() => { try { return JSON.parse((existing.historial_ocupacion as string) || '[]') as HistEntry[]; } catch { return [] as HistEntry[]; } })();
     const updHist = hist.map((h, idx) => idx === hist.length - 1 && !h.fechaFin ? { ...h, fechaFin: now, motivo: 'Resciliación' } : h);
-    db.prepare(`UPDATE units SET historial_ocupacion = ?, cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, updated_at = ? WHERE id = ?`)
+    await db.prepare(`UPDATE units SET historial_ocupacion = ?, cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, updated_at = ? WHERE id = ?`)
       .run(JSON.stringify(updHist), now, req.params.id);
     createAuditLog(userId, userName, userRole, 'Resciliación', 'Unit', req.params.id, `Unidad ${existing.type as string} ${existing.numero as string} resciliada por ${userName}`);
     createNotification({ paraRol: 'JefeSala', titulo: 'Resciliación registrada', mensaje: `${existing.type as string} ${existing.numero as string} fue resciliada por ${userName}`, tipo: 'warning', linkView: 'inventory', relatedId: req.params.id });
@@ -2063,7 +1791,7 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
   res.json({ ok: true });
 });
 
-app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), (req, res) => {
+app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), async (req, res) => {
   const body = req.body as { clienteId: string; asignadoPor?: string; fechaAsignacion?: string; fechaReserva?: string };
   const { id } = req.params;
   const userId = (req as AuthenticatedRequest).userId;
@@ -2071,60 +1799,58 @@ app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala',
   const userName = USERS.find(u => u.id === userId)?.name || '';
   const now = new Date().toISOString();
 
-  const assignUnit = runTx(() => {
-    const unit = db.prepare(
-      'SELECT id, estado, cliente_id, project_id, numero, type, historial_ocupacion FROM units WHERE id = ?'
-    ).get(id) as { id: string; estado: string; cliente_id: string | null; project_id: string; numero: string; type: string; historial_ocupacion: string } | undefined;
-
-    if (!unit) throw new Error('UNIT_NOT_FOUND');
-
-    const isAvailable = ['Disponible', 'Libre Asignación'].includes(unit.estado);
-    const isSameClient = unit.cliente_id === body.clienteId;
-    const canReassign = ['Admin', 'JefeSala', 'Supervisor'].includes(userRole);
-
-    if (!isAvailable && !isSameClient && !(canReassign && unit.estado === 'Reservado')) {
-      throw new Error(`UNIT_NOT_AVAILABLE:${unit.estado}`);
-    }
-
-    // Get client info for historial
-    const cliente = db.prepare('SELECT id, nombre, rut FROM clients WHERE id = ?').get(body.clienteId) as { id: string; nombre: string; rut?: string } | undefined;
-    const clienteNombre = cliente?.nombre || '';
-    const clienteRut = cliente?.rut || '';
-
-    // Calculate reservation expiry
-    const config = getProjectDiscountConfig(unit.project_id);
-    const expira = new Date(new Date(now).getTime() + config.duracionReservaDias * 24 * 60 * 60 * 1000).toISOString();
-
-    // Build historial
-    type HistEntry = { fechaFin?: string; [k: string]: unknown };
-    const hist = (() => { try { return JSON.parse(unit.historial_ocupacion || '[]') as HistEntry[]; } catch { return [] as HistEntry[]; } })();
-    if (unit.cliente_id && unit.cliente_id !== body.clienteId) {
-      const lastIdx = hist.length - 1;
-      if (lastIdx >= 0 && !hist[lastIdx].fechaFin) {
-        hist[lastIdx] = { ...hist[lastIdx], fechaFin: now, motivo: 'Reasignación' };
-      }
-    }
-    hist.push({ tipo: 'Reserva', clienteId: body.clienteId, clienteNombre, clienteRut, vendedorId: userId, vendedorNombre: userName, fechaInicio: now });
-
-    db.prepare(`
-      UPDATE units SET
-        cliente_id = ?,
-        asignado_por = ?,
-        fecha_asignacion = ?,
-        fecha_reserva = COALESCE(fecha_reserva, ?),
-        estado = 'Reservado',
-        reserva_vendedor_id = ?,
-        reserva_expira = ?,
-        historial_ocupacion = ?,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `).run(body.clienteId, body.asignadoPor ?? userId, body.fechaAsignacion ?? now, body.fechaReserva ?? now, userId, expira, JSON.stringify(hist), id);
-
-    return { numero: unit.numero, type: unit.type };
-  });
-
   try {
-    const { numero, type } = assignUnit() as { numero: string; type: string };
+    const { numero, type } = await withTx(async (tx) => {
+      const unit = await tx.prepare(
+        'SELECT id, estado, cliente_id, project_id, numero, type, historial_ocupacion FROM units WHERE id = ?'
+      ).get(id) as { id: string; estado: string; cliente_id: string | null; project_id: string; numero: string; type: string; historial_ocupacion: string } | undefined;
+
+      if (!unit) throw new Error('UNIT_NOT_FOUND');
+
+      const isAvailable = ['Disponible', 'Libre Asignación'].includes(unit.estado);
+      const isSameClient = unit.cliente_id === body.clienteId;
+      const canReassign = ['Admin', 'JefeSala', 'Supervisor'].includes(userRole);
+
+      if (!isAvailable && !isSameClient && !(canReassign && unit.estado === 'Reservado')) {
+        throw new Error(`UNIT_NOT_AVAILABLE:${unit.estado}`);
+      }
+
+      // Get client info for historial
+      const cliente = await tx.prepare('SELECT id, nombre, rut FROM clients WHERE id = ?').get(body.clienteId) as { id: string; nombre: string; rut?: string } | undefined;
+      const clienteNombre = cliente?.nombre || '';
+      const clienteRut = cliente?.rut || '';
+
+      // Calculate reservation expiry
+      const config = await getProjectDiscountConfig(unit.project_id);
+      const expira = new Date(new Date(now).getTime() + config.duracionReservaDias * 24 * 60 * 60 * 1000).toISOString();
+
+      // Build historial
+      type HistEntry = { fechaFin?: string; [k: string]: unknown };
+      const hist = (() => { try { return JSON.parse(unit.historial_ocupacion || '[]') as HistEntry[]; } catch { return [] as HistEntry[]; } })();
+      if (unit.cliente_id && unit.cliente_id !== body.clienteId) {
+        const lastIdx = hist.length - 1;
+        if (lastIdx >= 0 && !hist[lastIdx].fechaFin) {
+          hist[lastIdx] = { ...hist[lastIdx], fechaFin: now, motivo: 'Reasignación' };
+        }
+      }
+      hist.push({ tipo: 'Reserva', clienteId: body.clienteId, clienteNombre, clienteRut, vendedorId: userId, vendedorNombre: userName, fechaInicio: now });
+
+      await tx.prepare(`
+        UPDATE units SET
+          cliente_id = ?,
+          asignado_por = ?,
+          fecha_asignacion = ?,
+          fecha_reserva = COALESCE(fecha_reserva, ?),
+          estado = 'Reservado',
+          reserva_vendedor_id = ?,
+          reserva_expira = ?,
+          historial_ocupacion = ?,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(body.clienteId, body.asignadoPor ?? userId, body.fechaAsignacion ?? now, body.fechaReserva ?? now, userId, expira, JSON.stringify(hist), id);
+
+      return { numero: unit.numero, type: unit.type };
+    });
     createAuditLog(userId, userName, userRole, 'Asignación', 'Unit', id, `Unidad asignada a cliente ${body.clienteId}`);
     createNotification({ paraRol: 'JefeSala', titulo: 'Unidad reservada', mensaje: `${userName} reservó ${type} ${numero}`, tipo: 'info', linkView: 'inventory', relatedId: id });
     res.json({ ok: true });
@@ -2140,25 +1866,25 @@ app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala',
   }
 });
 
-app.patch('/api/units/:id/unassign', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), (req, res) => {
+app.patch('/api/units/:id/unassign', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
   const userName = USERS.find(u => u.id === userId)?.name || '';
   const now = new Date().toISOString();
-  const result = db.prepare(`UPDATE units SET cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, estado = 'Disponible', updated_at = ? WHERE id = ?`)
+  const result = await db.prepare(`UPDATE units SET cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, estado = 'Disponible', updated_at = ? WHERE id = ?`)
     .run(now, req.params.id);
   if (result.changes === 0) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
   createAuditLog(userId, userName, userRole, 'Desasignación', 'Unit', req.params.id, 'Cliente desasignado de la unidad');
   res.json({ ok: true });
 });
 
-app.post('/api/units/:id/liberar', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor'), (req, res) => {
+app.post('/api/units/:id/liberar', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor'), async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
   const userName = USERS.find(u => u.id === userId)?.name || '';
   const now = new Date().toISOString();
 
-  const unit = db.prepare('SELECT id, estado, numero, type, cliente_id, reserva_vendedor_id, historial_ocupacion FROM units WHERE id = ?')
+  const unit = await db.prepare('SELECT id, estado, numero, type, cliente_id, reserva_vendedor_id, historial_ocupacion FROM units WHERE id = ?')
     .get(req.params.id) as { id: string; estado: string; numero: string; type: string; cliente_id: string | null; reserva_vendedor_id: string | null; historial_ocupacion: string } | undefined;
   if (!unit) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
   if (unit.estado !== 'Reservado') { res.status(400).json({ error: 'La unidad no está en estado Reservado' }); return; }
@@ -2167,7 +1893,7 @@ app.post('/api/units/:id/liberar', requireAuth, requireRole('Admin', 'JefeSala',
   const hist = (() => { try { return JSON.parse(unit.historial_ocupacion || '[]') as HistEntry[]; } catch { return [] as HistEntry[]; } })();
   const updHist = hist.map((h, idx) => idx === hist.length - 1 && !h.fechaFin ? { ...h, fechaFin: now, motivo: 'Liberación manual' } : h);
 
-  db.prepare(`
+  await db.prepare(`
     UPDATE units SET
       estado = 'Disponible',
       cliente_id = NULL,
@@ -2181,7 +1907,7 @@ app.post('/api/units/:id/liberar', requireAuth, requireRole('Admin', 'JefeSala',
   `).run(JSON.stringify(updHist), now, req.params.id);
 
   if (unit.cliente_id) {
-    db.prepare(`UPDATE clients SET estado = 'Prospecto' WHERE id = ?`).run(unit.cliente_id);
+    await db.prepare(`UPDATE clients SET estado = 'Prospecto' WHERE id = ?`).run(unit.cliente_id);
   }
 
   createAuditLog(userId, userName, userRole, 'Liberación reserva', 'Unit', req.params.id,
@@ -2197,13 +1923,13 @@ app.post('/api/units/:id/liberar', requireAuth, requireRole('Admin', 'JefeSala',
 
 // ── 11. Sincronización de Estado ─────────────────────────────────────────────
 
-app.post('/api/sync', requireAuth, (req, res) => {
+app.post('/api/sync', requireAuth, async (req, res) => {
   const { key, value } = req.body as { key: string; value: unknown };
   if (!key) { res.status(400).json({ error: 'Key requerida' }); return; }
   const userId = (req as AuthenticatedRequest).userId;
   const now = new Date().toISOString();
 
-  db.prepare(`INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, ?)
+  await db.prepare(`INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
     .run(`${userId}:${key}`, JSON.stringify(value), now);
 
@@ -2217,18 +1943,18 @@ app.post('/api/sync', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/sync/:key', requireAuth, (req, res) => {
+app.get('/api/sync/:key', requireAuth, async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
 
   if (req.params.key === 'app_state') {
-    const fromTables = buildAppStateFromTables();
+    const fromTables = await buildAppStateFromTables();
     if (fromTables) {
       res.json({ key: 'app_state', value: fromTables, updatedAt: new Date().toISOString() });
       return;
     }
   }
 
-  const row = db.prepare('SELECT value, updated_at FROM app_state WHERE key = ?')
+  const row = await db.prepare('SELECT value, updated_at FROM app_state WHERE key = ?')
     .get(`${userId}:${req.params.key}`) as { value: string; updated_at: string } | undefined;
   if (!row) { res.status(404).json({ error: 'No encontrado' }); return; }
   res.json({ key: req.params.key, value: JSON.parse(row.value), updatedAt: row.updated_at });
@@ -2261,13 +1987,27 @@ process.on('uncaughtException', (err) => {
 });
 
 // ── Arranque ─────────────────────────────────────────────────────────────────
-// Solo escucha cuando se ejecuta directamente; al importarlo (tests) se exporta `app`.
+// Solo arranca cuando se ejecuta directamente; al importarlo (tests) se exporta `app`.
+// init() verifica la conexión, corre migraciones idempotentes y recién ahí escucha.
 if (isMain) {
-  app.listen(PORT, () => {
-    console.log(`\n[DanaWorks Server] ✓ Escuchando en http://localhost:${PORT}`);
-    console.log(`[DanaWorks Server] ✓ BD: ${DB_PATH}`);
-    console.log(`[DanaWorks Server] ✓ CORS: ${FRONTEND_URL}\n`);
-  });
+  void (async () => {
+    try {
+      await ping();
+      await migrateFromAppState();
+      await ensureProjectConfigs();
+      await migrateReservas();
+      await checkReservasVencidas();
+      setInterval(() => { void checkReservasVencidas(); }, 60 * 60 * 1000);
+      app.listen(PORT, () => {
+        console.log(`\n[DanaWorks Server] ✓ Escuchando en http://localhost:${PORT}`);
+        console.log(`[DanaWorks Server] ✓ BD: PostgreSQL/${process.env.PGDATABASE || 'danacorp'}`);
+        console.log(`[DanaWorks Server] ✓ CORS: ${FRONTEND_URL}\n`);
+      });
+    } catch (err) {
+      console.error('[FATAL] Error de arranque (¿PostgreSQL accesible? ¿esquema aplicado?):', err);
+      process.exit(1);
+    }
+  })();
 }
 
 export { app };

@@ -1,19 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
-import os from 'os';
-import path from 'path';
-import fs from 'fs';
 
-// Tests de integración de los 4 flujos críticos que la migración a PostgreSQL va a
-// tocar. Fijan el comportamiento esperado (red de seguridad anti-regresión) y, de
-// paso, verifican que el bug de transacciones (db.transaction undefined -> runTx)
-// quedó realmente arreglado: assign unidad y generar cotización corren dentro de runTx.
+// Tests de integración de los 4 flujos críticos, ahora contra PostgreSQL (danacorp_test).
+// Verifican el comportamiento esperado (red anti-regresión) y que las transacciones
+// (withTx) funcionan: assign unidad y generar cotización corren dentro de una transacción real.
 //
-// El server se importa en proceso (sin bindear puerto) gracias al guard isMain, y
-// usa una BD SQLite efímera vía DB_PATH.
+// El server se importa en proceso (sin bindear puerto) gracias al guard isMain, y usa la
+// base danacorp_test vía PGDATABASE (configurado antes de importar db.ts/server.ts).
 
 let app: import('express').Express;
-const dbPath = path.join(os.tmpdir(), `danacorp-test-${process.pid}-${Date.now()}.db`);
+let pool: import('pg').Pool;
 
 const ADMIN = { email: 'admin@danacorp.cl', password: 'admin123' };
 let adminToken = '';
@@ -25,20 +21,25 @@ async function login(email: string, password: string) {
 
 beforeAll(async () => {
   process.env.JWT_SECRET = 'test-secret-0123456789-abcdefghij-xyz';
-  process.env.DB_PATH = dbPath;
-  process.env.PORT = '0';
-  const mod = await import('../server.ts');
-  app = mod.app;
+  process.env.PGDATABASE = 'danacorp_test';
+
+  // Importa db.ts primero (crea el pool sobre danacorp_test), aplica esquema y limpia.
+  const dbMod = await import('../db');
+  pool = dbMod.pool;
+  await dbMod.ensureSchema();
+  await pool.query(
+    'TRUNCATE units, clients, quotation_drafts, discount_requests, payment_plans, notifications, audit_logs, project_configs, projects, app_state, users RESTART IDENTITY CASCADE',
+  );
+
+  const srv = await import('../server');
+  app = srv.app;
 
   const res = await login(ADMIN.email, ADMIN.password);
   adminToken = res.body.token;
 });
 
-afterAll(() => {
-  // Limpia la BD efímera y sus sidecars WAL.
-  for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
-    try { fs.unlinkSync(f); } catch { /* noop */ }
-  }
+afterAll(async () => {
+  if (pool) await pool.end();
 });
 
 describe('Flujo 1 — Login', () => {
@@ -62,7 +63,7 @@ describe('Flujo 1 — Login', () => {
   });
 });
 
-describe('Flujo 2 — Asignar/reservar unidad (transacción runTx)', () => {
+describe('Flujo 2 — Asignar/reservar unidad (transacción withTx)', () => {
   it('asigna una unidad disponible a un cliente y la deja Reservada', async () => {
     const projectId = 'p-test-assign';
 
@@ -94,7 +95,7 @@ describe('Flujo 2 — Asignar/reservar unidad (transacción runTx)', () => {
   });
 });
 
-describe('Flujo 3 — Generar cotización (transacción runTx + insertPlan en loop)', () => {
+describe('Flujo 3 — Generar cotización (transacción withTx + insertPlan en loop)', () => {
   it('genera la cotización, marca el borrador y crea el plan de pago', async () => {
     const projectId = 'p-test-gen';
 
@@ -114,7 +115,7 @@ describe('Flujo 3 — Generar cotización (transacción runTx + insertPlan en lo
     expect(gen.status).toBe(200);
     expect(gen.body.ok).toBe(true);
 
-    // El insertPlan (statement reusado dentro de runTx) debió crear el plan de pago.
+    // El insertPlan (statement reusado dentro de withTx) debió crear el plan de pago.
     const plans = await request(app).get('/api/payment-plans')
       .query({ unitNumero: 'GEN-1', projectId }).set(auth(adminToken));
     expect(plans.status).toBe(200);
