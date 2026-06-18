@@ -10,6 +10,7 @@ import fs from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
 import 'dotenv/config';
 import { db, withTx, ping, pool } from './db';
+import { extractTransactionData } from './ai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,6 +32,9 @@ const JWT_SECRET: string = (() => {
 })();
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 const IS_PROD = process.env.NODE_ENV === 'production';
+// Carpeta de uploads: configurable para apuntarla a un volumen persistente en el VPS
+// (fuera del árbol de deploy) e incluirla en el backup.
+const UPLOADS_DIR = process.env.UPLOADS_DIR || path.join(__dirname, 'uploads');
 
 // ── Middleware ──────────────────────────────────────────────────────────────
 // helmet: cabeceras de seguridad (CSP se desactiva porque el frontend se sirve aparte;
@@ -571,7 +575,7 @@ const requireRole = (...roles: string[]) => (req: express.Request, res: express.
 
 // Protected uploads route (auth required, path traversal prevented)
 app.use('/uploads', requireAuth, (req: express.Request, res: express.Response) => {
-  const uploadsDir = path.resolve(path.join(__dirname, 'uploads'));
+  const uploadsDir = path.resolve(UPLOADS_DIR);
   const filePath = path.resolve(path.join(uploadsDir, req.path));
   if (!filePath.startsWith(uploadsDir + path.sep) && filePath !== uploadsDir) {
     res.status(403).json({ error: 'Acceso denegado' });
@@ -620,6 +624,20 @@ app.get('/api/uf-hoy', async (_req, res) => {
       return;
     }
     res.status(503).json({ error: 'Servicio UF no disponible temporalmente' });
+  }
+});
+
+// ── 1b. POST /api/ai/extract-transaction ──────────────────────────────────────
+// La extracción con Gemini corre en el backend (la API key nunca llega al navegador).
+app.post('/api/ai/extract-transaction', requireAuth, async (req, res) => {
+  const { base64Image } = req.body as { base64Image?: string };
+  if (!base64Image) { res.status(400).json({ error: 'base64Image requerido' }); return; }
+  try {
+    const data = await extractTransactionData(base64Image);
+    res.json(data);
+  } catch (err) {
+    console.error('[ai extract]', err);
+    res.status(502).json({ error: 'No se pudo extraer datos con IA' });
   }
 });
 
@@ -1252,24 +1270,42 @@ app.get('/api/audit-logs', requireAuth, requireRole('Admin', 'Supervisor'), asyn
 
 // ── 6. Documentos de Cotización ──────────────────────────────────────────────
 
+const UPLOAD_MAX_BYTES = 15 * 1024 * 1024; // 15 MB
+const UPLOAD_ALLOWED_EXT = ['.pdf', '.png', '.jpg', '.jpeg', '.xlsx', '.xls'];
+
 app.post('/api/quotations/documents', requireAuth, async (req, res) => {
   const { client_rut, client_name, project_name, file_name, created_by } =
     req.query as Record<string, string>;
 
-  const dateFolder = new Date().toISOString().split('T')[0];
-  const uploadDir = path.join(__dirname, 'uploads', 'quotations', dateFolder);
-
-  if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
+  // El nombre se sanea (evita path traversal) y la extensión se valida contra una allowlist.
+  const safeFileName = (file_name || `doc_${Date.now()}.pdf`).replace(/[^a-zA-Z0-9._-]/g, '_');
+  const ext = path.extname(safeFileName).toLowerCase();
+  if (!UPLOAD_ALLOWED_EXT.includes(ext)) {
+    res.status(415).json({ error: `Tipo de archivo no permitido (${ext || 'sin extensión'})` });
+    return;
   }
 
-  const safeFileName = (file_name || `doc_${Date.now()}.pdf`)
-    .replace(/[^a-zA-Z0-9._-]/g, '_');
+  const dateFolder = new Date().toISOString().split('T')[0];
+  const uploadDir = path.join(UPLOADS_DIR, 'quotations', dateFolder);
+  if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
   const filePath = path.join(uploadDir, safeFileName);
 
   const chunks: Buffer[] = [];
-  req.on('data', (chunk: Buffer) => chunks.push(chunk));
+  let total = 0;
+  let aborted = false;
+  req.on('data', (chunk: Buffer) => {
+    if (aborted) return;
+    total += chunk.length;
+    if (total > UPLOAD_MAX_BYTES) {
+      aborted = true;
+      res.status(413).json({ error: 'Archivo demasiado grande (máx 15 MB)' });
+      req.destroy();
+      return;
+    }
+    chunks.push(chunk);
+  });
   req.on('end', () => {
+    if (aborted) return;
     try {
       fs.writeFileSync(filePath, Buffer.concat(chunks));
       res.json({
@@ -1283,7 +1319,7 @@ app.post('/api/quotations/documents', requireAuth, async (req, res) => {
       res.status(500).json({ error: 'Error al escribir archivo' });
     }
   });
-  req.on('error', () => res.status(500).json({ error: 'Error al recibir archivo' }));
+  req.on('error', () => { if (!aborted) res.status(500).json({ error: 'Error al recibir archivo' }); });
 });
 
 // ── 7. Email (stub) ──────────────────────────────────────────────────────────
