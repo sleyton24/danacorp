@@ -24,13 +24,18 @@ por el usuario, SIEMPRE realizar este flujo:
        "⚠️ Los cambios no están en git — si se rompen, hay que
         revertir manualmente."
 
-5. Después del commit (si aplica), confirmar con:
-   "✓ Commit creado: <hash corto> — '<mensaje>'"
+5. Después del commit (si aplica):
+   a. Hacer push a origin:  git push origin master
+   b. Confirmar con:
+      "✓ Commit <hash corto> pusheado a origin/master — '<mensaje>'"
 
 ## Reglas adicionales
 
 - NUNCA hacer commit sin preguntar primero al usuario
-- NUNCA ejecutar git push (esto es local por ahora)
+- El push a origin (GitHub: sleyton24/danacorp) está PERMITIDO: el VPS
+  despliega desde el repositorio. Hacer push a origin/master después de
+  cada commit confirmado. (La regla anterior "nunca push / local" era de
+  la etapa de QA y quedó obsoleta.)
 - Si el usuario dice "guarda esto" o "commitea esto", proceder
   directamente sin preguntar (interpreta como [S] implícito)
 - Si el repositorio no está inicializado (git status falla),
