@@ -31,6 +31,10 @@ beforeAll(async () => {
     'TRUNCATE units, clients, quotation_drafts, discount_requests, payment_plans, notifications, audit_logs, project_configs, projects, app_state, users RESTART IDENTITY CASCADE',
   );
 
+  // Siembra los 5 usuarios con hash bcrypt (el login ahora valida contra la tabla users).
+  const { seedUsers } = await import('../scripts/seed-users');
+  await seedUsers();
+
   const srv = await import('../server');
   app = srv.app;
 

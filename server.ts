@@ -2,6 +2,7 @@ import express from 'express';
 import 'express-async-errors';
 import cors from 'cors';
 import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
@@ -502,14 +503,25 @@ async function checkFollowUpAlerts() {
 let ufCache: { value: number; fecha: string; cachedAt: number } | null = null;
 const UF_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hora
 
-// ── Usuarios hardcodeados (nunca en el frontend) ────────────────────────────
-const USERS = [
-  { id: 'u1', name: 'Administrador Principal', email: 'admin@danacorp.cl',       password: 'admin123',       role: 'Admin',      company: 'Danacorp',        assignedProjectIds: [] },
-  { id: 'u3', name: 'Jefe de Sala',            email: 'jefe@danacorp.cl',        password: 'jefe123',        role: 'JefeSala',   company: 'Sala de Ventas',  assignedProjectIds: ['p1'] },
-  { id: 'u5', name: 'Supervisor Demo',          email: 'supervisor@danacorp.cl',  password: 'supervisor123',  role: 'Supervisor', company: 'Danacorp',        assignedProjectIds: ['p1'] },
-  { id: 'u2', name: 'Vendedor Demo',            email: 'vendedor@danacorp.cl',    password: 'vendedor123',    role: 'Ventas',     company: 'Danacorp Ventas', assignedProjectIds: ['p1'] },
-  { id: 'u4', name: 'Solo Lectura',             email: 'lectura@danacorp.cl',     password: 'lectura123',     role: 'Lectura',    company: 'Danacorp',        assignedProjectIds: [] },
-] as const;
+// ── Usuarios (en tabla `users`, con hash bcrypt; seed en scripts/seed-users.ts) ─
+type AppUser = { id: string; name: string; email: string; role: string; company: string; assignedProjectIds: string[] };
+
+// Busca un usuario por id en la BD (reemplaza el viejo USERS.find). assigned_project_ids
+// es JSONB y pg lo devuelve ya parseado como array.
+async function getUserById(id: string): Promise<AppUser | undefined> {
+  const r = await db.prepare(
+    'SELECT id, name, email, role, company, assigned_project_ids FROM users WHERE id = ?'
+  ).get(id) as Record<string, unknown> | undefined;
+  if (!r) return undefined;
+  return {
+    id: r.id as string,
+    name: r.name as string,
+    email: r.email as string,
+    role: r.role as string,
+    company: (r.company as string) ?? '',
+    assignedProjectIds: (r.assigned_project_ids as string[]) ?? [],
+  };
+}
 
 type AuthenticatedRequest = express.Request & { userId: string; userRole: string };
 
@@ -539,17 +551,8 @@ const requireRole = (...roles: string[]) => (req: express.Request, res: express.
   next();
 };
 
-// ── Async error wrapper ───────────────────────────────────────────────────────
-// Express 4 NO captura errores de funciones async: una promesa rechazada dentro
-// de un handler se convierte en 'unhandledRejection' y, en Node moderno, tumba el
-// proceso. asyncHandler envuelve el handler y propaga cualquier rechazo al
-// middleware de errores global (definido al final del archivo). Sirve igual para
-// handlers síncronos y asíncronos.
-type Handler = (req: express.Request, res: express.Response, next: express.NextFunction) => unknown;
-const asyncHandler = (fn: Handler) =>
-  (req: express.Request, res: express.Response, next: express.NextFunction): void => {
-    Promise.resolve(fn(req, res, next)).catch(next);
-  };
+// Los errores de los handlers async los captura `express-async-errors` (importado
+// arriba) y los enruta al middleware de errores global definido al final del archivo.
 
 // Protected uploads route (auth required, path traversal prevented)
 app.use('/uploads', requireAuth, (req: express.Request, res: express.Response) => {
@@ -597,27 +600,35 @@ app.get('/api/uf-hoy', async (_req, res) => {
 // ── 2. POST /api/auth/login ──────────────────────────────────────────────────
 app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body as { email: string; password: string };
-  const user = USERS.find(u => u.email === email && u.password === password);
-  if (!user) {
+  const row = await db.prepare(
+    'SELECT id, name, email, role, company, assigned_project_ids, password_hash FROM users WHERE email = ?'
+  ).get(email) as Record<string, unknown> | undefined;
+  if (!row || !(await bcrypt.compare(password || '', row.password_hash as string))) {
     res.status(401).json({ error: 'Credenciales incorrectas' });
     return;
   }
-  const { password: _pw, ...userWithoutPassword } = user;
+  const user: AppUser = {
+    id: row.id as string,
+    name: row.name as string,
+    email: row.email as string,
+    role: row.role as string,
+    company: (row.company as string) ?? '',
+    assignedProjectIds: (row.assigned_project_ids as string[]) ?? [],
+  };
   const token = jwt.sign({ userId: user.id, role: user.role }, JWT_SECRET, { expiresIn: '8h' });
   createAuditLog(user.id, user.name, user.role, 'Login', 'Auth', user.id, `Login exitoso desde ${req.ip || 'IP desconocida'}`);
-  res.json({ token, user: userWithoutPassword });
+  res.json({ token, user });
 });
 
 // ── 3. GET /api/me ───────────────────────────────────────────────────────────
 app.get('/api/me', requireAuth, async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
-  const user = USERS.find(u => u.id === userId);
+  const user = await getUserById(userId);
   if (!user) {
     res.status(404).json({ error: 'Usuario no encontrado' });
     return;
   }
-  const { password: _pw, ...userWithoutPassword } = user;
-  res.json({ user: userWithoutPassword });
+  res.json({ user });
 });
 
 // ── 4. Borradores de Cotización ──────────────────────────────────────────────
@@ -666,7 +677,7 @@ app.get('/api/quotation-drafts', requireAuth, async (req, res) => {
       'SELECT * FROM quotation_drafts ORDER BY updated_at DESC'
     ).all() as Array<Record<string, unknown>>;
   } else if (userRole === 'JefeSala') {
-    const jefe = USERS.find(u => u.id === userId);
+    const jefe = await getUserById(userId);
     const projectIds = (jefe?.assignedProjectIds ?? []) as readonly string[];
     if (projectIds.length === 0) {
       rows = await db.prepare(
@@ -768,7 +779,7 @@ app.post('/api/quotation-drafts/:id/generate', requireAuth, async (req, res) => 
       return d;
     });
 
-    const genUser = USERS.find(u => u.id === userId);
+    const genUser = await getUserById(userId);
     createAuditLog(userId, genUser?.name || '', genUser?.role || '', 'Cotización generada', 'Quotation', id,
       `Cotización generada para ${draft.cliente_nombre || 'sin cliente'}`);
     // Notify JefeSala about new quotation
@@ -923,7 +934,7 @@ async function getProjectDiscountConfig(projectId: string): Promise<{
 app.post('/api/discount-requests', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), async (req, res) => {
   const { projectId, unitId, unitNumero, precioSolicitado, cotizacionId } = req.body as Record<string, unknown>;
   const userId = (req as AuthenticatedRequest).userId;
-  const user = USERS.find(u => u.id === userId);
+  const user = await getUserById(userId);
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
 
@@ -1081,7 +1092,7 @@ app.post('/api/discount-requests/:id/approve', requireAuth, requireRole('Admin',
   }
 
   if (newEstado) {
-    const userName = USERS.find(u => u.id === userId)?.name || '';
+    const userName = (await getUserById(userId))?.name || '';
     createAuditLog(userId, userName, userRole, `Aprobación descuento (${newEstado})`, 'Discount', req.params.id,
       `Descuento ${(dr.descuento_pct as number).toFixed(1)}% en unidad ${dr.unit_numero} → ${newEstado}`);
   }
@@ -1106,7 +1117,7 @@ app.post('/api/discount-requests/:id/reject', requireAuth, requireRole('Admin', 
     WHERE id = ?
   `).run(userId, now, motivo || '', now, req.params.id);
 
-  const userName = USERS.find(u => u.id === userId)?.name || '';
+  const userName = (await getUserById(userId))?.name || '';
   createAuditLog(userId, userName, userRole, 'Rechazo descuento', 'Discount', req.params.id,
     `Rechazado por ${userName}: ${motivo || 'sin motivo'}`);
 
@@ -1173,7 +1184,7 @@ app.post('/api/audit-logs', requireAuth, async (req, res) => {
   const { action, entityType, entityId, description } = req.body as Record<string, string>;
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
-  const user = USERS.find(u => u.id === userId);
+  const user = await getUserById(userId);
   const id = crypto.randomUUID();
   const ip = req.ip || req.socket.remoteAddress || null;
   await db.prepare(`
@@ -1319,7 +1330,7 @@ app.delete('/api/projects/:id', requireAuth, requireRole('Admin'), async (req, r
     await tx.prepare('DELETE FROM projects WHERE id = ?').run(id);
   });
 
-  const userName = USERS.find(u => u.id === userId)?.name || '';
+  const userName = (await getUserById(userId))?.name || '';
   createAuditLog(userId, userName, userRole, 'Eliminar proyecto', 'Project', id, `Proyecto "${project.nombre}" eliminado con cascada`);
 
   res.json({ ok: true });
@@ -1693,7 +1704,7 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
   const body = req.body as Record<string, unknown>;
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
-  const userName = USERS.find(u => u.id === userId)?.name || '';
+  const userName = (await getUserById(userId))?.name || '';
   const now = new Date().toISOString();
   const existing = await db.prepare('SELECT * FROM units WHERE id = ?').get(req.params.id) as Record<string, unknown> | undefined;
   if (!existing) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
@@ -1796,7 +1807,7 @@ app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala',
   const { id } = req.params;
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
-  const userName = USERS.find(u => u.id === userId)?.name || '';
+  const userName = (await getUserById(userId))?.name || '';
   const now = new Date().toISOString();
 
   try {
@@ -1869,7 +1880,7 @@ app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala',
 app.patch('/api/units/:id/unassign', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
-  const userName = USERS.find(u => u.id === userId)?.name || '';
+  const userName = (await getUserById(userId))?.name || '';
   const now = new Date().toISOString();
   const result = await db.prepare(`UPDATE units SET cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, estado = 'Disponible', updated_at = ? WHERE id = ?`)
     .run(now, req.params.id);
@@ -1881,7 +1892,7 @@ app.patch('/api/units/:id/unassign', requireAuth, requireRole('Admin', 'JefeSala
 app.post('/api/units/:id/liberar', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor'), async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
-  const userName = USERS.find(u => u.id === userId)?.name || '';
+  const userName = (await getUserById(userId))?.name || '';
   const now = new Date().toISOString();
 
   const unit = await db.prepare('SELECT id, estado, numero, type, cliente_id, reserva_vendedor_id, historial_ocupacion FROM units WHERE id = ?')
