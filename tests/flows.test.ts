@@ -163,6 +163,23 @@ describe('Flujo 4 — Solicitar y aprobar descuento', () => {
   });
 });
 
+describe('Seguridad — IDOR y roles', () => {
+  it('/api/sync/app_state requiere Admin (un Ventas recibe 403)', async () => {
+    const ventas = await login('vendedor@danacorp.cl', 'vendedor123');
+    const res = await request(app).get('/api/sync/app_state').set(auth(ventas.body.token));
+    expect(res.status).toBe(403);
+  });
+
+  it('un Ventas no puede editar un cliente de otro ejecutivo (403)', async () => {
+    const cli = await request(app).post('/api/clients').set(auth(adminToken))
+      .send({ projectId: 'p-idor', nombre: 'Cliente Ajeno', rut: '22.222.222-2', ejecutivoId: 'otro-ejecutivo' });
+    const ventas = await login('vendedor@danacorp.cl', 'vendedor123');
+    const res = await request(app).patch(`/api/clients/${cli.body.id}`).set(auth(ventas.body.token))
+      .send({ nombre: 'Hackeado' });
+    expect(res.status).toBe(403);
+  });
+});
+
 describe('Manejo de errores', () => {
   it('una ruta /api inexistente devuelve 404 JSON (no HTML)', async () => {
     const res = await request(app).get('/api/no-existe-ruta').set(auth(adminToken));

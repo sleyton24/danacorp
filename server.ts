@@ -1,6 +1,8 @@
 import express from 'express';
 import 'express-async-errors';
 import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import path from 'path';
@@ -28,13 +30,26 @@ const JWT_SECRET: string = (() => {
   return s;
 })();
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+const IS_PROD = process.env.NODE_ENV === 'production';
 
 // ── Middleware ──────────────────────────────────────────────────────────────
-app.use(cors({
-  origin: [FRONTEND_URL, 'http://localhost:3000', 'http://localhost:5173'],
-  credentials: true,
-}));
+// helmet: cabeceras de seguridad (CSP se desactiva porque el frontend se sirve aparte;
+// el reverse proxy / Vite manejan la app). En prod conviene afinar CSP.
+app.use(helmet({ contentSecurityPolicy: false }));
+
+// CORS: en producción solo FRONTEND_URL; en dev se permiten los puertos locales de Vite.
+const corsOrigins = IS_PROD ? [FRONTEND_URL] : [FRONTEND_URL, 'http://localhost:3000', 'http://localhost:5173'];
+app.use(cors({ origin: corsOrigins, credentials: true }));
 app.use(express.json({ limit: '10mb' }));
+
+// Rate limit para el login: frena fuerza bruta (10 intentos / 15 min por IP).
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiados intentos de login. Intenta más tarde.' },
+});
 
 // ── Base de datos ─────────────────────────────────────────────────────────────
 // El esquema vive en scripts/schema.sql y se aplica con `npm run migrate` (o ensureSchema).
@@ -533,7 +548,7 @@ const requireAuth = (req: express.Request, res: express.Response, next: express.
     return;
   }
   try {
-    const payload = jwt.verify(authHeader.slice(7), JWT_SECRET) as { userId: string; role: string };
+    const payload = jwt.verify(authHeader.slice(7), JWT_SECRET, { algorithms: ['HS256'] }) as { userId: string; role: string };
     (req as AuthenticatedRequest).userId = payload.userId;
     (req as AuthenticatedRequest).userRole = payload.role;
     next();
@@ -573,6 +588,17 @@ app.use('/uploads', requireAuth, (req: express.Request, res: express.Response) =
 // ENDPOINTS
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ── 0. GET /api/health ────────────────────────────────────────────────────────
+// Para el reverse proxy / process manager: 200 si PostgreSQL responde, 503 si no.
+app.get('/api/health', async (_req, res) => {
+  try {
+    await ping();
+    res.json({ status: 'ok' });
+  } catch {
+    res.status(503).json({ status: 'db-unavailable' });
+  }
+});
+
 // ── 1. GET /api/uf-hoy ──────────────────────────────────────────────────────
 app.get('/api/uf-hoy', async (_req, res) => {
   if (ufCache && Date.now() - ufCache.cachedAt < UF_CACHE_TTL_MS) {
@@ -598,7 +624,7 @@ app.get('/api/uf-hoy', async (_req, res) => {
 });
 
 // ── 2. POST /api/auth/login ──────────────────────────────────────────────────
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', loginLimiter, async (req, res) => {
   const { email, password } = req.body as { email: string; password: string };
   const row = await db.prepare(
     'SELECT id, name, email, role, company, assigned_project_ids, password_hash FROM users WHERE email = ?'
@@ -615,7 +641,7 @@ app.post('/api/auth/login', async (req, res) => {
     company: (row.company as string) ?? '',
     assignedProjectIds: (row.assigned_project_ids as string[]) ?? [],
   };
-  const token = jwt.sign({ userId: user.id, role: user.role }, JWT_SECRET, { expiresIn: '8h' });
+  const token = jwt.sign({ userId: user.id, role: user.role }, JWT_SECRET, { expiresIn: '8h', algorithm: 'HS256' });
   createAuditLog(user.id, user.name, user.role, 'Login', 'Auth', user.id, `Login exitoso desde ${req.ip || 'IP desconocida'}`);
   res.json({ token, user });
 });
@@ -1021,6 +1047,15 @@ app.post('/api/discount-requests/:id/approve', requireAuth, requireRole('Admin',
     .get(req.params.id) as Record<string, unknown> | undefined;
   if (!dr) { res.status(404).json({ error: 'Solicitud no encontrada' }); return; }
 
+  // IDOR: JefeSala/Supervisor solo aprueban en proyectos asignados (Admin: todos).
+  if (userRole !== 'Admin') {
+    const approver = await getUserById(userId);
+    if (!approver || !approver.assignedProjectIds.includes(dr.project_id as string)) {
+      res.status(403).json({ error: 'No tienes permiso sobre este proyecto' });
+      return;
+    }
+  }
+
   const fullCfg = await getProjectDiscountConfig(dr.project_id as string);
   const discountCfg = { jefeMaxPct: fullCfg.jefeMaxPct, supervisorMaxPct: fullCfg.supervisorMaxPct };
 
@@ -1110,6 +1145,15 @@ app.post('/api/discount-requests/:id/reject', requireAuth, requireRole('Admin', 
   const dr = await db.prepare('SELECT * FROM discount_requests WHERE id = ?')
     .get(req.params.id) as Record<string, unknown> | undefined;
   if (!dr) { res.status(404).json({ error: 'No encontrado' }); return; }
+
+  // IDOR: JefeSala/Supervisor solo rechazan en proyectos asignados (Admin: todos).
+  if (userRole !== 'Admin') {
+    const approver = await getUserById(userId);
+    if (!approver || !approver.assignedProjectIds.includes(dr.project_id as string)) {
+      res.status(403).json({ error: 'No tienes permiso sobre este proyecto' });
+      return;
+    }
+  }
 
   await db.prepare(`
     UPDATE discount_requests SET estado = 'Rechazado',
@@ -1447,11 +1491,18 @@ app.post('/api/clients', requireAuth, requireRole('Admin', 'JefeSala', 'Supervis
   res.json({ id, ...body });
 });
 
-app.patch('/api/clients/:id', requireAuth, async (req, res) => {
+app.patch('/api/clients/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), async (req, res) => {
   const body = req.body as Record<string, unknown>;
+  const userId = (req as AuthenticatedRequest).userId;
+  const userRole = (req as AuthenticatedRequest).userRole;
   const now = new Date().toISOString();
   const existing = await db.prepare('SELECT * FROM clients WHERE id = ?').get(req.params.id) as Record<string, string | null> | undefined;
   if (!existing) { res.status(404).json({ error: 'Cliente no encontrado' }); return; }
+  // IDOR: un rol Ventas solo puede editar clientes de los que es ejecutivo.
+  if (userRole === 'Ventas' && existing.ejecutivo_id !== userId) {
+    res.status(403).json({ error: 'No puedes editar clientes de otro ejecutivo' });
+    return;
+  }
 
   await db.prepare(`UPDATE clients SET tipo_persona = ?, nombre = ?, rut = ?, nacionalidad = ?, profesion = ?, sueldo_range = ?,
     fecha_nacimiento = ?, email = ?, telefono = ?, direccion = ?, ciudad = ?, comuna = ?, region = ?,
@@ -1954,7 +2005,9 @@ app.post('/api/sync', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/sync/:key', requireAuth, async (req, res) => {
+// Restringido a Admin: este sync expone el estado completo (todos los proyectos).
+// El frontend no lo usa; se mantiene solo para administración/depuración.
+app.get('/api/sync/:key', requireAuth, requireRole('Admin'), async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
 
   if (req.params.key === 'app_state') {
@@ -2009,11 +2062,20 @@ if (isMain) {
       await migrateReservas();
       await checkReservasVencidas();
       setInterval(() => { void checkReservasVencidas(); }, 60 * 60 * 1000);
-      app.listen(PORT, () => {
+      const server = app.listen(PORT, () => {
         console.log(`\n[DanaWorks Server] ✓ Escuchando en http://localhost:${PORT}`);
         console.log(`[DanaWorks Server] ✓ BD: PostgreSQL/${process.env.PGDATABASE || 'danacorp'}`);
         console.log(`[DanaWorks Server] ✓ CORS: ${FRONTEND_URL}\n`);
       });
+
+      // Graceful shutdown: deja de aceptar conexiones, cierra el pool y sale.
+      const shutdown = (sig: string) => {
+        console.log(`\n[${sig}] cerrando ordenadamente...`);
+        server.close(() => { void pool.end().then(() => process.exit(0)); });
+        setTimeout(() => process.exit(1), 10000).unref(); // tope si algo cuelga
+      };
+      process.on('SIGTERM', () => shutdown('SIGTERM'));
+      process.on('SIGINT', () => shutdown('SIGINT'));
     } catch (err) {
       console.error('[FATAL] Error de arranque (¿PostgreSQL accesible? ¿esquema aplicado?):', err);
       process.exit(1);
