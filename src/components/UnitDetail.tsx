@@ -81,15 +81,6 @@ const FormattedInput = ({ value, onChange, className, placeholder, disabled, for
     );
 };
 
-interface UnitDraft {
-  id: string;
-  clienteNombre: string;
-  clienteRut: string;
-  updated_at: string;
-  estado?: string;
-  fecha_generada?: string;
-  data: Record<string, unknown>;
-}
 
 export const UnitDetail: React.FC<UnitDetailProps> = ({
   unit, client, onBack, onUpdate, allUnits = [], currentUser, onSelectClient,
@@ -102,8 +93,6 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   const clientMenuRef = useRef<HTMLDivElement>(null);
 
   // ── Forma de Pago ──────────────────────────────────────────────────────────
-  const [unitDrafts, setUnitDrafts] = useState<UnitDraft[]>([]);
-  const [selectedDraftId, setSelectedDraftId] = useState<string>('');
   const [paymentPlans, setPaymentPlans] = useState<PaymentPlan[]>([]);
   const [selectedPlanId, setSelectedPlanId] = useState<string>('');
   const [cantidadCuotasPie, setCantidadCuotasPie] = useState(36);
@@ -111,8 +100,6 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   const [fpCuotasPct, setFpCuotasPct] = useState(20);
   const [fpEscrituraPct, setFpEscrituraPct] = useState(10);
   const fpCreditoPct = Math.max(0, 100 - fpPromesaPct - fpCuotasPct - fpEscrituraPct);
-  const [fpSaving, setFpSaving] = useState(false);
-  const [fpSaved, setFpSaved] = useState(false);
 
   // ── Panel de descuento ─────────────────────────────────────────────────────
   const [discountCfg, setDiscountCfg] = useState<{ jefeMaxPct: number; supervisorMaxPct: number }>({ jefeMaxPct: 3, supervisorMaxPct: 7 });
@@ -178,13 +165,13 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
       .catch(() => {});
   };
 
-  // Load payment plans when unit has a client
+  // Load payment plans when unit has a client (uses formData.clienteId to catch deferred assignments)
   useEffect(() => {
-    if (!unit.clienteId) return;
-    const rut = client?.rut;
-    loadPaymentPlans(rut);
+    if (!formData.clienteId) return;
+    const cliente = clients?.find(c => c.id === formData.clienteId);
+    loadPaymentPlans(cliente?.rut);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [unit.numero, unit.projectId, unit.clienteId]);
+  }, [unit.numero, unit.projectId, formData.clienteId]);
 
   useEffect(() => {
     setDiscountInput(formData.descuentoPct?.toString() || '');
@@ -253,20 +240,6 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     }
   };
 
-  const handleSelectDraft = (draftId: string) => {
-    setSelectedDraftId(draftId);
-    const d = unitDrafts.find(x => x.id === draftId);
-    if (!d) return;
-    const data = typeof d.data === 'string' ? JSON.parse(d.data) : d.data;
-    const adj = (data?.adjustments ?? []) as { key: string; value: unknown }[];
-    const pc = adj.find(a => a.key === 'paymentConfig')?.value as Record<string, unknown> | undefined;
-    if (pc) {
-      setFpPromesaPct(parseFloat(String(pc.promesaPct ?? 10)));
-      setFpCuotasPct(parseFloat(String(pc.cuotasPct ?? 20)));
-      setFpEscrituraPct(parseFloat(String(pc.escrituraPct ?? 10)));
-    }
-  };
-
   const handleSelectPlan = (planId: string) => {
     setSelectedPlanId(planId);
     const plan = paymentPlans.find(p => p.id === planId);
@@ -277,28 +250,15 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     if (plan.cuotasN > 0) setCantidadCuotasPie(plan.cuotasN);
   };
 
-  const saveFormaPago = async () => {
-    if (!selectedDraftId || fpSaving) return;
-    const token = localStorage.getItem('dw_token');
-    if (!token) return;
-    const draft = unitDrafts.find(d => d.id === selectedDraftId);
-    if (!draft) return;
-    setFpSaving(true);
-    try {
-      const draftData = typeof draft.data === 'string' ? JSON.parse(draft.data) : draft.data;
-      const adjustments = (draftData?.adjustments ?? []) as { key: string; value: unknown }[];
-      const filtered = adjustments.filter(a => a.key !== 'paymentConfig');
-      filtered.push({ key: 'paymentConfig', value: { promesaPct: fpPromesaPct, cuotasPct: fpCuotasPct, escrituraPct: fpEscrituraPct, creditoPct: fpCreditoPct } });
-      await fetch('/api/quotation-drafts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ ...draftData, id: draft.id, adjustments: filtered }),
-      });
-      setFpSaved(true);
-      setTimeout(() => setFpSaved(false), 2500);
-      showToast?.('Forma de pago guardada');
-    } catch { /* ignore */ }
-    setFpSaving(false);
+  const cargarDesdeCotizacion = (plan: PaymentPlan) => {
+    setFpPromesaPct(plan.promesaPct);
+    setFpCuotasPct(plan.cuotasPct);
+    setFpEscrituraPct(plan.escrituraPct);
+    if (plan.cuotasN > 0) setCantidadCuotasPie(plan.cuotasN);
+    if (plan.descuentoPct) {
+      setFormData(prev => ({ ...prev, descuentoPct: plan.descuentoPct }));
+    }
+    showToast?.('✓ Datos de cotización cargados');
   };
 
   // ── Fix 1: Unidad asociada a padre ────────────────────────────────────────
@@ -632,11 +592,6 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     const ufEscritura   = round4(precioVentaFinal * fpEscrituraPct / 100);
     const ufCredito     = round4(precioVentaFinal * fpCreditoPct / 100);
 
-    console.log('[generatePaymentSchedule]', {
-      fpPromesaPct, fpCuotasPct, fpEscrituraPct, fpCreditoPct,
-      precioVentaFinal, cuotasN,
-      ufPromesa, ufCuotaUnit, ufEscritura, ufCredito,
-    });
 
     const today = new Date();
     let monthCursor = 1;
@@ -673,7 +628,15 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
 
     if (nuevasCuotas.length === 0) return;
 
-    setFormData(prev => ({ ...prev, planPagos: [...(prev.planPagos || []), ...nuevasCuotas] }));
+    const pagadosExistentes = formData.planPagos?.filter(p => p.status === 'Pagado').length ?? 0;
+    if (pagadosExistentes > 0) {
+      if (!confirm(
+        `Hay ${pagadosExistentes} pago${pagadosExistentes > 1 ? 's' : ''} marcado${pagadosExistentes > 1 ? 's' : ''} como Pagado. ` +
+        `¿Seguro que quieres reemplazar el cronograma completo?`
+      )) return;
+    }
+
+    setFormData(prev => ({ ...prev, planPagos: nuevasCuotas }));
     showToast?.(`✓ ${nuevasCuotas.length} cuotas generadas en el cronograma`);
   };
 
@@ -866,7 +829,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                         ) : searchedClients.map(c => (
                           <button
                             key={c.id}
-                            onClick={() => { setFormData(prev => ({ ...prev, clienteId: c.id })); setIsAssignModalOpen(false); loadPaymentPlans(c.rut); }}
+                            onClick={() => { setFormData(prev => ({ ...prev, clienteId: c.id })); setIsAssignModalOpen(false); }}
                             className="w-full p-3 text-left border border-gray-100 rounded-xl hover:border-blue-300 hover:bg-blue-50/30 transition-all flex items-center gap-3"
                           >
                             <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-sm shrink-0">
@@ -1272,6 +1235,33 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
               <Coins className="w-4 h-4 text-blue-600" /> Estructura Financiera
             </h3>
 
+            {/* ── Cargar desde cotización ── */}
+            {hasClient && paymentPlans.length === 1 && (
+              <button
+                onClick={() => cargarDesdeCotizacion(paymentPlans[0])}
+                className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded-xl hover:bg-blue-100 transition-colors"
+              >
+                <ChevronDown className="w-3.5 h-3.5" /> Cargar desde cotización ({new Date(paymentPlans[0].createdAt).toLocaleDateString('es-CL')})
+              </button>
+            )}
+            {hasClient && paymentPlans.length > 1 && (
+              <select
+                defaultValue=""
+                onChange={e => {
+                  const plan = paymentPlans.find(p => p.id === e.target.value);
+                  if (plan) cargarDesdeCotizacion(plan);
+                }}
+                className="w-full px-3 py-2 text-xs border border-blue-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100 bg-blue-50 text-blue-700 font-bold"
+              >
+                <option value="">↓ Cargar desde cotización...</option>
+                {paymentPlans.map(p => (
+                  <option key={p.id} value={p.id}>
+                    Cotización {new Date(p.createdAt).toLocaleDateString('es-CL')}
+                  </option>
+                ))}
+              </select>
+            )}
+
             {/* ── Sección por unidad: Depto ── */}
             <div className="space-y-2 p-3 bg-gray-50 rounded-xl border border-gray-100">
               <div className="flex justify-between items-center">
@@ -1510,7 +1500,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                         <input
                           type="number" min="0" max="100" step="1"
                           value={val}
-                          onChange={e => { set(Number(e.target.value)); setFpSaved(false); }}
+                          onChange={e => set(Number(e.target.value))}
                           disabled={isReadOnly}
                           className="w-full px-2 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-xs font-mono text-right outline-none focus:ring-2 focus:ring-blue-100 disabled:opacity-60"
                         />
