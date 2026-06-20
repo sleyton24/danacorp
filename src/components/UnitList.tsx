@@ -34,6 +34,14 @@ export const UnitList: React.FC<UnitListProps> = ({ units, clients, currentUser,
 
   const getUnitOwner = (unit: RealEstateUnit): Client | undefined => {
     if (unit.clienteId) return clients.find(c => c.id === unit.clienteId);
+    if (unit.type !== 'Departamento') {
+      const parent = units.find(u =>
+        u.type === 'Departamento' &&
+        (u.estacionamientos?.includes(unit.numero) ||
+         u.bodegas?.includes(unit.numero))
+      );
+      if (parent?.clienteId) return clients.find(c => c.id === parent.clienteId);
+    }
     return undefined;
   };
 
@@ -311,7 +319,7 @@ export const UnitList: React.FC<UnitListProps> = ({ units, clients, currentUser,
                     )}
                     <div className="mb-4">
                         <span className="text-[10px] text-gray-400 font-semibold block mb-1">Titular / Estado Comercial</span>
-                        <div className="text-sm font-medium text-gray-700 dark:text-gray-300 truncate flex items-center gap-1.5"><UserIcon className="w-3.5 h-3.5 text-gray-400" />{owner ? owner.nombre : <span className="text-gray-300 italic">{effectiveStatus === 'Disponible' ? 'Disponible' : effectiveStatus}</span>}</div>
+                        <div className="text-sm font-medium text-gray-700 dark:text-gray-300 truncate flex items-center gap-1.5"><UserIcon className="w-3.5 h-3.5 text-gray-400" />{owner ? owner.nombre : <span className="text-gray-300 italic">{effectiveStatus === 'Disponible' ? 'Disponible' : '—'}</span>}</div>
                     </div>
                     <div className="flex flex-col items-center py-4 rounded-xl bg-gray-50 dark:bg-gray-700/50 group-hover:bg-blue-50 dark:group-hover:bg-blue-900/30 transition-colors mb-4">
                        <span className="text-[10px] text-gray-400 font-semibold">Precio Lista</span>
@@ -355,21 +363,6 @@ export const UnitList: React.FC<UnitListProps> = ({ units, clients, currentUser,
                             <td className="px-6 py-4">{getUnitAsociados(unit)}</td>
                             <td className="px-6 py-4">
                               <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${getStatusColor(effectiveStatus)}`}>{effectiveStatus}</span>
-                              {unit.estado === 'Reservado' && (
-                                <div className="mt-1">
-                                  {isVentas && reservadaOtro ? (
-                                    <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500">Reservada</span>
-                                  ) : !isVentas && expiraDate ? (
-                                    <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium border ${expiraProxima ? 'bg-red-100 text-red-800 border-red-200' : 'bg-amber-100 text-amber-800 border-amber-200'}`}>
-                                      Reservada · vence {expiraDate.toLocaleDateString('es-CL')}
-                                    </span>
-                                  ) : (
-                                    <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 border border-amber-200">
-                                      Reservada
-                                    </span>
-                                  )}
-                                </div>
-                              )}
                             </td>
                             <td className="px-6 py-4 text-gray-500 text-xs">{getUnitAttributes(unit)}</td>
                             <td className="px-6 py-4 text-gray-600 dark:text-gray-400 text-xs truncate max-w-[150px]">{owner ? owner.nombre : '—'}</td>

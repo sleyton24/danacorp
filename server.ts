@@ -485,8 +485,8 @@ async function checkFollowUpAlerts() {
       SELECT qd.id, qd.user_id, qd.cliente_nombre, u.type, u.numero
       FROM quotation_drafts qd
       JOIN units u ON u.numero = (
-        SELECT json_extract(value, '$.numero')
-        FROM json_each(json_extract(qd.data, '$.selectedUnits'))
+        SELECT elem->>'numero'
+        FROM json_array_elements((qd.data::json)->'selectedUnits') AS elem
         LIMIT 1
       ) AND u.project_id = qd.project_id
       WHERE qd.estado = 'generada'
@@ -717,26 +717,44 @@ app.get('/api/quotation-drafts', requireAuth, async (req, res) => {
        ORDER BY updated_at DESC`
     ).all(qProjectId, unitNumero, unitNumero) as Array<Record<string, unknown>>;
   } else if (userRole === 'Admin' || userRole === 'Supervisor') {
-    rows = await db.prepare(
-      'SELECT * FROM quotation_drafts ORDER BY updated_at DESC'
-    ).all() as Array<Record<string, unknown>>;
+    if (qProjectId) {
+      rows = await db.prepare(
+        'SELECT * FROM quotation_drafts WHERE project_id = ? ORDER BY updated_at DESC'
+      ).all(qProjectId) as Array<Record<string, unknown>>;
+    } else {
+      rows = await db.prepare(
+        'SELECT * FROM quotation_drafts ORDER BY updated_at DESC'
+      ).all() as Array<Record<string, unknown>>;
+    }
   } else if (userRole === 'JefeSala') {
-    const jefe = await getUserById(userId);
-    const projectIds = (jefe?.assignedProjectIds ?? []) as readonly string[];
-    if (projectIds.length === 0) {
+    if (qProjectId) {
+      rows = await db.prepare(
+        'SELECT * FROM quotation_drafts WHERE project_id = ? ORDER BY updated_at DESC'
+      ).all(qProjectId) as Array<Record<string, unknown>>;
+    } else {
+      const jefe = await getUserById(userId);
+      const projectIds = (jefe?.assignedProjectIds ?? []) as readonly string[];
+      if (projectIds.length === 0) {
+        rows = await db.prepare(
+          'SELECT * FROM quotation_drafts WHERE user_id = ? ORDER BY updated_at DESC'
+        ).all(userId) as Array<Record<string, unknown>>;
+      } else {
+        const placeholders = projectIds.map(() => '?').join(',');
+        rows = await db.prepare(
+          `SELECT * FROM quotation_drafts WHERE project_id IN (${placeholders}) ORDER BY updated_at DESC`
+        ).all(...(projectIds as string[])) as Array<Record<string, unknown>>;
+      }
+    }
+  } else {
+    if (qProjectId) {
+      rows = await db.prepare(
+        'SELECT * FROM quotation_drafts WHERE user_id = ? AND project_id = ? ORDER BY updated_at DESC'
+      ).all(userId, qProjectId) as Array<Record<string, unknown>>;
+    } else {
       rows = await db.prepare(
         'SELECT * FROM quotation_drafts WHERE user_id = ? ORDER BY updated_at DESC'
       ).all(userId) as Array<Record<string, unknown>>;
-    } else {
-      const placeholders = projectIds.map(() => '?').join(',');
-      rows = await db.prepare(
-        `SELECT * FROM quotation_drafts WHERE project_id IN (${placeholders}) ORDER BY updated_at DESC`
-      ).all(...(projectIds as string[])) as Array<Record<string, unknown>>;
     }
-  } else {
-    rows = await db.prepare(
-      'SELECT * FROM quotation_drafts WHERE user_id = ? ORDER BY updated_at DESC'
-    ).all(userId) as Array<Record<string, unknown>>;
   }
 
   res.json(rows.map(r => ({
@@ -1727,8 +1745,8 @@ app.get('/api/units', requireAuth, async (req, res) => {
     gastosOperacionales: r.gastos_operacionales,
     gastosNotariales: r.gastos_notariales,
     gastosConservador: r.gastos_conservador,
-    bodegas: JSON.parse((r.bodegas as string) || '[]'),
-    estacionamientos: JSON.parse((r.estacionamientos as string) || '[]'),
+    bodegas: (() => { try { const v = r.bodegas; if (Array.isArray(v)) return v; return JSON.parse((v as string) || '[]'); } catch { return []; } })(),
+    estacionamientos: (() => { try { const v = r.estacionamientos; if (Array.isArray(v)) return v; return JSON.parse((v as string) || '[]'); } catch { return []; } })(),
     clienteId: r.cliente_id,
     asignadoPor: r.asignado_por,
     fechaAsignacion: r.fecha_asignacion,
@@ -1766,7 +1784,7 @@ app.get('/api/units', requireAuth, async (req, res) => {
     cbrFojas: r.cbr_fojas,
     cbrNumero: r.cbr_numero,
     cbrAno: r.cbr_ano,
-    planPagos: JSON.parse((r.plan_pagos as string) || '[]'),
+    planPagos: (() => { try { const v = r.plan_pagos; if (Array.isArray(v)) return v; return JSON.parse((v as string) || '[]'); } catch { return []; } })(),
     observaciones: (r.observaciones as string) || '',
     documents: JSON.parse((r.documents as string) || '[]'),
     descuentoPct: r.descuento_pct,
@@ -1873,6 +1891,17 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
       .run(JSON.stringify(updHist), now, req.params.id);
     createAuditLog(userId, userName, userRole, 'Resciliación', 'Unit', req.params.id, `Unidad ${existing.type as string} ${existing.numero as string} resciliada por ${userName}`);
     createNotification({ paraRol: 'JefeSala', titulo: 'Resciliación registrada', mensaje: `${existing.type as string} ${existing.numero as string} fue resciliada por ${userName}`, tipo: 'warning', linkView: 'inventory', relatedId: req.params.id });
+  }
+
+  // Handle liberación: Reservado → Disponible (close historial, unlink client)
+  if ('estado' in body && body.estado === 'Disponible' && existing.estado === 'Reservado') {
+    type HistEntry = { fechaFin?: string; [k: string]: unknown };
+    const hist = (() => { try { return JSON.parse((existing.historial_ocupacion as string) || '[]') as HistEntry[]; } catch { return [] as HistEntry[]; } })();
+    const updHist = hist.map((h, idx) => idx === hist.length - 1 && !h.fechaFin ? { ...h, fechaFin: now, motivo: 'Liberación' } : h);
+    await db.prepare(`UPDATE units SET historial_ocupacion = ?, cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, updated_at = ? WHERE id = ?`)
+      .run(JSON.stringify(updHist), now, req.params.id);
+    createAuditLog(userId, userName, userRole, 'Liberación', 'Unit', req.params.id, `Unidad ${existing.type as string} ${existing.numero as string} liberada por ${userName}`);
+    createNotification({ paraRol: 'JefeSala', titulo: 'Liberación de reserva', mensaje: `${existing.type as string} ${existing.numero as string} fue liberada por ${userName}`, tipo: 'warning', linkView: 'inventory', relatedId: req.params.id });
   }
 
   // Notify JefeSala when a planPagos item is marked Pagado (Paso 11)

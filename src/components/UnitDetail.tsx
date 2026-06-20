@@ -124,6 +124,17 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   const [bonoPct, setBonoPct] = useState(0);
   const [hasBono, setHasBono] = useState(unit.aplicaBonoPie ?? false);
 
+  // ── Fix 4: Cronograma paginación ───────────────────────────────────────────
+  const [showAllPayments, setShowAllPayments] = useState(false);
+
+  // ── Fix 2: Popup cambios pendientes ───────────────────────────────────────
+  const [showUnsavedModal, setShowUnsavedModal] = useState(false);
+
+  // ── Fix 3: Descuentos/bono por unidad vinculada ────────────────────────────
+  const [linkedDiscounts, setLinkedDiscounts] = useState<Record<string, number>>({});
+  const [linkedDiscountInputs, setLinkedDiscountInputs] = useState<Record<string, string>>({});
+  const [linkedBono, setLinkedBono] = useState<Record<string, boolean>>({});
+
   useEffect(() => {
     const token = localStorage.getItem('dw_token');
     if (!token || !unit.projectId) return;
@@ -290,9 +301,43 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     setFpSaving(false);
   };
 
-  const isReadOnly = currentUser.role === 'Lectura';
+  // ── Fix 1: Unidad asociada a padre ────────────────────────────────────────
+  const parentUnit = useMemo(() => {
+    if (unit.type === 'Departamento') return null;
+    return allUnits.find(u => {
+      if (u.type !== 'Departamento') return false;
+      const bodegas = Array.isArray(u.bodegas)
+        ? u.bodegas
+        : (() => { try { return JSON.parse(u.bodegas as any || '[]'); } catch { return []; } })();
+      const estacs = Array.isArray(u.estacionamientos)
+        ? u.estacionamientos
+        : (() => { try { return JSON.parse(u.estacionamientos as any || '[]'); } catch { return []; } })();
+      return bodegas.includes(unit.numero) || estacs.includes(unit.numero);
+    }) ?? null;
+  }, [unit, allUnits]);
+  const isAssociatedToParent = parentUnit !== null;
+
+  // ── Fix 2: Cambios pendientes ──────────────────────────────────────────────
+  const hasUnsavedChanges = useMemo(() => {
+    const normalize = (obj: any) => {
+      if (!obj) return obj;
+      return Object.keys(obj).sort().reduce((acc, key) => {
+        acc[key] = obj[key];
+        return acc;
+      }, {} as any);
+    };
+    return JSON.stringify(normalize(formData)) !== JSON.stringify(normalize(unit));
+  }, [formData, unit]);
+
+  // ── Fix 5: Edición de fechas por rol ──────────────────────────────────────
+  const canEditDates = ['Admin', 'JefeSala', 'Supervisor'].includes(currentUser.role);
+  const formatDateDisplay = (d?: string) =>
+    d ? new Date(d + 'T00:00:00').toLocaleDateString('es-CL') : '—';
+
+  const isReadOnly = currentUser.role === 'Lectura' || isAssociatedToParent;
   const puedeReasignar = ['Admin', 'Supervisor', 'JefeSala'].includes(currentUser.role);
   const canAssign = currentUser.role !== 'Lectura' && (!formData.clienteId || puedeReasignar);
+  const canAssignClient = !isAssociatedToParent || parentUnit?.estado === 'Disponible';
 
   // Cierra el menú al hacer clic fuera
   useEffect(() => {
@@ -335,7 +380,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   }, [assignableClients, assignSearch]);
   // Derivar cliente desde formData.clienteId (Fix C): se actualiza cuando formData sincroniza
   const currentClient = useMemo(
-    () => clients.find(c => c.id === formData.clienteId) ?? client,
+    () => formData.clienteId ? (clients.find(c => c.id === formData.clienteId) ?? client) : null,
     [clients, formData.clienteId, client],
   );
   const hasClient = !!formData.clienteId;
@@ -359,16 +404,54 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     }
   }, [totalPrecioListaAcumulado]);
 
-  // Cálculo bono pie para Estructura Financiera (usa util compartido con Quoter)
-  const bonoCalc = useMemo(() => {
+  // Fix 3: inicializar descuentos de unidades vinculadas cuando cambian los activos
+  useEffect(() => {
+    const discounts: Record<string, number> = {};
+    const inputs: Record<string, string> = {};
+    const bono: Record<string, boolean> = {};
+    [...linkedAssets.storages, ...linkedAssets.parkings].forEach(u => {
+      discounts[u.id] = u.descuentoPct ?? 0;
+      inputs[u.id] = String(u.descuentoPct ?? 0);
+      bono[u.id] = false;
+    });
+    setLinkedDiscounts(discounts);
+    setLinkedDiscountInputs(inputs);
+    setLinkedBono(bono);
+  }, [linkedAssets.storages.map(u => u.id).join(','), linkedAssets.parkings.map(u => u.id).join(',')]);
+
+  // Cálculo bono pie solo para el departamento (Fix 3: renombrado)
+  const bonoCalcDepto = useMemo(() => {
     const descuentoPct = formData.descuentoPct ?? 0;
     return calcBonoPie(
-      totalPrecioListaAcumulado,
+      formData.precioLista,
       descuentoPct,
       bonoPct > 0 ? bonoPct : 10,
       hasBono,
     );
-  }, [hasBono, bonoPct, totalPrecioListaAcumulado, formData.descuentoPct]);
+  }, [hasBono, bonoPct, formData.precioLista, formData.descuentoPct]);
+
+  // Alias para compatibilidad con código existente que usa bonoCalc
+  const bonoCalc = useMemo(() => calcBonoPie(
+    totalPrecioListaAcumulado,
+    formData.descuentoPct ?? 0,
+    bonoPct > 0 ? bonoPct : 10,
+    hasBono,
+  ), [hasBono, bonoPct, totalPrecioListaAcumulado, formData.descuentoPct]);
+
+  // Fix 3: precio de venta total (depto + bodegas + estacs con sus propios descuentos/bonos)
+  const totalPrecioVentaNuevo = useMemo(() => {
+    const eff = bonoPct > 0 ? bonoPct : 10;
+    const deptoVenta = bonoCalcDepto.precioVenta;
+    const storagesVenta = linkedAssets.storages.reduce((acc, b) => {
+      const d = linkedDiscounts[b.id] ?? b.descuentoPct ?? 0;
+      return acc + calcBonoPie(b.precioLista, d, eff, linkedBono[b.id] ?? false).precioVenta;
+    }, 0);
+    const parkingsVenta = linkedAssets.parkings.reduce((acc, p) => {
+      const d = linkedDiscounts[p.id] ?? p.descuentoPct ?? 0;
+      return acc + calcBonoPie(p.precioLista, d, eff, linkedBono[p.id] ?? false).precioVenta;
+    }, 0);
+    return deptoVenta + storagesVenta + parkingsVenta;
+  }, [bonoCalcDepto.precioVenta, linkedAssets, linkedDiscounts, linkedBono, bonoPct]);
 
 
   // Sincronizar formData cuando cambian datos clave de la unidad (Fix A)
@@ -400,11 +483,27 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
         if (value === 'Escriturado' && !formData.fechaEscritura) {
             extraUpdates.fechaEscritura = hoy;
         }
-        // Cambio de estado es acción deliberada — persiste inmediatamente sin esperar "Guardar"
-        const immediateUnit: RealEstateUnit = { ...formData, ...extraUpdates, estado: value };
-        setFormData(immediateUnit);
-        onUpdate(immediateUnit);
-        showToast?.(`Estado actualizado a ${value}`);
+        // Fix 2: cambio de estado es local — persiste al presionar "Guardar Cambios"
+        if (value === 'Disponible') {
+            // Limpiar datos de cliente y transacción visualmente
+            setFormData(prev => ({
+                ...prev,
+                estado: 'Disponible',
+                clienteId: undefined,
+                asignadoPor: undefined,
+                fechaReserva: undefined,
+                fechaPromesa: undefined,
+                fechaEscritura: undefined,
+                fechaAsignacion: undefined,
+                descuentoPct: 0,
+                reservaMonto: 0,
+                pie: 0,
+                reservaVendedorId: undefined,
+                reservaExpira: undefined,
+            }));
+        } else {
+            setFormData(prev => ({ ...prev, ...extraUpdates, estado: value }));
+        }
         return;
     } else if (field === 'fechaReserva' && value) {
         updatedEstado = 'Reservado';
@@ -472,6 +571,15 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     }
   };
 
+  // Fix 2: navegar atrás con check de cambios pendientes
+  const handleBack = () => {
+    if (hasUnsavedChanges) {
+      setShowUnsavedModal(true);
+    } else {
+      onBack();
+    }
+  };
+
   const addManualPayment = () => {
       if (isReadOnly) return;
       setFormData(prev => {
@@ -509,8 +617,8 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   const generatePaymentSchedule = () => {
     if (isReadOnly) return;
 
-    // Precio base: bonoCalc.precioVenta (con descuento y bono aplicados), fallback a precioLista
-    const precioVentaFinal = bonoCalc.precioVenta > 0 ? bonoCalc.precioVenta : (unit.precioLista || 0);
+    // Fix 3: usar precio total (depto + bodegas + estacs)
+    const precioVentaFinal = totalPrecioVentaNuevo > 0 ? totalPrecioVentaNuevo : (unit.precioLista || 0);
     if (precioVentaFinal === 0) return;
 
     // Usar cuotasN del plan de pago seleccionado, fallback al config del proyecto
@@ -583,12 +691,61 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
 
   return (
     <div className="animate-in slide-in-from-right duration-300 pb-20">
-      
+
+      {/* Fix 2: Modal cambios pendientes */}
+      {showUnsavedModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
+            <h3 className="text-lg font-bold text-gray-900">Cambios sin guardar</h3>
+            <p className="text-sm text-gray-600">
+              Tienes cambios sin guardar en {formData.type} {formData.numero}. ¿Qué quieres hacer?
+            </p>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => { handleSaveWithLog(); setShowUnsavedModal(false); onBack(); }}
+                className="w-full py-2.5 bg-blue-600 text-white rounded-xl font-bold text-sm hover:bg-blue-700 transition-colors"
+              >
+                Guardar y salir
+              </button>
+              <button
+                onClick={() => { setFormData(unit); setShowUnsavedModal(false); onBack(); }}
+                className="w-full py-2.5 bg-red-50 text-red-600 rounded-xl font-bold text-sm hover:bg-red-100 transition-colors border border-red-200"
+              >
+                Descartar cambios
+              </button>
+              <button
+                onClick={() => setShowUnsavedModal(false)}
+                className="w-full py-2.5 border border-gray-200 text-gray-500 rounded-xl font-bold text-sm hover:bg-gray-50 transition-colors"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Fix 1: Banner unidad asociada a padre */}
+      {isAssociatedToParent && parentUnit && (
+        <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-start justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-bold text-amber-800">
+                Unidad asociada al Depto {parentUnit.numero} — Estado: {parentUnit.estado}
+              </p>
+              <p className="text-xs text-amber-600 mt-0.5">
+                El estado y el titular se heredan del departamento padre. Edición bloqueada.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Cabecera Principal */}
       <div className="mb-6 pb-6 border-b border-gray-200">
         <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
-                <button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-full transition-colors"><ArrowLeft className="w-5 h-5 text-gray-500" /></button>
+                <button onClick={handleBack} className="p-2 hover:bg-gray-100 rounded-full transition-colors"><ArrowLeft className="w-5 h-5 text-gray-500" /></button>
                 <div>
                     <h1 className="text-2xl font-bold text-gray-900">{formData.type} {formData.numero}</h1>
                     <p className="text-xs text-gray-500 font-medium tracking-wide uppercase">Expediente de Transacción</p>
@@ -603,8 +760,9 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                 </select>
             </div>
             {!isReadOnly && (
-                <button onClick={handleSaveWithLog} className="px-5 py-2.5 bg-blue-600 text-white rounded-xl font-bold text-sm hover:bg-blue-700 flex items-center gap-2 shadow-lg transition-all active:scale-95">
-                    <Save className="w-4 h-4" /> Guardar Cambios
+                <button onClick={handleSaveWithLog} className={`px-5 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 shadow-lg transition-all active:scale-95 ${hasUnsavedChanges ? 'bg-orange-500 hover:bg-orange-600 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white'}`}>
+                    <Save className="w-4 h-4" />
+                    {hasUnsavedChanges ? '• Guardar Cambios' : 'Guardar Cambios'}
                 </button>
             )}
         </div>
@@ -642,7 +800,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                         >
                           <ExternalLink className="w-4 h-4 text-blue-500" /> Ver Expediente
                         </button>
-                        {canAssign && onAssignClient && (
+                        {canAssign && canAssignClient && onAssignClient && (
                           <button
                             onClick={() => { setClientMenuOpen(false); setAssignSearch(''); setIsAssignModalOpen(true); }}
                             className="w-full px-4 py-3 text-sm font-medium text-left hover:bg-gray-50 flex items-center gap-3"
@@ -650,9 +808,9 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                             <UserPlus className="w-4 h-4 text-green-500" /> Reasignar Cliente
                           </button>
                         )}
-                        {canAssign && onUnassignClient && (
+                        {canAssign && canAssignClient && onUnassignClient && (
                           <button
-                            onClick={() => { setClientMenuOpen(false); onUnassignClient(unit.id); }}
+                            onClick={() => { setClientMenuOpen(false); setFormData(prev => ({ ...prev, clienteId: undefined })); }}
                             className="w-full px-4 py-3 text-sm font-medium text-left hover:bg-red-50 text-red-600 flex items-center gap-3"
                           >
                             <X className="w-4 h-4" /> Desasignar
@@ -663,11 +821,11 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                   </div>
                 ) : (
                   <div
-                    onClick={() => canAssign && onAssignClient && (setAssignSearch(''), setIsAssignModalOpen(true))}
-                    title={canAssign ? 'Clic para asignar cliente' : ''}
-                    className={`p-8 bg-gray-50 rounded-2xl border border-dashed border-gray-200 text-gray-400 text-sm font-medium italic flex items-center justify-center gap-2 transition-all ${canAssign && onAssignClient ? 'cursor-pointer hover:border-blue-300 hover:bg-blue-50/30 hover:text-blue-500' : ''}`}
+                    onClick={() => canAssign && canAssignClient && onAssignClient && (setAssignSearch(''), setIsAssignModalOpen(true))}
+                    title={canAssign && canAssignClient ? 'Clic para asignar cliente' : ''}
+                    className={`p-8 bg-gray-50 rounded-2xl border border-dashed border-gray-200 text-gray-400 text-sm font-medium italic flex items-center justify-center gap-2 transition-all ${canAssign && canAssignClient && onAssignClient ? 'cursor-pointer hover:border-blue-300 hover:bg-blue-50/30 hover:text-blue-500' : ''}`}
                   >
-                    {canAssign && onAssignClient ? (
+                    {canAssign && canAssignClient && onAssignClient ? (
                       <><UserPlus className="w-5 h-5" /> Clic para Asignar Cliente</>
                     ) : (
                       <><AlertTriangle className="w-5 h-5" /> Unidad sin Comprador Asignado</>
@@ -708,7 +866,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                         ) : searchedClients.map(c => (
                           <button
                             key={c.id}
-                            onClick={() => { onAssignClient?.(c.id, unit.id); setIsAssignModalOpen(false); loadPaymentPlans(c.rut); }}
+                            onClick={() => { setFormData(prev => ({ ...prev, clienteId: c.id })); setIsAssignModalOpen(false); loadPaymentPlans(c.rut); }}
                             className="w-full p-3 text-left border border-gray-100 rounded-xl hover:border-blue-300 hover:bg-blue-50/30 transition-all flex items-center gap-3"
                           >
                             <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-sm shrink-0">
@@ -768,107 +926,10 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
             </div>
           </div>
 
-          {/* Forma de Pago (PUNTO 3) — visible when unit has client */}
-          {hasClient && (
-            <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
-                <h3 className="text-xs font-bold text-gray-500 flex items-center gap-2 uppercase tracking-widest">
-                  <CreditCard className="w-4 h-4 text-blue-600" /> Forma de Pago Cotizada
-                </h3>
-                {paymentPlans.length > 1 && (
-                  <select
-                    value={selectedPlanId}
-                    onChange={e => handleSelectPlan(e.target.value)}
-                    className="text-xs px-2 py-1.5 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-100 bg-white"
-                  >
-                    {paymentPlans.map(p => (
-                      <option key={p.id} value={p.id}>
-                        {p.clienteNombre || p.quotationId.slice(0, 8)} — {new Date(p.createdAt).toLocaleDateString('es-CL')}
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </div>
-              <div className="p-6 space-y-5">
-                  {/* Informational note when no cotización exists in payment_plans */}
-                  {paymentPlans.length === 0 && (
-                    <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3">
-                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                      <span>Sin cotización generada con forma de pago. Los porcentajes son editables manualmente. Para pre-cargarlos, genera una cotización desde el Cotizador con "Incluir forma de pago".</span>
-                    </div>
-                  )}
-                  {/* Editable percentages */}
-                  <div className="grid grid-cols-3 gap-4">
-                    {[
-                      { label: 'Promesa', val: fpPromesaPct, set: setFpPromesaPct },
-                      { label: `Cuotas (${cantidadCuotasPie}x)`, val: fpCuotasPct, set: setFpCuotasPct },
-                      { label: 'Escritura', val: fpEscrituraPct, set: setFpEscrituraPct },
-                    ].map(({ label, val, set }) => (
-                      <div key={label}>
-                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block mb-1">{label}</label>
-                        <div className="flex items-center gap-1">
-                          <input
-                            type="number"
-                            min="0"
-                            max="100"
-                            step="1"
-                            value={val}
-                            onChange={e => { set(Number(e.target.value)); setFpSaved(false); }}
-                            disabled={isReadOnly}
-                            className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm font-mono text-right outline-none focus:ring-2 focus:ring-blue-100 disabled:opacity-60"
-                          />
-                          <span className="text-xs text-gray-400 shrink-0">%</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  {/* Auto crédito */}
-                  <div className="flex items-center justify-between px-3 py-2 bg-blue-50/40 rounded-xl border border-blue-100/60">
-                    <span className="text-xs font-bold text-blue-600 uppercase tracking-tight">Crédito Hipotecario (auto)</span>
-                    <span className="font-mono font-black text-blue-700 text-sm">{fpCreditoPct}%</span>
-                  </div>
-                  {/* Price breakdown */}
-                  <div className="space-y-1.5">
-                    {[
-                      { label: 'Promesa', pct: fpPromesaPct },
-                      { label: `Cuotas (${cantidadCuotasPie}x)`, pct: fpCuotasPct },
-                      { label: 'Escritura', pct: fpEscrituraPct },
-                      { label: 'Crédito', pct: fpCreditoPct },
-                    ].map(({ label, pct }) => {
-                      const uf = Math.round(bonoCalc.precioVenta * pct / 100 * 100) / 100;
-                      return (
-                        <div key={label} className="flex justify-between items-center text-xs">
-                          <span className="text-gray-500">{label}</span>
-                          <span className="font-mono font-bold text-gray-700">
-                            {pct}% → {uf.toLocaleString('es-CL', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} UF
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  {/* Total check */}
-                  {(fpPromesaPct + fpCuotasPct + fpEscrituraPct + fpCreditoPct) !== 100 && (
-                    <p className="text-[10px] text-amber-600 font-bold flex items-center gap-1">
-                      <AlertTriangle className="w-3 h-3 shrink-0" /> Los porcentajes no suman 100%
-                    </p>
-                  )}
-                  {/* Generate button */}
-                  {!isReadOnly && (
-                    <button
-                      onClick={generatePaymentSchedule}
-                      className="w-full py-2 text-xs font-bold rounded-xl transition-colors bg-green-600 text-white hover:bg-green-700"
-                    >
-                      Generar Forma de Pago
-                    </button>
-                  )}
-                </div>
-            </div>
-          )}
-
-          {/* Cronograma de Recaudación */}
+          {/* Cronograma de Pagos */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
             <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
-              <h3 className="text-xs font-bold text-gray-500 flex items-center gap-2 uppercase tracking-widest"><Wallet className="w-4 h-4 text-blue-600"/> Cronograma de Recaudación</h3>
+              <h3 className="text-xs font-bold text-gray-500 flex items-center gap-2 uppercase tracking-widest"><Wallet className="w-4 h-4 text-blue-600"/> Cronograma de Pagos</h3>
               {!isReadOnly && (
                   <div className="flex gap-2">
                     <button onClick={addManualPayment} className="text-[10px] bg-white border border-gray-200 text-gray-600 font-bold px-3 py-1.5 rounded-lg flex items-center gap-2 hover:bg-gray-50 transition-all shadow-sm"><Plus className="w-3 h-3" /> AGREGAR CUOTA</button>
@@ -890,8 +951,8 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                 </thead>
                 <tbody className="divide-y divide-gray-50">
                     {formData.planPagos.length === 0 ? (
-                        <tr><td colSpan={7} className="px-6 py-12 text-center text-gray-400 italic text-xs font-medium">No se registran pagos pendientes or realizados.</td></tr>
-                    ) : formData.planPagos.map((p, idx) => {
+                        <tr><td colSpan={7} className="px-6 py-12 text-center text-gray-400 italic text-xs font-medium">No se registran pagos pendientes o realizados.</td></tr>
+                    ) : (showAllPayments ? formData.planPagos : formData.planPagos.slice(0, 5)).map((p, idx) => {
                     const delayed = isDelayed(p.date, p.fechaPagoReal);
                     return (
                     <tr key={idx} className="hover:bg-gray-50 transition-colors group">
@@ -944,6 +1005,16 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                 </tbody>
                 </table>
             </div>
+            {formData.planPagos.length > 5 && (
+              <div className="border-t border-gray-50 px-6 py-2 text-center">
+                <button
+                  onClick={() => setShowAllPayments(v => !v)}
+                  className="text-xs font-bold text-blue-600 hover:text-blue-800 transition-colors"
+                >
+                  {showAllPayments ? 'Ver menos' : `Ver todos (${formData.planPagos.length - 5} más)`}
+                </button>
+              </div>
+            )}
             <div className="bg-gray-50 px-6 py-3 border-t border-gray-100 flex justify-between items-center">
                 <div className="flex items-center gap-4">
                     <div className="text-[10px] font-black text-gray-400 uppercase tracking-tighter">Total Planificado: <span className={`ml-1 ${Math.abs(totalPlanificado - totalEstructuraFinanciera) < 0.1 ? 'text-green-600' : 'text-orange-600'}`}>{formatValueStandard(totalPlanificado)} UF</span></div>
@@ -997,43 +1068,73 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                     <div>
                         <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">Fecha Reserva</label>
                         <div className="relative">
-                            <Calendar className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 ${!hasClient ? 'text-gray-200' : 'text-gray-300'}`} />
-                            <input 
-                                disabled={isReadOnly || !hasClient} 
-                                type="date" 
-                                title={!hasClient ? "Asigne un cliente para registrar reserva" : ""}
-                                value={formData.fechaReserva || ''} 
-                                onChange={(e) => handleChange('fechaReserva', e.target.value)} 
-                                className={`w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100 ${!hasClient ? 'cursor-not-allowed opacity-50' : ''}`} 
-                            />
+                            <Calendar className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 ${(!canEditDates && !hasClient) ? 'text-gray-200' : 'text-gray-300'}`} />
+                            {canEditDates ? (
+                                <input
+                                    disabled={isReadOnly}
+                                    type="date"
+                                    value={formData.fechaReserva || ''}
+                                    onChange={(e) => handleChange('fechaReserva', e.target.value)}
+                                    className="w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100"
+                                />
+                            ) : (
+                                <input
+                                    disabled={isReadOnly || !hasClient}
+                                    type="date"
+                                    title={!hasClient ? "Asigne un cliente para registrar reserva" : ""}
+                                    value={formData.fechaReserva || ''}
+                                    onChange={(e) => handleChange('fechaReserva', e.target.value)}
+                                    className={`w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100 ${!hasClient ? 'cursor-not-allowed opacity-50' : ''}`}
+                                />
+                            )}
                         </div>
                     </div>
                     <div>
                         <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">Fecha Promesa</label>
                         <div className="relative">
-                            <FileText className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 ${!hasClient ? 'text-gray-200' : 'text-gray-300'}`} />
-                            <input 
-                                disabled={isReadOnly || !hasClient} 
-                                type="date" 
-                                title={!hasClient ? "Asigne un cliente para registrar promesa" : ""}
-                                value={formData.fechaPromesa || ''} 
-                                onChange={(e) => handleChange('fechaPromesa', e.target.value)} 
-                                className={`w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100 ${!hasClient ? 'cursor-not-allowed opacity-50' : ''}`} 
-                            />
+                            <FileText className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 ${(!canEditDates && !hasClient) ? 'text-gray-200' : 'text-gray-300'}`} />
+                            {canEditDates ? (
+                                <input
+                                    disabled={isReadOnly}
+                                    type="date"
+                                    value={formData.fechaPromesa || ''}
+                                    onChange={(e) => handleChange('fechaPromesa', e.target.value)}
+                                    className="w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100"
+                                />
+                            ) : (
+                                <input
+                                    disabled={isReadOnly || !hasClient}
+                                    type="date"
+                                    title={!hasClient ? "Asigne un cliente para registrar promesa" : ""}
+                                    value={formData.fechaPromesa || ''}
+                                    onChange={(e) => handleChange('fechaPromesa', e.target.value)}
+                                    className={`w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100 ${!hasClient ? 'cursor-not-allowed opacity-50' : ''}`}
+                                />
+                            )}
                         </div>
                     </div>
                     <div>
                         <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">Fecha Escritura</label>
                         <div className="relative">
-                            <FileCheck className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 ${!hasClient ? 'text-gray-200' : 'text-gray-300'}`} />
-                            <input 
-                                disabled={isReadOnly || !hasClient} 
-                                type="date" 
-                                title={!hasClient ? "Asigne un cliente para registrar escritura" : ""}
-                                value={formData.fechaEscritura || ''} 
-                                onChange={(e) => handleChange('fechaEscritura', e.target.value)} 
-                                className={`w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100 ${!hasClient ? 'cursor-not-allowed opacity-50' : ''}`} 
-                            />
+                            <FileCheck className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 ${(!canEditDates && !hasClient) ? 'text-gray-200' : 'text-gray-300'}`} />
+                            {canEditDates ? (
+                                <input
+                                    disabled={isReadOnly}
+                                    type="date"
+                                    value={formData.fechaEscritura || ''}
+                                    onChange={(e) => handleChange('fechaEscritura', e.target.value)}
+                                    className="w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100"
+                                />
+                            ) : (
+                                <input
+                                    disabled={isReadOnly || !hasClient}
+                                    type="date"
+                                    title={!hasClient ? "Asigne un cliente para registrar escritura" : ""}
+                                    value={formData.fechaEscritura || ''}
+                                    onChange={(e) => handleChange('fechaEscritura', e.target.value)}
+                                    className={`w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100 ${!hasClient ? 'cursor-not-allowed opacity-50' : ''}`}
+                                />
+                            )}
                         </div>
                     </div>
                     <div>
@@ -1166,192 +1267,295 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
 
         {/* Desglose Financiero - COLUMNA DERECHA */}
         <div className="xl:col-span-4 space-y-6">
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 space-y-4 sticky top-8">
-             <h3 className="text-xs font-bold text-gray-400 border-b border-gray-50 pb-3 flex items-center gap-2 uppercase tracking-widest">
-                 <Coins className="w-4 h-4 text-blue-600" /> Estructura Financiera
-             </h3>
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 space-y-5 sticky top-8">
+            <h3 className="text-xs font-bold text-gray-400 border-b border-gray-50 pb-3 flex items-center gap-2 uppercase tracking-widest">
+              <Coins className="w-4 h-4 text-blue-600" /> Estructura Financiera
+            </h3>
 
-             {/* ── Componentes del Precio Lista ── */}
-             <div className="space-y-1.5">
-               <div className="flex justify-between items-center text-xs p-2 bg-gray-50 rounded-lg border border-gray-100">
-                 <span className="text-gray-500 font-bold uppercase flex items-center gap-1.5">
-                   <Tag className="w-3 h-3" />
-                   {unit.type === 'Departamento' ? `Depto ${formData.numero}` : `${unit.type} ${formData.numero}`}
-                 </span>
-                 <span className="font-mono font-bold text-gray-800">{formatValueStandard(formData.precioLista)} UF</span>
-               </div>
-               {linkedAssets.parkings.map(p => (
-                 <div key={p.id} className="flex justify-between items-center text-[10px] p-2 bg-gray-50/50 rounded-lg border border-dashed border-gray-200">
-                   <span className="text-gray-400 font-bold uppercase flex items-center gap-1.5"><Car className="w-3 h-3" /> Estac. {p.numero}</span>
-                   <span className="font-mono font-bold text-gray-500">{formatValueStandard(p.precioLista)} UF</span>
-                 </div>
-               ))}
-               {linkedAssets.storages.map(b => (
-                 <div key={b.id} className="flex justify-between items-center text-[10px] p-2 bg-gray-50/50 rounded-lg border border-dashed border-gray-200">
-                   <span className="text-gray-400 font-bold uppercase flex items-center gap-1.5"><Package className="w-3 h-3" /> Bodega {b.numero}</span>
-                   <span className="font-mono font-bold text-gray-500">{formatValueStandard(b.precioLista)} UF</span>
-                 </div>
-               ))}
-             </div>
+            {/* ── Sección por unidad: Depto ── */}
+            <div className="space-y-2 p-3 bg-gray-50 rounded-xl border border-gray-100">
+              <div className="flex justify-between items-center">
+                <span className="text-[11px] font-black text-gray-700 uppercase flex items-center gap-1.5">
+                  <Tag className="w-3 h-3 text-blue-500" />
+                  {unit.type === 'Departamento' ? `Depto ${formData.numero}` : `${unit.type} ${formData.numero}`}
+                </span>
+                <span className="text-xs font-mono font-bold text-gray-500">{formatValueStandard(formData.precioLista)} UF</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 items-center">
+                <div>
+                  <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest block mb-1">Descuento %</label>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number" min="0" max={discountCfg.supervisorMaxPct} step="0.1"
+                      value={discountInput}
+                      onChange={e => { setDiscountInput(e.target.value); setDiscountError(''); }}
+                      disabled={isReadOnly || discountPending || !hasClient}
+                      className="w-full px-2 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-amber-100 disabled:opacity-50"
+                    />
+                    <button
+                      onClick={applyUnitDiscount}
+                      disabled={isReadOnly || discountPending || !discountInput || !hasClient}
+                      className="px-2 py-1.5 bg-amber-500 text-white text-[10px] font-bold rounded-lg hover:bg-amber-600 disabled:opacity-40 transition-all"
+                    >{discountPending ? '…' : 'OK'}</button>
+                  </div>
+                  {discountError && <p className="text-[9px] text-red-600 font-bold mt-0.5">{discountError}</p>}
+                  {discountPending && <p className="text-[9px] text-amber-600 font-bold mt-0.5">Pend. autorización</p>}
+                </div>
+                <div>
+                  <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest block mb-1">Bonificación</label>
+                  <label className="flex items-center gap-2 text-xs font-bold text-blue-700 cursor-pointer select-none mt-1.5">
+                    <input
+                      type="checkbox"
+                      checked={hasBono}
+                      disabled={isReadOnly || currentUser.role === 'Ventas' || !hasClient}
+                      onChange={e => {
+                        const checked = e.target.checked;
+                        setHasBono(checked);
+                        setFormData(prev => ({ ...prev, aplicaBonoPie: checked }));
+                      }}
+                      className="w-4 h-4 accent-blue-600 disabled:opacity-50"
+                    />
+                    Bono {bonoPct > 0 ? bonoPct : 10}%
+                  </label>
+                </div>
+              </div>
+              <div className="flex justify-between items-center text-[11px] border-t border-gray-200 pt-2">
+                <span className="text-gray-500 font-bold">Precio Venta</span>
+                <span className="font-mono font-black text-gray-800">{formatValueStandard(bonoCalcDepto.precioVenta)} UF</span>
+              </div>
+            </div>
 
-             {/* ── Desglose: Precio Lista → descuento → bono → precio venta ── */}
-             <div className="space-y-1 text-[11px]">
+            {/* ── Sección por unidad: Bodegas ── */}
+            {linkedAssets.storages.map(b => {
+              const disc = linkedDiscounts[b.id] ?? b.descuentoPct ?? 0;
+              const bono = linkedBono[b.id] ?? false;
+              const calc = calcBonoPie(b.precioLista, disc, bonoPct > 0 ? bonoPct : 10, bono);
+              return (
+                <div key={b.id} className="space-y-2 p-3 bg-gray-50/60 rounded-xl border border-dashed border-gray-200">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[11px] font-black text-gray-600 uppercase flex items-center gap-1.5">
+                      <Package className="w-3 h-3 text-gray-400" /> Bodega {b.numero}
+                    </span>
+                    <span className="text-xs font-mono font-bold text-gray-400">{formatValueStandard(b.precioLista)} UF</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 items-center">
+                    <div>
+                      <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest block mb-1">Descuento %</label>
+                      <input
+                        type="number" min="0" max="30" step="0.1"
+                        value={linkedDiscountInputs[b.id] ?? String(disc)}
+                        onChange={e => {
+                          const raw = e.target.value;
+                          setLinkedDiscountInputs(prev => ({ ...prev, [b.id]: raw }));
+                          const num = parseFloat(raw);
+                          if (!isNaN(num)) setLinkedDiscounts(prev => ({ ...prev, [b.id]: num }));
+                        }}
+                        disabled={isReadOnly || !hasClient}
+                        className="w-full px-2 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-amber-100 disabled:opacity-50"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest block mb-1">Bonificación</label>
+                      <label className="flex items-center gap-2 text-xs font-bold text-blue-700 cursor-pointer select-none mt-1.5">
+                        <input
+                          type="checkbox"
+                          checked={bono}
+                          disabled={isReadOnly || !hasClient}
+                          onChange={e => setLinkedBono(prev => ({ ...prev, [b.id]: e.target.checked }))}
+                          className="w-4 h-4 accent-blue-600 disabled:opacity-50"
+                        />
+                        Bono {bonoPct > 0 ? bonoPct : 10}%
+                      </label>
+                    </div>
+                  </div>
+                  <div className="flex justify-between items-center text-[11px] border-t border-gray-200 pt-2">
+                    <span className="text-gray-500 font-bold">Precio Venta</span>
+                    <span className="font-mono font-black text-gray-700">{formatValueStandard(calc.precioVenta)} UF</span>
+                  </div>
+                </div>
+              );
+            })}
 
-               {/* Precio Lista */}
-               <div className="flex justify-between items-center py-1">
-                 <span className="text-gray-500 font-bold uppercase">Precio Lista</span>
-                 <span className="font-mono font-black text-gray-800">{formatValueStandard(bonoCalc.precioLista)} UF</span>
-               </div>
+            {/* ── Sección por unidad: Estacionamientos ── */}
+            {linkedAssets.parkings.map(p => {
+              const disc = linkedDiscounts[p.id] ?? p.descuentoPct ?? 0;
+              const bono = linkedBono[p.id] ?? false;
+              const calc = calcBonoPie(p.precioLista, disc, bonoPct > 0 ? bonoPct : 10, bono);
+              return (
+                <div key={p.id} className="space-y-2 p-3 bg-gray-50/60 rounded-xl border border-dashed border-gray-200">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[11px] font-black text-gray-600 uppercase flex items-center gap-1.5">
+                      <Car className="w-3 h-3 text-gray-400" /> Estac. {p.numero}
+                    </span>
+                    <span className="text-xs font-mono font-bold text-gray-400">{formatValueStandard(p.precioLista)} UF</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 items-center">
+                    <div>
+                      <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest block mb-1">Descuento %</label>
+                      <input
+                        type="number" min="0" max="30" step="0.1"
+                        value={linkedDiscountInputs[p.id] ?? String(disc)}
+                        onChange={e => {
+                          const raw = e.target.value;
+                          setLinkedDiscountInputs(prev => ({ ...prev, [p.id]: raw }));
+                          const num = parseFloat(raw);
+                          if (!isNaN(num)) setLinkedDiscounts(prev => ({ ...prev, [p.id]: num }));
+                        }}
+                        disabled={isReadOnly || !hasClient}
+                        className="w-full px-2 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-amber-100 disabled:opacity-50"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest block mb-1">Bonificación</label>
+                      <label className="flex items-center gap-2 text-xs font-bold text-blue-700 cursor-pointer select-none mt-1.5">
+                        <input
+                          type="checkbox"
+                          checked={bono}
+                          disabled={isReadOnly || !hasClient}
+                          onChange={e => setLinkedBono(prev => ({ ...prev, [p.id]: e.target.checked }))}
+                          className="w-4 h-4 accent-blue-600 disabled:opacity-50"
+                        />
+                        Bono {bonoPct > 0 ? bonoPct : 10}%
+                      </label>
+                    </div>
+                  </div>
+                  <div className="flex justify-between items-center text-[11px] border-t border-gray-200 pt-2">
+                    <span className="text-gray-500 font-bold">Precio Venta</span>
+                    <span className="font-mono font-black text-gray-700">{formatValueStandard(calc.precioVenta)} UF</span>
+                  </div>
+                </div>
+              );
+            })}
 
-               {/* Descuento (visible cuando hay cliente) */}
-               {hasClient && (
-                 <div className="space-y-1.5 py-1 px-3 bg-amber-50/60 rounded-xl border border-amber-200/70">
-                   <label className="text-[9px] font-black text-amber-700 uppercase tracking-widest flex items-center gap-1">
-                     <Percent className="w-3 h-3" /> Descuento (%) — máx {discountCfg.supervisorMaxPct}%
-                   </label>
-                   <div className="flex gap-2">
-                     <input
-                       type="number" min="0" max={discountCfg.supervisorMaxPct} step="0.1"
-                       placeholder={`ej: ${discountCfg.jefeMaxPct}`}
-                       value={discountInput}
-                       onChange={e => { setDiscountInput(e.target.value); setDiscountError(''); }}
-                       disabled={isReadOnly || discountPending}
-                       className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm font-mono outline-none focus:ring-2 focus:ring-amber-100 disabled:opacity-60"
-                     />
-                     <button
-                       onClick={applyUnitDiscount}
-                       disabled={isReadOnly || discountPending || !discountInput}
-                       className="px-3 py-2 bg-amber-500 text-white text-xs font-bold rounded-lg hover:bg-amber-600 disabled:opacity-40 transition-all active:scale-95"
-                     >
-                       {discountPending ? '…' : 'Aplicar'}
-                     </button>
-                   </div>
-                   {discountError && (
-                     <p className={`text-[10px] font-bold flex items-start gap-1 ${discountError.includes('requiere') ? 'text-amber-600' : 'text-red-600'}`}>
-                       <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" /> {discountError}
-                     </p>
-                   )}
-                   {discountPending && (
-                     <div className="flex items-center gap-1.5 px-2 py-1.5 bg-amber-100 rounded-lg">
-                       <Clock className="w-3 h-3 text-amber-600 shrink-0" />
-                       <span className="text-[10px] font-bold text-amber-700">Pend. Autorización</span>
-                     </div>
-                   )}
-                   {bonoCalc.descuentoPct > 0 && (
-                     <div className="flex justify-between text-[10px] text-amber-700">
-                       <span>Descuento (-{bonoCalc.descuentoPct.toFixed(1)}%)</span>
-                       <span className="font-mono">-{formatValueStandard(bonoCalc.descuentoMonto)} UF</span>
-                     </div>
-                   )}
-                   {formData.descuentoPct && formData.descuentoPct > 0 && !discountPending && (
-                     <div className="text-[10px] text-green-600 font-bold">✓ Descuento {formData.descuentoPct.toFixed(1)}% aplicado</div>
-                   )}
-                 </div>
-               )}
+            {/* ── TOTAL PRECIO DE VENTA ── */}
+            <div className="flex flex-col items-center py-4 rounded-2xl bg-blue-50 border border-blue-100 shadow-inner">
+              <span className="text-[10px] text-blue-400 font-black uppercase mb-1 tracking-widest">Total Precio de Venta</span>
+              <div className="text-3xl font-extrabold text-blue-700 font-mono">
+                {formatValueStandard(totalPrecioVentaNuevo)} <span className="text-sm font-normal text-blue-400">UF</span>
+              </div>
+            </div>
 
-               {/* Separador + Precio con Descuento */}
-               <div className="border-t border-gray-200 pt-1 flex justify-between items-center">
-                 <span className="text-gray-500 font-bold uppercase">Precio con Descuento</span>
-                 <span className="font-mono font-bold text-gray-700">{formatValueStandard(bonoCalc.precioConDescuento)} UF</span>
-               </div>
+            {/* ── Reserva / Pie / Saldo ── */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className={`bg-white p-3 rounded-2xl border border-gray-100 shadow-sm ${!hasClient ? 'opacity-60' : ''}`}>
+                <span className="text-[10px] font-black text-gray-400 uppercase block mb-1.5">Reserva Pactada</span>
+                <div className="flex items-center gap-1">
+                  <FormattedInput
+                    disabled={isReadOnly || !hasClient}
+                    value={formData.reservaMonto}
+                    onChange={(val) => handleChange('reservaMonto', val)}
+                    className="bg-transparent border-none focus:ring-0 p-0 text-xl font-black text-gray-800 w-full"
+                  />
+                  <span className="text-xs font-bold text-gray-400">UF</span>
+                </div>
+              </div>
+              <div className={`bg-white p-3 rounded-2xl border border-gray-100 shadow-sm ${!hasClient ? 'opacity-60' : ''}`}>
+                <span className="text-[10px] font-black text-gray-400 uppercase block mb-1.5">Pie Acordado</span>
+                <div className="flex items-center gap-1">
+                  <FormattedInput
+                    disabled={isReadOnly || !hasClient}
+                    value={formData.pie}
+                    onChange={(val) => handleChange('pie', val)}
+                    className="bg-transparent border-none focus:ring-0 p-0 text-xl font-black text-gray-800 w-full"
+                  />
+                  <span className="text-xs font-bold text-gray-400">UF</span>
+                </div>
+              </div>
+            </div>
 
-               {/* Bono Pie toggle + desglose */}
-               {hasClient && (
-                 <div className="space-y-1 py-1 px-3 bg-blue-50/50 rounded-xl border border-blue-100">
-                   <div className="flex items-center justify-between">
-                     <label className="flex items-center gap-2 text-xs font-bold text-blue-700 cursor-pointer select-none">
-                       <input
-                         type="checkbox"
-                         checked={hasBono}
-                         disabled={isReadOnly || currentUser.role === 'Ventas'}
-                         onChange={e => {
-                           const checked = e.target.checked;
-                           setHasBono(checked);
-                           const updated: RealEstateUnit = { ...formData, aplicaBonoPie: checked };
-                           setFormData(updated);
-                           onUpdate(updated);
-                         }}
-                         className="w-4 h-4 accent-blue-600 disabled:opacity-50"
-                       />
-                       Bono Pie {bonoPct > 0 ? bonoPct : 10}%
-                     </label>
-                   </div>
-                   {hasBono && (
-                     <>
-                       <div className="flex justify-between text-[10px] text-blue-600 pt-1">
-                         <span>Ajuste Bono Pie ({bonoPct > 0 ? bonoPct : 10}%)</span>
-                         <span className="font-mono">+{formatValueStandard(bonoCalc.ajusteBonoMonto)} UF</span>
-                       </div>
-                       <div className="border-t border-blue-100 pt-1 flex justify-between text-[10px] text-blue-700 font-bold">
-                         <span>Precio de Lista (publicado)</span>
-                         <span className="font-mono">{formatValueStandard(bonoCalc.precioPublicado)} UF</span>
-                       </div>
-                       <div className="flex justify-between text-[10px] text-red-500">
-                         <span>Bono Pie (-{bonoPct > 0 ? bonoPct : 10}%)</span>
-                         <span className="font-mono">-{formatValueStandard(bonoCalc.bonificacionMonto)} UF</span>
-                       </div>
-                     </>
-                   )}
-                 </div>
-               )}
+            <div className="p-4 bg-blue-50 rounded-2xl text-center shadow-sm border border-blue-100 relative overflow-hidden group">
+              <div className="absolute top-0 right-0 p-2 opacity-5 group-hover:opacity-10 transition-opacity"><Landmark className="w-12 h-12" /></div>
+              <span className="text-[9px] text-blue-500 font-black block mb-1 uppercase tracking-widest">Saldo por Financiar (Crédito)</span>
+              <div className="text-2xl font-black text-blue-900 font-mono">
+                {formatValueStandard(saldoPorFinanciarEstructural)} <span className="text-xs font-normal">UF</span>
+              </div>
+            </div>
 
-               {/* Separador final */}
-               <div className="border-t-2 border-gray-300 mt-1" />
-             </div>
-
-             {/* ── PRECIO DE VENTA ── */}
-             <div className={`flex flex-col items-center py-4 rounded-2xl bg-gray-50 border border-gray-100 shadow-inner ${!hasClient ? 'opacity-60 grayscale-[0.5]' : ''}`}>
-               <span className="text-[10px] text-gray-400 font-black uppercase mb-1 tracking-widest">Precio de Venta</span>
-               <div className="flex items-center gap-1">
-                 <FormattedInput
-                   disabled={isReadOnly || !hasClient}
-                   title={!hasClient ? "Asigne un cliente para modificar precio de venta" : ""}
-                   value={formData.precioVenta}
-                   onChange={(val) => handleChange('precioVenta', val)}
-                   className="bg-transparent border-none p-0 text-3xl font-extrabold text-blue-700 text-center w-36 outline-none focus:ring-0"
-                 />
-                 <span className="text-sm font-normal text-gray-500">UF</span>
-               </div>
-             </div>
-
-             {/* ── Reserva / Pie / Saldo ── */}
-             <div className="grid grid-cols-1 gap-3">
-               <div className={`bg-white p-4 rounded-2xl border border-gray-100 shadow-sm ${!hasClient ? 'opacity-60 grayscale-[0.5]' : ''}`}>
-                 <span className="text-[10px] font-black text-gray-400 uppercase block mb-2">Reserva Pactada</span>
-                 <div className="flex items-center gap-1">
-                   <FormattedInput
-                     disabled={isReadOnly || !hasClient}
-                     title={!hasClient ? "Asigne un cliente para modificar reserva" : ""}
-                     value={formData.reservaMonto}
-                     onChange={(val) => handleChange('reservaMonto', val)}
-                     className="bg-transparent border-none focus:ring-0 p-0 text-2xl font-black text-gray-800 w-full"
-                   />
-                   <span className="text-xs font-bold text-gray-400">UF</span>
-                 </div>
-               </div>
-
-               <div className={`bg-white p-4 rounded-2xl border border-gray-100 shadow-sm ${!hasClient ? 'opacity-60 grayscale-[0.5]' : ''}`}>
-                 <span className="text-[10px] font-black text-gray-400 uppercase block mb-2">Pie Acordado</span>
-                 <div className="flex items-center gap-1">
-                   <FormattedInput
-                     disabled={isReadOnly || !hasClient}
-                     title={!hasClient ? "Asigne un cliente para modificar pie" : ""}
-                     value={formData.pie}
-                     onChange={(val) => handleChange('pie', val)}
-                     className="bg-transparent border-none focus:ring-0 p-0 text-2xl font-black text-gray-800 w-full"
-                   />
-                   <span className="text-xs font-bold text-gray-400">UF</span>
-                 </div>
-               </div>
-             </div>
-
-             <div className="p-5 bg-blue-50 rounded-2xl text-center shadow-sm border border-blue-100 relative overflow-hidden group">
-               <div className="absolute top-0 right-0 p-2 opacity-5 group-hover:opacity-10 transition-opacity"><Landmark className="w-12 h-12" /></div>
-               <span className="text-[9px] text-blue-500 font-black block mb-1 uppercase tracking-widest">Saldo por Financiar</span>
-               <div className="text-2xl font-black text-blue-900 font-mono">
-                 {formatValueStandard(saldoPorFinanciarEstructural)} <span className="text-xs font-normal">UF</span>
-               </div>
-             </div>
+            {/* ── Forma de Pago ── */}
+            {hasClient && (
+              <div className="border-t border-gray-100 pt-5 space-y-4">
+                <div className="flex justify-between items-center">
+                  <h4 className="text-xs font-bold text-gray-400 flex items-center gap-2 uppercase tracking-widest">
+                    <CreditCard className="w-4 h-4 text-blue-600" /> Forma de Pago
+                  </h4>
+                  {paymentPlans.length > 1 && (
+                    <select
+                      value={selectedPlanId}
+                      onChange={e => handleSelectPlan(e.target.value)}
+                      className="text-xs px-2 py-1.5 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-100 bg-white"
+                    >
+                      {paymentPlans.map(p => (
+                        <option key={p.id} value={p.id}>
+                          {p.clienteNombre || p.quotationId.slice(0, 8)} — {new Date(p.createdAt).toLocaleDateString('es-CL')}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+                {paymentPlans.length === 0 && (
+                  <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>Sin cotización cargada. Edita los % manualmente o genera una cotización con "Incluir forma de pago".</span>
+                  </div>
+                )}
+                <div className="grid grid-cols-3 gap-3">
+                  {[
+                    { label: 'Promesa', val: fpPromesaPct, set: setFpPromesaPct },
+                    { label: `Cuotas (${cantidadCuotasPie}x)`, val: fpCuotasPct, set: setFpCuotasPct },
+                    { label: 'Escritura', val: fpEscrituraPct, set: setFpEscrituraPct },
+                  ].map(({ label, val, set }) => (
+                    <div key={label}>
+                      <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest block mb-1">{label}</label>
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="number" min="0" max="100" step="1"
+                          value={val}
+                          onChange={e => { set(Number(e.target.value)); setFpSaved(false); }}
+                          disabled={isReadOnly}
+                          className="w-full px-2 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-xs font-mono text-right outline-none focus:ring-2 focus:ring-blue-100 disabled:opacity-60"
+                        />
+                        <span className="text-[10px] text-gray-400 shrink-0">%</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between px-3 py-2 bg-blue-50/40 rounded-xl border border-blue-100/60">
+                  <span className="text-xs font-bold text-blue-600 uppercase tracking-tight">Crédito Hipotecario (auto)</span>
+                  <span className="font-mono font-black text-blue-700 text-sm">{fpCreditoPct}%</span>
+                </div>
+                <div className="space-y-1">
+                  {[
+                    { label: 'Promesa', pct: fpPromesaPct },
+                    { label: `Cuotas (${cantidadCuotasPie}x)`, pct: fpCuotasPct },
+                    { label: 'Escritura', pct: fpEscrituraPct },
+                    { label: 'Crédito', pct: fpCreditoPct },
+                  ].map(({ label, pct }) => {
+                    const uf = Math.round(totalPrecioVentaNuevo * pct / 100 * 100) / 100;
+                    return (
+                      <div key={label} className="flex justify-between items-center text-xs">
+                        <span className="text-gray-500">{label}</span>
+                        <span className="font-mono font-bold text-gray-700">
+                          {pct}% → {uf.toLocaleString('es-CL', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} UF
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                {(fpPromesaPct + fpCuotasPct + fpEscrituraPct + fpCreditoPct) !== 100 && (
+                  <p className="text-[10px] text-amber-600 font-bold flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3 shrink-0" /> Los porcentajes no suman 100%
+                  </p>
+                )}
+                {!isReadOnly && (
+                  <button
+                    onClick={generatePaymentSchedule}
+                    className="w-full py-2.5 text-xs font-bold rounded-xl transition-colors bg-green-600 text-white hover:bg-green-700 flex items-center justify-center gap-2"
+                  >
+                    <Wallet className="w-4 h-4" /> Generar Cronograma de Pagos
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
