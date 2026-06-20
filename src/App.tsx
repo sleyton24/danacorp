@@ -123,6 +123,7 @@ const App: React.FC = () => {
   // ── BUG 4: Draft navigation guard ─────────────────────────────────────────
   const [pendingNavigation, setPendingNavigation] = useState<string | null>(null);
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
+  const [pendingOpenDraftId, setPendingOpenDraftId] = useState<string | null>(null);
 
   const handleChangeView = (newView: typeof currentView) => {
     if (currentView === 'quoter' && newView !== 'quoter' && activeDraftId) {
@@ -134,6 +135,20 @@ const App: React.FC = () => {
 
   const handleDraftStateChange = (draftId: string | null) => {
     setActiveDraftId(draftId);
+  };
+
+  // ── Fix 1: Cambio de proyecto con guardia de datos ────────────────────────
+  const [pendingProjectId, setPendingProjectId] = useState<string | null>(null);
+
+  const handleSelectProject = (newId: string) => {
+    if (newId === currentProjectId) return;
+    if (currentView === 'quoter' && activeDraftId) {
+      setPendingProjectId(newId);
+      return;
+    }
+    setCurrentProjectId(newId);
+    setCurrentView('summary');
+    setSelectedUnit(null);
   };
 
   // ── P6: Poll backend notifications every 15 s ─────────────────────────────
@@ -579,12 +594,62 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {/* Fix 1: Modal confirmación cambio de proyecto cuando Quoter tiene datos */}
+      {pendingProjectId && (
+        <div className="fixed inset-0 bg-black/50 z-[9999] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8 space-y-6">
+            <div>
+              <h3 className="text-xl font-black text-gray-900 mb-2">¿Cambiar de proyecto?</h3>
+              <p className="text-gray-500 text-sm">Hay una cotización en progreso guardada como borrador.</p>
+            </div>
+            <div className="space-y-3">
+              <button
+                onClick={() => {
+                  setCurrentProjectId(pendingProjectId);
+                  setCurrentView('summary');
+                  setSelectedUnit(null);
+                  setPendingProjectId(null);
+                }}
+                className="w-full py-3 px-5 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition-all text-left">
+                Cambiar de proyecto
+                <div className="text-xs font-normal opacity-80 mt-0.5">El borrador queda guardado para continuar después.</div>
+              </button>
+              <button
+                onClick={async () => {
+                  if (activeDraftId) {
+                    const token = localStorage.getItem('dw_token');
+                    if (token) {
+                      await fetch(`/api/quotation-drafts/${activeDraftId}`, {
+                        method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
+                      }).catch(() => {});
+                    }
+                    setActiveDraftId(null);
+                  }
+                  setCurrentProjectId(pendingProjectId);
+                  setCurrentView('summary');
+                  setSelectedUnit(null);
+                  setPendingProjectId(null);
+                }}
+                className="w-full py-3 px-5 bg-red-50 border border-red-100 text-red-600 font-bold rounded-xl hover:bg-red-100 transition-all text-left">
+                Descartar borrador y cambiar
+                <div className="text-xs font-normal opacity-80 mt-0.5">El borrador se elimina permanentemente.</div>
+              </button>
+              <button
+                onClick={() => setPendingProjectId(null)}
+                className="w-full py-3 px-5 bg-gray-50 border border-gray-200 text-gray-600 font-bold rounded-xl hover:bg-gray-100 transition-all">
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <Sidebar
         currentView={currentView}
         onChangeView={handleChangeView}
         projects={projects}
         currentProjectId={currentProjectId}
-        onSelectProject={setCurrentProjectId}
+        onSelectProject={handleSelectProject}
         currentUser={currentUser}
         unreadNotificationsCount={notifications.filter(n => !n.read).length}
         pendingApprovalsCount={pendingApprovalsCount}
@@ -623,6 +688,11 @@ const App: React.FC = () => {
                 onSelectUnit={handleSelectUnitFromClient}
                 initialExpandedId={expandedClientId}
                 showToast={showToast}
+                projects={projects}
+                onOpenDraft={(draftId: string) => {
+                  setPendingOpenDraftId(draftId);
+                  setCurrentView('quoter');
+                }}
               />
             )}
             {currentView === 'inventory' && <UnitList
@@ -630,7 +700,19 @@ const App: React.FC = () => {
               clients={currentProjectClients}
               currentUser={currentUser}
               onSelectUnit={setSelectedUnit}
-              onReleaseUnit={(unitId) => setUnits(prev => prev.map(u => u.id === unitId ? { ...u, reservaVendedorId: undefined, reservaExpira: undefined, estado: 'Disponible' as const } : u))}
+              onReleaseUnit={(unitId) => setUnits(prev => prev.map(u => u.id === unitId ? {
+                ...u,
+                estado: 'Disponible' as const,
+                clienteId: undefined,
+                asignadoPor: undefined,
+                fechaAsignacion: undefined,
+                fechaReserva: undefined,
+                fechaPromesa: undefined,
+                fechaEscritura: undefined,
+                descuentoPct: 0,
+                reservaVendedorId: undefined,
+                reservaExpira: undefined,
+              } : u))}
               showToast={showToast}
             />}
             {currentView === 'prices' && <PriceManager units={currentProjectUnits} onUpdateUnit={handleUpdateUnit} currentUser={currentUser} />}
@@ -678,6 +760,8 @@ const App: React.FC = () => {
                   currentProjectId={currentProjectId}
                   currentUser={currentUser}
                   onDraftStateChange={handleDraftStateChange}
+                  openDraftId={pendingOpenDraftId}
+                  onDraftOpened={() => setPendingOpenDraftId(null)}
                   onSaveProspect={(c, msg, _doc) => {
                     handleAddClient(c);
                     addAuditLog('Ventas', 'Cotización', c.nombre, msg);

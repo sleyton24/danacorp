@@ -7,7 +7,25 @@
       "Bash(npm run *)",
       "Bash(node -e ' *)",
       "Bash(git add *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(head -30 db.ts)",
+      "Bash(head -30 db.js)",
+      "Bash(npx tsx *)",
+      "Bash(PGDATABASE=danacorp npx tsx scripts/_fix3-delete-borradores.ts)",
+      "Bash(PGDATABASE=danacorp npx tsx scripts/_query-drafts.ts)",
+      "PowerShell(Get-Process -Name \"node\" -ErrorAction SilentlyContinue)",
+      "Read(//c/Users/nhorn/OneDrive - BNV/Nicholas Horn/Claude Code/danacorp-project/**)",
+      "Bash(awk '{print $NF}')",
+      "Bash(node --loader ts-node/esm -e ' *)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(printf \"import { ping } from './db.js';\\\\nping\\(\\).then\\(ok => console.log\\('DB conectada:', ok\\)\\).catch\\(e => console.error\\('Error:', e.message\\)\\).finally\\(\\(\\) => process.exit\\(0\\)\\);\\\\n\")",
+      "Bash(echo \"exit=$?\")",
+      "PowerShell(winget search postgresql 2>&1)",
+      "Bash(curl -s http://localhost:3001/health)",
+      "Bash(curl -s http://localhost:3000)",
+      "PowerShell(Get-Process -Name \"node\")",
+      "PowerShell(Stop-Process -Force -ErrorAction SilentlyContinue)",
+      "PowerShell(\"Procesos node terminados\")"
     ]
   }
 }

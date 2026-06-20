@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Client, RealEstateUnit, User, ClientDocument, ClientHistory } from '../types';
+import { Client, RealEstateUnit, User, ClientDocument, ClientHistory, Project } from '../types';
 import {
   Search, Plus, User as UserIcon, Phone, Mail, MoreVertical,
   MapPin, Home, Car, Package, ChevronDown, ChevronUp,
@@ -41,6 +41,8 @@ interface ClientListProps {
   onSelectUnit?: (unit: RealEstateUnit) => void;
   initialExpandedId?: string | null;
   showToast?: (message: string, type?: 'success' | 'error' | 'warning') => void;
+  projects?: Project[];
+  onOpenDraft?: (draftId: string) => void;
 }
 
 const parseDate = (dateStr: string): number => {
@@ -93,6 +95,8 @@ export const ClientList: React.FC<ClientListProps> = ({
   onSelectUnit,
   initialExpandedId,
   showToast,
+  projects = [],
+  onOpenDraft,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('Todos');
@@ -107,6 +111,7 @@ export const ClientList: React.FC<ClientListProps> = ({
     clienteNombre: string | null;
     fechaGenerada: string | null;
     generadaPor: string | null;
+    pdfPath?: string | null;
     selectedUnits: Array<{ id: string; numero: string; type: string }>;
     data: Record<string, unknown>;
   }
@@ -147,7 +152,6 @@ export const ClientList: React.FC<ClientListProps> = ({
   // Carga cotizaciones cuando se expande un cliente (ACCIÓN 5)
   useEffect(() => {
     if (!expandedClientId) return;
-    if (clientQuotations[expandedClientId] !== undefined) return; // ya cargadas
     const token = localStorage.getItem('dw_token');
     if (!token) return;
     setQuotationsLoading(prev => ({ ...prev, [expandedClientId]: true }));
@@ -673,75 +677,89 @@ export const ClientList: React.FC<ClientListProps> = ({
                             ) : !clientQuotations[client.id] || clientQuotations[client.id].length === 0 ? (
                               <p className="text-center py-4 text-gray-300 italic text-[11px] font-medium">Sin cotizaciones generadas</p>
                             ) : (
-                              <div className="overflow-x-auto rounded-xl border border-gray-100">
-                                <table className="min-w-full text-left text-xs">
-                                  <thead className="bg-gray-50/80 border-b border-gray-100">
-                                    <tr className="text-[9px] font-black text-gray-400 uppercase tracking-widest">
-                                      <th className="px-4 py-3">N°</th>
-                                      <th className="px-4 py-3">Proyecto</th>
-                                      <th className="px-4 py-3">Unidades</th>
-                                      <th className="px-4 py-3">Fecha</th>
-                                      <th className="px-4 py-3 text-right">Acciones</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody className="divide-y divide-gray-50">
-                                    {clientQuotations[client.id].map((q, idx) => {
-                                      const isQExpanded = expandedQuotationId === q.id;
-                                      const fechaFmt = q.fechaGenerada
-                                        ? (() => { try { const d = new Date(q.fechaGenerada); return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`; } catch { return q.fechaGenerada; } })()
-                                        : '—';
-                                      const unitsStr = q.selectedUnits.length > 0
-                                        ? q.selectedUnits.map(u => `${u.type} ${u.numero}`).join(', ')
-                                        : '—';
-                                      return (
-                                        <React.Fragment key={q.id}>
-                                          <tr className={`hover:bg-blue-50/20 transition-colors ${isQExpanded ? 'bg-blue-50/30' : ''}`}>
-                                            <td className="px-4 py-3 font-mono font-black text-gray-600 text-[10px]">#{idx + 1}</td>
-                                            <td className="px-4 py-3 font-bold text-gray-700">{q.projectId || '—'}</td>
-                                            <td className="px-4 py-3 text-gray-500 max-w-[200px] truncate" title={unitsStr}>{unitsStr}</td>
+                              <>
+                                <div className="overflow-x-auto rounded-xl border border-gray-100">
+                                  <table className="min-w-full text-left text-xs">
+                                    <thead className="bg-gray-50/80 border-b border-gray-100">
+                                      <tr className="text-[9px] font-black text-gray-400 uppercase tracking-widest">
+                                        <th className="px-4 py-3">Proyecto</th>
+                                        <th className="px-4 py-3">Unidades</th>
+                                        <th className="px-4 py-3">Fecha</th>
+                                        <th className="px-4 py-3 text-right">PDF</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-50">
+                                      {clientQuotations[client.id].map((q) => {
+                                        const depto = q.selectedUnits?.find(u => u.type === 'Departamento');
+                                        const accesorios = (q.selectedUnits?.filter(u => u.type !== 'Departamento') ?? [])
+                                          .map(u => `${u.type === 'Bodega' ? 'Bod' : 'Est'} ${u.numero}`)
+                                          .join(' · ');
+                                        const fechaFmt = q.fechaGenerada
+                                          ? (() => { try { const d = new Date(q.fechaGenerada); return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`; } catch { return q.fechaGenerada; } })()
+                                          : '—';
+                                        const projectName = projects.find(p => p.id === q.projectId)?.nombre ?? q.projectId ?? '—';
+                                        const isReservada = q.selectedUnits?.some(su => {
+                                          const u = units.find(u2 => u2.numero === su.numero);
+                                          return u && ['Reservado', 'Promesado', 'Escriturado'].includes(u.estado);
+                                        });
+                                        return (
+                                          <tr key={q.id} className="hover:bg-blue-50/20 transition-colors">
+                                            <td className="px-4 py-3 font-bold text-gray-700">{projectName}</td>
+                                            <td className="px-4 py-3">
+                                              {depto ? (
+                                                <div>
+                                                  <div className="font-medium text-gray-800">Depto {depto.numero}</div>
+                                                  {accesorios && <div className="text-[10px] text-gray-400 mt-0.5">{accesorios}</div>}
+                                                </div>
+                                              ) : q.selectedUnits.length > 0 ? (
+                                                <div className="text-gray-600">{q.selectedUnits.map(u => `${u.type} ${u.numero}`).join(', ')}</div>
+                                              ) : (
+                                                <span className="text-gray-300 italic">—</span>
+                                              )}
+                                            </td>
                                             <td className="px-4 py-3 text-gray-500">{fechaFmt}</td>
-                                            <td className="px-4 py-3 text-right">
-                                              <button
-                                                onClick={() => setExpandedQuotationId(isQExpanded ? null : q.id)}
-                                                className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wide transition-all ${isQExpanded ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-700 hover:bg-blue-100'}`}
-                                              >
-                                                {isQExpanded ? 'Ocultar' : 'Ver detalles'}
-                                              </button>
+                                            <td className="px-4 py-3">
+                                              <div className="flex items-center justify-end gap-2">
+                                                <button
+                                                  onClick={() => {
+                                                    if (!q.pdfPath) return;
+                                                    const tok = localStorage.getItem('dw_token');
+                                                    if (!tok) return;
+                                                    fetch(`/uploads/${q.pdfPath}`, { headers: { Authorization: `Bearer ${tok}` } })
+                                                      .then(r => r.blob())
+                                                      .then(blob => { const url = URL.createObjectURL(blob); window.open(url, '_blank'); })
+                                                      .catch(() => { /* silencioso */ });
+                                                  }}
+                                                  disabled={!q.pdfPath}
+                                                  title={q.pdfPath ? 'Descargar PDF' : 'PDF no disponible'}
+                                                  className={`p-1.5 rounded-lg transition-colors ${q.pdfPath ? 'text-blue-600 bg-blue-50 hover:bg-blue-100 cursor-pointer' : 'text-gray-300 bg-gray-50 cursor-not-allowed'}`}
+                                                >
+                                                  <Download className="w-3.5 h-3.5" />
+                                                </button>
+                                                <span
+                                                  title={isReservada ? 'Unidad reservada' : 'Sin reserva'}
+                                                  style={{ backgroundColor: isReservada ? '#639922' : '#888780' }}
+                                                  className="w-2.5 h-2.5 rounded-full inline-block flex-shrink-0"
+                                                />
+                                              </div>
                                             </td>
                                           </tr>
-                                          {isQExpanded && (
-                                            <tr className="bg-blue-50/10">
-                                              <td colSpan={5} className="px-6 py-4">
-                                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-[11px]">
-                                                  <div>
-                                                    <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-1">Generada por</p>
-                                                    <p className="font-bold text-gray-700">{q.generadaPor || '—'}</p>
-                                                  </div>
-                                                  <div>
-                                                    <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-1">ID Cotización</p>
-                                                    <p className="font-mono font-bold text-gray-700 text-[10px]">{q.id}</p>
-                                                  </div>
-                                                  <div>
-                                                    <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-1">Unidades detalle</p>
-                                                    <div className="flex flex-wrap gap-1">
-                                                      {q.selectedUnits.map(u => (
-                                                        <span key={u.id} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 text-[10px] font-black border border-blue-200">
-                                                          {u.type} {u.numero}
-                                                        </span>
-                                                      ))}
-                                                      {q.selectedUnits.length === 0 && <span className="text-gray-400 italic">Sin unidades registradas</span>}
-                                                    </div>
-                                                  </div>
-                                                </div>
-                                              </td>
-                                            </tr>
-                                          )}
-                                        </React.Fragment>
-                                      );
-                                    })}
-                                  </tbody>
-                                </table>
-                              </div>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                                <div className="mt-2 flex items-center gap-4 text-[10px] text-gray-400 font-medium px-1">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="w-2 h-2 rounded-full inline-block" style={{ backgroundColor: '#639922' }} />
+                                    Unidad reservada
+                                  </div>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="w-2 h-2 rounded-full inline-block" style={{ backgroundColor: '#888780' }} />
+                                    Sin reserva
+                                  </div>
+                                </div>
+                              </>
                             )}
                           </div>
                         </td>

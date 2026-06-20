@@ -52,6 +52,8 @@ interface QuoterProps {
   onSaveProspect: (client: Client, quoteDetails: string, document?: ClientDocument) => void;
   currentUser: User;
   onDraftStateChange?: (draftId: string | null) => void;
+  openDraftId?: string | null;
+  onDraftOpened?: () => void;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -164,6 +166,8 @@ export const Quoter: React.FC<QuoterProps> = ({
   onSaveProspect,
   currentUser,
   onDraftStateChange,
+  openDraftId,
+  onDraftOpened,
 }) => {
   // ── Step & Flow ──────────────────────────────────────────────────────────
   const [step, setStep] = useState<1 | 2 | 3>(1);
@@ -221,6 +225,7 @@ export const Quoter: React.FC<QuoterProps> = ({
 
   // ── Drafts (C1) ──────────────────────────────────────────────────────────
   const [draftId, setDraftId] = useState<string | null>(null);
+  const [pdfSavedPath, setPdfSavedPath] = useState<string | null>(null);
   // Punto 8: sync draftId → App.tsx activeDraftId on every change
   useEffect(() => { onDraftStateChange?.(draftId); }, [draftId, onDraftStateChange]);
   const [isSavingDraft, setIsSavingDraft] = useState(false);
@@ -447,17 +452,46 @@ export const Quoter: React.FC<QuoterProps> = ({
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
   }, []);
 
-  // ── C1: Load drafts list ─────────────────────────────────────────────────
+  // ── C1: Load drafts list (Fix 2: filtrado por proyecto activo) ───────────
   const loadDraftsList = useCallback(async () => {
     const token = localStorage.getItem('dw_token');
-    if (!token) return;
+    if (!token || !currentProjectId) return;
     try {
-      const res = await fetch('/api/quotation-drafts', { headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch(`/api/quotation-drafts?projectId=${currentProjectId}`, { headers: { Authorization: `Bearer ${token}` } });
       if (res.ok) setDrafts(await res.json() as DraftSummary[]);
     } catch { /* silencioso */ }
-  }, []);
+  }, [currentProjectId]);
 
   useEffect(() => { loadDraftsList(); }, [loadDraftsList]);
+
+  // Auto-load a specific draft when navigated from ClientList (↓ PDF button)
+  useEffect(() => {
+    if (!openDraftId || drafts.length === 0) return;
+    const target = drafts.find(d => d.id === openDraftId);
+    if (target) { void loadDraft(target); onDraftOpened?.(); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openDraftId, drafts.length]);
+
+  // ── Fix 2: Resetear Quoter cuando cambia el proyecto activo ──────────────
+  const prevProjectIdRef = useRef(currentProjectId);
+  useEffect(() => {
+    if (prevProjectIdRef.current === currentProjectId) return;
+    prevProjectIdRef.current = currentProjectId;
+    setSelectedUnits([]);
+    setSelectedClient({
+      tipoPersona: 'Natural', nombre: '', rut: '', email: '', telefono: '',
+      nacionalidad: 'Chilena', profesion: '', sueldoRange: '', fechaNacimiento: '',
+      direccion: '', ciudad: '', comuna: '', region: '', estado: 'Prospecto',
+      representanteNacionalidad: 'Chilena',
+    });
+    setAdjustDrafts({});
+    setDetachedAccessories([]);
+    setBonoPieUnits(new Set());
+    setDiscountRequests({});
+    setDraftId(null);
+    onDraftStateChange?.(null);
+    setStep(1);
+  }, [currentProjectId, onDraftStateChange]);
 
   // ── C1: Load a specific draft ────────────────────────────────────────────
   const loadDraft = async (draft: DraftSummary) => {
@@ -884,8 +918,8 @@ export const Quoter: React.FC<QuoterProps> = ({
     if (bonoTypesArr.includes('Estacionamiento')) btLbls.push('Estac.');
     if (bonoTypesArr.includes('Bodega')) btLbls.push('Bodega');
     const bonoLabelPDF = btLbls.length === 0 ? '' :
-      btLbls.length === 1 ? `Descuento Adicional Departamento ${bonoPct}% en ${btLbls[0]}` :
-      `Descuento Adicional Departamento ${bonoPct}% en ${btLbls.slice(0,-1).join(', ')} y ${btLbls[btLbls.length-1]}`;
+      btLbls.length === 1 ? `Bonificación ${bonoPct}% en ${btLbls[0]}` :
+      `Bonificación ${bonoPct}% en ${btLbls.slice(0,-1).join(', ')} y ${btLbls[btLbls.length-1]}`;
 
     // Per-unit rows: precio INFLADO (con bono incorporado), badge dcto manual si aplica
     const unitRowsPDF: unknown[][] = selectedUnits.map(u => {
@@ -1187,6 +1221,28 @@ export const Quoter: React.FC<QuoterProps> = ({
       });
       if (res.ok) {
         setIsDraftGenerated(true);
+        try {
+          const blob = await generatePDFBlob();
+          if (blob && draftId) {
+            const arrayBuffer = await blob.arrayBuffer();
+            const uint8Array = new Uint8Array(arrayBuffer);
+            let binary = '';
+            uint8Array.forEach(b => { binary += String.fromCharCode(b); });
+            const pdfBase64 = btoa(binary);
+            const tok = localStorage.getItem('dw_token');
+            const pdfRes = await fetch(`/api/quotation-drafts/${draftId}/pdf`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+              body: JSON.stringify({ pdfBase64 }),
+            });
+            if (pdfRes.ok) {
+              const { pdfPath } = await pdfRes.json() as { pdfPath: string };
+              setPdfSavedPath(pdfPath);
+            }
+          }
+        } catch (err) {
+          console.error('[promoteDraft] Error guardando PDF:', err);
+        }
         setToastMsg('✓ Cotización guardada en ficha del cliente');
         setTimeout(() => setToastMsg(''), 3000);
       }
@@ -1194,12 +1250,32 @@ export const Quoter: React.FC<QuoterProps> = ({
   };
 
   const handleDownloadPDF = async () => {
-    // Cancelar el timer pendiente del autosave
     if (autoSaveTimerRef.current) {
       clearTimeout(autoSaveTimerRef.current);
       autoSaveTimerRef.current = null;
     }
-    // Forzar guardado inmediato si aún no hay draft
+
+    // Si ya fue guardado en servidor, descargarlo desde allí
+    if (pdfSavedPath) {
+      const tok = localStorage.getItem('dw_token');
+      if (tok) {
+        try {
+          const r = await fetch(`/uploads/${pdfSavedPath}`, { headers: { Authorization: `Bearer ${tok}` } });
+          if (r.ok) {
+            const serverBlob = await r.blob();
+            const url = URL.createObjectURL(serverBlob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `Cotizacion_${currentProject?.nombre.replace(/\s+/g, '_') || 'DW'}_${quoteIdRef.current}.pdf`;
+            a.click();
+            URL.revokeObjectURL(url);
+            return;
+          }
+        } catch { /* caer al fallback local */ }
+      }
+    }
+
+    // Fallback: generar localmente (sin guardar en servidor)
     if (!draftId && currentProjectId &&
         (selectedClient.nombre?.trim() || selectedClient.rut?.trim())) {
       await saveImmediately();
@@ -1255,6 +1331,13 @@ export const Quoter: React.FC<QuoterProps> = ({
 
   // ── Finalize ─────────────────────────────────────────────────────────────
   const handleFinalizeAndSave = async () => {
+    let wasJustGenerated = false;
+
+    if (!isDraftGenerated) {
+      await promoteDraft();
+      wasJustGenerated = true;
+    }
+
     if (!selectedClient.nombre?.trim() || !selectedClient.rut?.trim()) {
       alert('Faltan datos obligatorios del cliente (nombre y RUT).');
       return;
@@ -1310,11 +1393,14 @@ export const Quoter: React.FC<QuoterProps> = ({
     onSaveProspect(clientToSave, `Nueva cotización emitida para ${clientToSave.nombre}.`, quoteDoc);
 
     if (draftId) {
-      const token = localStorage.getItem('dw_token');
-      if (token) {
-        await fetch(`/api/quotation-drafts/${draftId}`, {
-          method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
-        }).catch(() => {});
+      const shouldDelete = !isDraftGenerated && !wasJustGenerated;
+      if (shouldDelete) {
+        const token = localStorage.getItem('dw_token');
+        if (token) {
+          await fetch(`/api/quotation-drafts/${draftId}`, {
+            method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
+          }).catch(() => {});
+        }
       }
       setDraftId(null);
       onDraftStateChange?.(null);
@@ -1333,7 +1419,7 @@ export const Quoter: React.FC<QuoterProps> = ({
     setReservaCLP(0); setPieCuotasDropdown(12); setPieCuotasManual(12);
     setPromesaPct(3); setCuotasPct(7); setEscrituraPct(10); setNCuotasNew(36);
     setInlineTerm(''); setShowInlineDropdown(false);
-    setEmailSent(false); setDraftId(null);
+    setEmailSent(false); setDraftId(null); setPdfSavedPath(null);
     quoteIdRef.current = generateId().substring(0, 9).toUpperCase();
     initNewClient(); loadDraftsList();
   };
@@ -1369,17 +1455,22 @@ export const Quoter: React.FC<QuoterProps> = ({
       return adj.find(a => a.key === 'quoteId')?.value || '—';
     };
     const getDraftUnits = (d: DraftSummary): string => {
-      const units = (d.data?.selectedUnits ?? []) as { type: string; numero: string }[];
+      const data = typeof d.data === 'string' ? JSON.parse(d.data) : d.data;
+      const units = (data?.selectedUnits ?? []) as { type: string; numero: string }[];
       if (units.length === 0) return '—';
-      return units.map(u => `${u.type} ${u.numero}`).join(', ');
+      return units.map(u => (`${u.type} ${u.numero}`).trim()).join(', ');
     };
     const fmtFecha = (iso: string): string => {
       const dt = new Date(iso);
       if (isNaN(dt.getTime())) return '—';
+      const now = new Date();
+      const hh = String(dt.getHours()).padStart(2, '0');
+      const min = String(dt.getMinutes()).padStart(2, '0');
+      const isToday = dt.getDate() === now.getDate() && dt.getMonth() === now.getMonth() && dt.getFullYear() === now.getFullYear();
+      if (isToday) return `hoy ${hh}:${min}`;
       const dd = String(dt.getDate()).padStart(2, '0');
       const mm = String(dt.getMonth() + 1).padStart(2, '0');
-      const yyyy = dt.getFullYear();
-      return `${dd}/${mm}/${yyyy}`;
+      return `${dd}/${mm} ${hh}:${min}`;
     };
     const q = draftSearchTerm.toLowerCase();
     const filtered = drafts.filter(d => {
@@ -1437,9 +1528,9 @@ export const Quoter: React.FC<QuoterProps> = ({
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-100 text-left">
-                    <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide w-28">N° Cotización</th>
-                    <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Cotizante</th>
+                    <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide w-28">N°</th>
                     <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Unidades</th>
+                    <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Cliente</th>
                     <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide w-28">Fecha</th>
                     <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide w-32 text-right">Acciones</th>
                   </tr>
@@ -1448,12 +1539,12 @@ export const Quoter: React.FC<QuoterProps> = ({
                   {sorted.map(d => (
                     <tr key={d.id} className="hover:bg-blue-50/40 transition-colors">
                       <td className="px-4 py-3 font-mono text-xs text-gray-500">{getDraftQuoteId(d)}</td>
-                      <td className="px-4 py-3">
-                        <div className="font-medium text-gray-900">{d.clienteNombre || 'Sin nombre'}</div>
-                        <div className="text-xs text-gray-400 font-mono">{d.clienteRut || '—'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-xs text-gray-600 max-w-[180px] truncate" title={getDraftUnits(d)}>
+                      <td className="px-4 py-3 text-xs text-gray-600 max-w-[200px] truncate" title={getDraftUnits(d)}>
                         {getDraftUnits(d)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="font-medium text-gray-900">{d.clienteNombre || 'Sin cliente'}</div>
+                        <div className="text-xs text-gray-400 font-mono">{d.clienteRut || '—'}</div>
                       </td>
                       <td className="px-4 py-3 text-xs text-gray-500">{fmtFecha(d.updated_at)}</td>
                       <td className="px-4 py-3">
@@ -1716,7 +1807,7 @@ export const Quoter: React.FC<QuoterProps> = ({
           <div className="flex justify-end pt-8 border-t border-gray-100">
             <button
               disabled={!selectedClient.nombre?.trim() || !selectedClient.rut?.trim()}
-              onClick={() => setStep(2)}
+              onClick={async () => { await saveImmediately(); setStep(2); }}
               className="px-12 py-4 bg-blue-600 text-white font-black rounded-2xl disabled:opacity-50 hover:bg-blue-700 transition-all shadow-xl active:scale-95 uppercase tracking-widest text-xs">
               Continuar a Selección de Unidades
             </button>
@@ -2233,8 +2324,8 @@ export const Quoter: React.FC<QuoterProps> = ({
                       if (bonoPieBreakdown.conBono.some(x => x.unit.type === 'Departamento')) btL.push('Depto.');
                       if (bonoPieBreakdown.conBono.some(x => x.unit.type === 'Estacionamiento')) btL.push('Estac.');
                       if (bonoPieBreakdown.conBono.some(x => x.unit.type === 'Bodega')) btL.push('Bodega');
-                      const label = btL.length === 1 ? `Bono Pie ${bonoPct}% en ${btL[0]}` :
-                        `Bono Pie ${bonoPct}% en ${btL.slice(0,-1).join(', ')} y ${btL[btL.length-1]}`;
+                      const label = btL.length === 1 ? `Bonificación ${bonoPct}% en ${btL[0]}` :
+                        `Bonificación ${bonoPct}% en ${btL.slice(0,-1).join(', ')} y ${btL[btL.length-1]}`;
                       return (
                         <>
                           {/* PRECIO DE LISTA = suma de precios inflados */}

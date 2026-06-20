@@ -427,32 +427,35 @@ async function checkReservasVencidas() {
 
     // Pre-expiry alerts: reservations expiring in next 24h, not already alerted
     const expiringSoon = await db.prepare(`
-      SELECT id, numero, type, reserva_vendedor_id, reserva_expira
-      FROM units
-      WHERE reserva_expira IS NOT NULL
-        AND reserva_expira > ?
-        AND reserva_expira <= ?
-        AND estado = 'Reservado'
+      SELECT u.id, u.numero, u.type, u.reserva_vendedor_id, u.reserva_expira, c.nombre AS cliente_nombre
+      FROM units u
+      LEFT JOIN clients c ON c.id = u.cliente_id
+      WHERE u.reserva_expira IS NOT NULL
+        AND u.reserva_expira > ?
+        AND u.reserva_expira <= ?
+        AND u.estado = 'Reservado'
         AND NOT EXISTS (
           SELECT 1 FROM notifications
-          WHERE related_id = units.id AND titulo = 'Reserva próxima a vencer'
+          WHERE related_id = u.id AND titulo = 'Reserva próxima a vencer'
         )
-    `).all(nowISO, in24h) as Array<{ id: string; numero: string; type: string; reserva_vendedor_id: string | null; reserva_expira: string }>;
+    `).all(nowISO, in24h) as Array<{ id: string; numero: string; type: string; reserva_vendedor_id: string | null; reserva_expira: string; cliente_nombre: string | null }>;
 
     for (const u of expiringSoon) {
       const fechaStr = new Date(u.reserva_expira).toLocaleDateString('es-CL');
+      const clienteSuffix = u.cliente_nombre ? ` (${u.cliente_nombre})` : '';
       if (u.reserva_vendedor_id) {
-        createNotification({ paraUserId: u.reserva_vendedor_id, titulo: 'Reserva próxima a vencer', mensaje: `La reserva de ${u.type} ${u.numero} vence el ${fechaStr}`, tipo: 'warning', linkView: 'inventory', relatedId: u.id });
+        createNotification({ paraUserId: u.reserva_vendedor_id, titulo: 'Reserva próxima a vencer', mensaje: `La reserva de ${u.type} ${u.numero}${clienteSuffix} vence el ${fechaStr}`, tipo: 'warning', linkView: 'inventory', relatedId: u.id });
       }
-      createNotification({ paraRol: 'JefeSala', titulo: 'Reserva próxima a vencer', mensaje: `${u.type} ${u.numero} vence reserva el ${fechaStr}`, tipo: 'warning', linkView: 'inventory', relatedId: u.id });
+      createNotification({ paraRol: 'JefeSala', titulo: 'Reserva próxima a vencer', mensaje: `${u.type} ${u.numero}${clienteSuffix} vence reserva el ${fechaStr}`, tipo: 'warning', linkView: 'inventory', relatedId: u.id });
     }
 
     // Auto-release expired reservations
     const expired = await db.prepare(`
-      SELECT id, numero, type, cliente_id, reserva_vendedor_id, historial_ocupacion
-      FROM units
-      WHERE reserva_expira IS NOT NULL AND reserva_expira < ? AND estado = 'Reservado'
-    `).all(nowISO) as Array<{ id: string; numero: string; type: string; cliente_id: string | null; reserva_vendedor_id: string | null; historial_ocupacion: string }>;
+      SELECT u.id, u.numero, u.type, u.cliente_id, u.reserva_vendedor_id, u.historial_ocupacion, c.nombre AS cliente_nombre
+      FROM units u
+      LEFT JOIN clients c ON c.id = u.cliente_id
+      WHERE u.reserva_expira IS NOT NULL AND u.reserva_expira < ? AND u.estado = 'Reservado'
+    `).all(nowISO) as Array<{ id: string; numero: string; type: string; cliente_id: string | null; reserva_vendedor_id: string | null; historial_ocupacion: string; cliente_nombre: string | null }>;
 
     for (const u of expired) {
       type HistEntry = { fechaFin?: string; [k: string]: unknown };
@@ -463,10 +466,11 @@ async function checkReservasVencidas() {
       if (u.cliente_id) {
         await db.prepare(`UPDATE clients SET estado = 'Prospecto' WHERE id = ?`).run(u.cliente_id);
       }
+      const clienteSuffix = u.cliente_nombre ? ` (${u.cliente_nombre})` : '';
       if (u.reserva_vendedor_id) {
-        createNotification({ paraUserId: u.reserva_vendedor_id, titulo: 'Reserva vencida', mensaje: `La reserva de ${u.type} ${u.numero} ha vencido y fue liberada automáticamente`, tipo: 'error', linkView: 'inventory', relatedId: u.id });
+        createNotification({ paraUserId: u.reserva_vendedor_id, titulo: 'Reserva vencida', mensaje: `La reserva de ${u.type} ${u.numero}${clienteSuffix} ha vencido y fue liberada automáticamente`, tipo: 'error', linkView: 'inventory', relatedId: u.id });
       }
-      createNotification({ paraRol: 'JefeSala', titulo: 'Reserva vencida', mensaje: `${u.type} ${u.numero} fue liberada por vencimiento`, tipo: 'warning', linkView: 'inventory', relatedId: u.id });
+      createNotification({ paraRol: 'JefeSala', titulo: 'Reserva vencida', mensaje: `${u.type} ${u.numero}${clienteSuffix} fue liberada por vencimiento`, tipo: 'warning', linkView: 'inventory', relatedId: u.id });
     }
     if (expired.length > 0) {
       console.log(`[checkReservasVencidas] Liberadas ${expired.length} reserva(s) vencida(s)`);
@@ -759,6 +763,9 @@ app.get('/api/quotation-drafts', requireAuth, async (req, res) => {
 
   res.json(rows.map(r => ({
     ...r,
+    clienteNombre: r.cliente_nombre,
+    clienteRut: r.cliente_rut,
+    clienteId: r.cliente_id,
     data: JSON.parse((r.data as string) || '{}'),
   })));
 });
@@ -842,14 +849,14 @@ app.post('/api/quotation-drafts/:id/generate', requireAuth, async (req, res) => 
     });
 
     const genUser = await getUserById(userId);
+    const parsedDataForAudit = (() => { try { return JSON.parse(draft.data || '{}') as { selectedUnits?: Array<{ numero: string }> }; } catch { return {}; } })();
+    const unidadesStr = parsedDataForAudit.selectedUnits?.map(u => u.numero).join(', ') || 'sin unidades';
     createAuditLog(userId, genUser?.name || '', genUser?.role || '', 'Cotización generada', 'Quotation', id,
-      `Cotización generada para ${draft.cliente_nombre || 'sin cliente'}`);
-    // Notify JefeSala about new quotation
-    const firstUnit = ((() => { try { return JSON.parse(draft.data || '{}'); } catch { return {}; } })() as { selectedUnits?: Array<{ type?: string; numero?: string }> }).selectedUnits?.[0];
+      `Cotización para ${draft.cliente_nombre || 'sin cliente'} (${draft.cliente_rut || '—'}) — unidades: ${unidadesStr} — por ${genUser?.name || ''}`);
     createNotification({
       paraRol: 'JefeSala',
       titulo: 'Nueva cotización generada',
-      mensaje: `${genUser?.name || 'Vendedor'} cotizó ${firstUnit?.type || 'unidad'} ${firstUnit?.numero || ''} para ${draft.cliente_nombre || 'sin cliente'}`,
+      mensaje: `${genUser?.name || 'Vendedor'} cotizó [${unidadesStr}] para ${draft.cliente_nombre || 'sin cliente'}`,
       tipo: 'info',
       linkView: 'inventory',
       relatedId: id,
@@ -861,6 +868,39 @@ app.post('/api/quotation-drafts/:id/generate', requireAuth, async (req, res) => 
     console.error('[generate quotation]', err);
     res.status(500).json({ error: 'Error al generar la cotización' });
   }
+});
+
+app.post('/api/quotation-drafts/:id/pdf', requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const userId = (req as AuthenticatedRequest).userId;
+  const userRole = (req as AuthenticatedRequest).userRole;
+  const { pdfBase64 } = req.body as { pdfBase64?: string };
+
+  if (!pdfBase64) {
+    res.status(400).json({ error: 'pdfBase64 es requerido' });
+    return;
+  }
+
+  const draft = (['Admin', 'Supervisor', 'JefeSala'].includes(userRole))
+    ? await db.prepare('SELECT id, user_id, cliente_nombre FROM quotation_drafts WHERE id = ?').get(id) as { id: string; user_id: string; cliente_nombre: string } | undefined
+    : await db.prepare('SELECT id, user_id, cliente_nombre FROM quotation_drafts WHERE id = ? AND user_id = ?').get(id, userId) as { id: string; user_id: string; cliente_nombre: string } | undefined;
+
+  if (!draft) {
+    res.status(404).json({ error: 'Borrador no encontrado o sin permisos' });
+    return;
+  }
+
+  const dir = path.join(UPLOADS_DIR, 'cotizaciones');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  const filename = `cot_${id}_${Date.now()}.pdf`;
+  const filepath = path.join(dir, filename);
+  fs.writeFileSync(filepath, Buffer.from(pdfBase64, 'base64'));
+
+  const pdfPath = `cotizaciones/${filename}`;
+  await db.prepare('UPDATE quotation_drafts SET pdf_path = ? WHERE id = ?').run(pdfPath, id);
+
+  res.json({ ok: true, pdfPath });
 });
 
 app.get('/api/payment-plans', requireAuth, async (req, res) => {
@@ -1625,6 +1665,7 @@ app.get('/api/clients/:id/quotations', requireAuth, async (req, res) => {
       clienteId: r.cliente_id,
       fechaGenerada: r.fecha_generada,
       generadaPor: r.generada_por,
+      pdfPath: (r.pdf_path as string | null) ?? null,
       selectedUnits: unitsResumen,
       data: parsedData,
     };
@@ -1813,6 +1854,9 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
   const now = new Date().toISOString();
   const existing = await db.prepare('SELECT * FROM units WHERE id = ?').get(req.params.id) as Record<string, unknown> | undefined;
   if (!existing) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
+  const clienteNombreUnit = existing.cliente_id
+    ? (await db.prepare('SELECT nombre FROM clients WHERE id = ?').get(existing.cliente_id as string) as { nombre: string } | undefined)?.nombre || null
+    : null;
 
   if (userRole === 'Ventas') {
     if (body.estado === 'Escriturado') {
@@ -1876,7 +1920,7 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
     createNotification({
       paraRol: 'JefeSala',
       titulo: 'Cambio de estado en unidad',
-      mensaje: `${existing.type as string} ${existing.numero as string} cambió a ${body.estado as string}`,
+      mensaje: `${existing.type as string} ${existing.numero as string} cambió a ${body.estado as string}${clienteNombreUnit ? ` — Cliente: ${clienteNombreUnit}` : ''} (por ${userName})`,
       tipo: 'info',
       linkView: 'inventory',
     });
@@ -1889,8 +1933,8 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
     const updHist = hist.map((h, idx) => idx === hist.length - 1 && !h.fechaFin ? { ...h, fechaFin: now, motivo: 'Resciliación' } : h);
     await db.prepare(`UPDATE units SET historial_ocupacion = ?, cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, updated_at = ? WHERE id = ?`)
       .run(JSON.stringify(updHist), now, req.params.id);
-    createAuditLog(userId, userName, userRole, 'Resciliación', 'Unit', req.params.id, `Unidad ${existing.type as string} ${existing.numero as string} resciliada por ${userName}`);
-    createNotification({ paraRol: 'JefeSala', titulo: 'Resciliación registrada', mensaje: `${existing.type as string} ${existing.numero as string} fue resciliada por ${userName}`, tipo: 'warning', linkView: 'inventory', relatedId: req.params.id });
+    createAuditLog(userId, userName, userRole, 'Resciliación', 'Unit', req.params.id, `Unidad ${existing.type as string} ${existing.numero as string} resciliada por ${userName}${clienteNombreUnit ? ` — cliente: ${clienteNombreUnit}` : ''}`);
+    createNotification({ paraRol: 'JefeSala', titulo: 'Resciliación registrada', mensaje: `${existing.type as string} ${existing.numero as string} fue resciliada por ${userName}${clienteNombreUnit ? ` — Cliente: ${clienteNombreUnit}` : ''}`, tipo: 'warning', linkView: 'inventory', relatedId: req.params.id });
   }
 
   // Handle liberación: Reservado → Disponible (close historial, unlink client)
@@ -1900,8 +1944,8 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
     const updHist = hist.map((h, idx) => idx === hist.length - 1 && !h.fechaFin ? { ...h, fechaFin: now, motivo: 'Liberación' } : h);
     await db.prepare(`UPDATE units SET historial_ocupacion = ?, cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, updated_at = ? WHERE id = ?`)
       .run(JSON.stringify(updHist), now, req.params.id);
-    createAuditLog(userId, userName, userRole, 'Liberación', 'Unit', req.params.id, `Unidad ${existing.type as string} ${existing.numero as string} liberada por ${userName}`);
-    createNotification({ paraRol: 'JefeSala', titulo: 'Liberación de reserva', mensaje: `${existing.type as string} ${existing.numero as string} fue liberada por ${userName}`, tipo: 'warning', linkView: 'inventory', relatedId: req.params.id });
+    createAuditLog(userId, userName, userRole, 'Liberación', 'Unit', req.params.id, `Unidad ${existing.type as string} ${existing.numero as string} liberada por ${userName}${clienteNombreUnit ? ` — cliente: ${clienteNombreUnit}` : ''}`);
+    createNotification({ paraRol: 'JefeSala', titulo: 'Liberación de reserva', mensaje: `${existing.type as string} ${existing.numero as string} fue liberada por ${userName}${clienteNombreUnit ? ` — Cliente: ${clienteNombreUnit}` : ''}`, tipo: 'warning', linkView: 'inventory', relatedId: req.params.id });
   }
 
   // Notify JefeSala when a planPagos item is marked Pagado (Paso 11)
@@ -1927,7 +1971,7 @@ app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala',
   const now = new Date().toISOString();
 
   try {
-    const { numero, type } = await withTx(async (tx) => {
+    const { numero, type, clienteNombre, clienteRut } = await withTx(async (tx) => {
       const unit = await tx.prepare(
         'SELECT id, estado, cliente_id, project_id, numero, type, historial_ocupacion FROM units WHERE id = ?'
       ).get(id) as { id: string; estado: string; cliente_id: string | null; project_id: string; numero: string; type: string; historial_ocupacion: string } | undefined;
@@ -1976,10 +2020,10 @@ app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala',
         WHERE id = ?
       `).run(body.clienteId, body.asignadoPor ?? userId, body.fechaAsignacion ?? now, body.fechaReserva ?? now, userId, expira, JSON.stringify(hist), id);
 
-      return { numero: unit.numero, type: unit.type };
+      return { numero: unit.numero, type: unit.type, clienteNombre, clienteRut };
     });
-    createAuditLog(userId, userName, userRole, 'Asignación', 'Unit', id, `Unidad asignada a cliente ${body.clienteId}`);
-    createNotification({ paraRol: 'JefeSala', titulo: 'Unidad reservada', mensaje: `${userName} reservó ${type} ${numero}`, tipo: 'info', linkView: 'inventory', relatedId: id });
+    createAuditLog(userId, userName, userRole, 'Asignación', 'Unit', id, `${type} ${numero} asignada a ${clienteNombre} (RUT: ${clienteRut}) por ${userName}`);
+    createNotification({ paraRol: 'JefeSala', titulo: 'Unidad reservada', mensaje: `${userName} reservó ${type} ${numero} para ${clienteNombre}`, tipo: 'info', linkView: 'inventory', relatedId: id });
     res.json({ ok: true });
   } catch (err: unknown) {
     const msg = (err as Error).message;
@@ -1998,12 +2042,20 @@ app.patch('/api/units/:id/unassign', requireAuth, requireRole('Admin', 'JefeSala
   const userRole = (req as AuthenticatedRequest).userRole;
   const userName = (await getUserById(userId))?.name || '';
   const now = new Date().toISOString();
+  // Fetch unit info before clearing, for audit log
+  const unitBeforeUnassign = await db.prepare('SELECT numero, type, cliente_id FROM units WHERE id = ?')
+    .get(req.params.id) as { numero: string; type: string; cliente_id: string | null } | undefined;
+  const clienteBeforeUnassign = unitBeforeUnassign?.cliente_id
+    ? (await db.prepare('SELECT nombre FROM clients WHERE id = ?').get(unitBeforeUnassign.cliente_id) as { nombre: string } | undefined)?.nombre || ''
+    : '';
   // Al desistir/desasignar también se limpian los datos de reserva (fecha, vendedor, expiración),
   // si no la fecha de reserva quedaba pegada (bug reportado).
   const result = await db.prepare(`UPDATE units SET cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, fecha_reserva = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, estado = 'Disponible', updated_at = ? WHERE id = ?`)
     .run(now, req.params.id);
   if (result.changes === 0) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
-  createAuditLog(userId, userName, userRole, 'Desasignación', 'Unit', req.params.id, 'Cliente desasignado de la unidad');
+  const unitDesc = unitBeforeUnassign ? `${unitBeforeUnassign.type} ${unitBeforeUnassign.numero}` : req.params.id;
+  createAuditLog(userId, userName, userRole, 'Desasignación', 'Unit', req.params.id, `${unitDesc} desasignada${clienteBeforeUnassign ? ` de ${clienteBeforeUnassign}` : ''} por ${userName}`);
+  createNotification({ paraRol: 'JefeSala', titulo: 'Unidad desasignada', mensaje: `${userName} desasignó ${unitDesc}${clienteBeforeUnassign ? ` (cliente: ${clienteBeforeUnassign})` : ''}`, tipo: 'info', linkView: 'inventory', relatedId: req.params.id });
   res.json({ ok: true });
 });
 
@@ -2029,6 +2081,10 @@ app.post('/api/units/:id/liberar', requireAuth, requireRole('Admin', 'JefeSala',
       asignado_por = NULL,
       fecha_asignacion = NULL,
       fecha_reserva = NULL,
+      fecha_promesa = NULL,
+      fecha_escritura = NULL,
+      descuento_pct = 0,
+      descuento_pendiente = 0,
       reserva_vendedor_id = NULL,
       reserva_expira = NULL,
       historial_ocupacion = ?,
@@ -2036,12 +2092,16 @@ app.post('/api/units/:id/liberar', requireAuth, requireRole('Admin', 'JefeSala',
     WHERE id = ?
   `).run(JSON.stringify(updHist), now, req.params.id);
 
+  const clienteNombreLiberar = unit.cliente_id
+    ? (await db.prepare('SELECT nombre FROM clients WHERE id = ?').get(unit.cliente_id) as { nombre: string } | undefined)?.nombre || ''
+    : '';
+
   if (unit.cliente_id) {
     await db.prepare(`UPDATE clients SET estado = 'Prospecto' WHERE id = ?`).run(unit.cliente_id);
   }
 
   createAuditLog(userId, userName, userRole, 'Liberación reserva', 'Unit', req.params.id,
-    `Reserva liberada manualmente en ${unit.type} ${unit.numero} por ${userName}`);
+    `Reserva liberada manualmente en ${unit.type} ${unit.numero}${clienteNombreLiberar ? ` (cliente: ${clienteNombreLiberar})` : ''} por ${userName}`);
 
   if (unit.reserva_vendedor_id) {
     createNotification({ paraUserId: unit.reserva_vendedor_id, titulo: 'Reserva liberada', mensaje: `${unit.type} ${unit.numero} fue liberada por ${userName}`, tipo: 'warning', linkView: 'inventory', relatedId: req.params.id });
@@ -2137,6 +2197,7 @@ if (isMain) {
   void (async () => {
     try {
       await ping();
+      await db.prepare(`ALTER TABLE quotation_drafts ADD COLUMN IF NOT EXISTS pdf_path TEXT`).run();
       await migrateFromAppState();
       await ensureProjectConfigs();
       await migrateReservas();

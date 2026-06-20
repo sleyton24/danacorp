@@ -142,7 +142,8 @@ CREATE TABLE IF NOT EXISTS quotation_drafts (
   estado TEXT DEFAULT 'borrador',
   fecha_generada TEXT,
   generada_por TEXT,
-  cliente_id TEXT
+  cliente_id TEXT,
+  pdf_path TEXT
 );
 
 -- NOTA: corregido respecto al esquema derivado de SQLite, que tenía 'user_id'
