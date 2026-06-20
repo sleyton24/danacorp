@@ -1274,20 +1274,15 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
               <div className="grid grid-cols-2 gap-2 items-center">
                 <div>
                   <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest block mb-1">Descuento %</label>
-                  <div className="flex items-center gap-1">
-                    <input
-                      type="number" min="0" max={discountCfg.supervisorMaxPct} step="0.1"
-                      value={discountInput}
-                      onChange={e => { setDiscountInput(e.target.value); setDiscountError(''); }}
-                      disabled={isReadOnly || discountPending || !hasClient}
-                      className="w-full px-2 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-amber-100 disabled:opacity-50"
-                    />
-                    <button
-                      onClick={applyUnitDiscount}
-                      disabled={isReadOnly || discountPending || !discountInput || !hasClient}
-                      className="px-2 py-1.5 bg-amber-500 text-white text-[10px] font-bold rounded-lg hover:bg-amber-600 disabled:opacity-40 transition-all"
-                    >{discountPending ? '…' : 'OK'}</button>
-                  </div>
+                  <input
+                    type="number" min="0" max={discountCfg.supervisorMaxPct} step="0.1"
+                    value={discountInput}
+                    onChange={e => { setDiscountInput(e.target.value); setDiscountError(''); }}
+                    onBlur={applyUnitDiscount}
+                    onKeyDown={e => { if (e.key === 'Enter') applyUnitDiscount(); }}
+                    disabled={isReadOnly || discountPending || !hasClient}
+                    className="w-full px-2 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-amber-100 disabled:opacity-50"
+                  />
                   {discountError && <p className="text-[9px] text-red-600 font-bold mt-0.5">{discountError}</p>}
                   {discountPending && <p className="text-[9px] text-amber-600 font-bold mt-0.5">Pend. autorización</p>}
                 </div>
