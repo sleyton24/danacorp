@@ -127,7 +127,8 @@ CREATE TABLE IF NOT EXISTS units (
   cotizacion_activa_expira TEXT,
   reserva_vendedor_id TEXT,
   reserva_expira TEXT,
-  historial_ocupacion TEXT DEFAULT '[]'
+  historial_ocupacion TEXT DEFAULT '[]',
+  precio_lista_original REAL
 );
 
 CREATE TABLE IF NOT EXISTS quotation_drafts (
@@ -245,3 +246,18 @@ CREATE INDEX IF NOT EXISTS idx_drafts_user ON quotation_drafts(user_id);
 CREATE INDEX IF NOT EXISTS idx_discount_project ON discount_requests(project_id);
 CREATE INDEX IF NOT EXISTS idx_payment_unit ON payment_plans(unit_numero, project_id);
 CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(para_user_id);
+
+CREATE TABLE IF NOT EXISTS price_history (
+  id TEXT PRIMARY KEY,
+  unit_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  precio_anterior REAL NOT NULL,
+  precio_nuevo REAL NOT NULL,
+  variacion_pct REAL NOT NULL,
+  motivo TEXT,
+  usuario_id TEXT NOT NULL,
+  usuario_nombre TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_price_history_unit ON price_history(unit_id);

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { RealEstateUnit, Client, User, Project, ClientDocument, DiscountConfig, ProjectConfig } from '../types';
+import { calcValorTotal, calcBonificacion } from '../utils/pricingUtils';
 import {
   Search, Trash2, CheckCircle, FileText, Calendar,
   Building, Car, Package, Calculator, Save, AlertTriangle,
@@ -139,10 +140,8 @@ function calcUnitBonoPie(
 ): UnitBonoPieCalc {
   const r = (v: number) => Math.round(v * 100) / 100;
   if (hasBono) {
-    // Fórmula correcta: valorTotal = base / (1 - bonoPct/100)
-    // Verificación: UF 3.000 / 0.9 = UF 3.333,3 → bonificacion=333,3 → montoAPagar=333,3 → porFinanciar=2.666,7
-    const valorTotal   = r(base / (1 - bonoPct / 100));
-    const bonificacion = r(valorTotal * bonoPct / 100);
+    const valorTotal   = calcValorTotal(base, bonoPct);
+    const bonificacion = calcBonificacion(valorTotal, bonoPct);
     const pieUnidad    = r(valorTotal * piePct / 100);
     const montoAPagar  = r(pieUnidad - bonificacion);
     const porFinanciar = r(valorTotal * finPct / 100);

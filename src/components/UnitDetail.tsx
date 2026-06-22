@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { RealEstateUnit, Client, PaymentItem, User, PaymentPlan, OcupacionEntry } from '../types';
+import { RealEstateUnit, Client, PaymentItem, User, PaymentPlan, OcupacionEntry, PriceHistoryEntry } from '../types';
 import {
   ArrowLeft, Save, Trash2, Building2,
   AlertTriangle, CreditCard, RefreshCw,
@@ -12,7 +12,7 @@ import {
   Search, X, UserPlus, MoreVertical
 } from 'lucide-react';
 import { AssetTagInput } from './AssetTagInput';
-import { calcBonoPie } from '../utils/bonoPieCalc';
+import { calcResumenUnidad } from '../utils/pricingUtils';
 
 interface UnitDetailProps {
   unit: RealEstateUnit;
@@ -27,6 +27,8 @@ interface UnitDetailProps {
   onAssignClient?: (clientId: string, unitId: string) => void;
   onUnassignClient?: (unitId: string) => void;
   showToast?: (message: string, type?: 'success' | 'error' | 'warning') => void;
+  onUnsavedChangesUpdate?: (hasChanges: boolean) => void;
+  saveRef?: React.MutableRefObject<(() => void) | null>;
 }
 
 // Formateador estricto: Miles con punto, 1 decimal con coma (Ej: 4.565,0)
@@ -85,6 +87,7 @@ const FormattedInput = ({ value, onChange, className, placeholder, disabled, for
 export const UnitDetail: React.FC<UnitDetailProps> = ({
   unit, client, onBack, onUpdate, allUnits = [], currentUser, onSelectClient,
   clients = [], onAssignClient, onUnassignClient, showToast,
+  onUnsavedChangesUpdate, saveRef,
 }) => {
   const [formData, setFormData] = useState<RealEstateUnit>(unit);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
@@ -117,6 +120,27 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   // ── Fix 2: Popup cambios pendientes ───────────────────────────────────────
   const [showUnsavedModal, setShowUnsavedModal] = useState(false);
 
+  // ── Cotización cargada (verificación de precio) ────────────────────────────
+  const [todosLosPlanesCargados, setTodosLosPlanesCargados] = useState<PaymentPlan[]>([]);
+  const [planCargado, setPlanCargado] = useState(false);
+
+  // ── Modales descuento override / carga cotización ──────────────────────────
+  const [showSaveOverrideModal, setShowSaveOverrideModal] = useState(false);
+  const [showLoadCotizacionModal, setShowLoadCotizacionModal] = useState(false);
+  const [pendingCotizacion, setPendingCotizacion] = useState<PaymentPlan | null>(null);
+
+  // ── Historial de precios ───────────────────────────────────────────────────
+  const [priceHistory, setPriceHistory] = useState<PriceHistoryEntry[]>([]);
+
+  useEffect(() => {
+    const tok = localStorage.getItem('dw_token');
+    if (!tok) return;
+    fetch(`/api/units/${unit.id}/price-history`, { headers: { Authorization: `Bearer ${tok}` } })
+      .then(r => r.ok ? r.json() : [])
+      .then((data: PriceHistoryEntry[]) => setPriceHistory(data))
+      .catch(() => {});
+  }, [unit.id]);
+
   // ── Fix 3: Descuentos/bono por unidad vinculada ────────────────────────────
   const [linkedDiscounts, setLinkedDiscounts] = useState<Record<string, number>>({});
   const [linkedDiscountInputs, setLinkedDiscountInputs] = useState<Record<string, string>>({});
@@ -133,9 +157,9 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
             jefeMaxPct: d.discountConfig.jefeMaxPct ?? 3,
             supervisorMaxPct: d.discountConfig.supervisorMaxPct ?? 7,
           });
-          setBonoPct(d.discountConfig.bonoPiePct ?? 10);
+          setBonoPct(d.discountConfig.bonoPiePct ?? 0);
         } else {
-          setBonoPct(10);
+          setBonoPct(0);
         }
         if (d?.cantidadCuotasPie != null) {
           setCantidadCuotasPie(d.cantidadCuotasPie);
@@ -153,6 +177,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
       .then(r => r.ok ? r.json() : [])
       .then((plans: PaymentPlan[]) => {
         setPaymentPlans(plans);
+        console.log('[loadPaymentPlans] planes encontrados:', plans.length, 'para unidad:', unit.numero);
         if (plans.length > 0) {
           const first = plans[0];
           setSelectedPlanId(first.id);
@@ -165,16 +190,21 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
       .catch(() => {});
   };
 
-  // Load payment plans when unit has a client (uses formData.clienteId to catch deferred assignments)
+  // Load payment plans when unit has a client — sin filtrar por RUT para mostrar todos los planes
   useEffect(() => {
     if (!formData.clienteId) return;
-    const cliente = clients?.find(c => c.id === formData.clienteId);
-    loadPaymentPlans(cliente?.rut);
+    loadPaymentPlans();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unit.numero, unit.projectId, formData.clienteId]);
 
   useEffect(() => {
-    setDiscountInput(formData.descuentoPct?.toString() || '');
+    const pm = (unit.precioListaOriginal && unit.precioLista && unit.precioListaOriginal !== unit.precioLista)
+      ? Math.round((1 - unit.precioLista / unit.precioListaOriginal) * 100 * 10) / 10
+      : 0;
+    const initial = (unit.descuentoCliente != null && unit.descuentoCliente > 0)
+      ? unit.descuentoCliente
+      : pm;
+    setDiscountInput(String(initial));
     setDiscountPending(formData.descuentoPendiente || false);
     setDiscountError('');
   }, [unit.id]);
@@ -250,15 +280,51 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     if (plan.cuotasN > 0) setCantidadCuotasPie(plan.cuotasN);
   };
 
-  const cargarDesdeCotizacion = (plan: PaymentPlan) => {
+  const cargarDesdeCotizacion = async (plan: PaymentPlan) => {
+    const tok = localStorage.getItem('dw_token');
+    if (!tok) return;
+
+    const res = await fetch(
+      `/api/payment-plans?quotationId=${plan.quotationId}`,
+      { headers: { Authorization: `Bearer ${tok}` } }
+    );
+    const todosLosPlanes: PaymentPlan[] = res.ok ? await res.json() : [plan];
+
+    // Forma de pago (igual para todas las unidades del draft)
     setFpPromesaPct(plan.promesaPct);
     setFpCuotasPct(plan.cuotasPct);
     setFpEscrituraPct(plan.escrituraPct);
     if (plan.cuotasN > 0) setCantidadCuotasPie(plan.cuotasN);
-    if (plan.descuentoPct) {
-      setFormData(prev => ({ ...prev, descuentoPct: plan.descuentoPct }));
+
+    // Descuento y bono del departamento actual
+    const planDepto = todosLosPlanes.find(p => p.unitNumero === unit.numero) ?? plan;
+    if (planDepto.descuentoPct > 0) {
+      setFormData(prev => ({ ...prev, descuentoPct: planDepto.descuentoPct, aplicaBonoPie: planDepto.aplicaBonoPie, descuentoCliente: planDepto.descuentoPct }));
+      setDiscountInput(String(planDepto.descuentoPct));
+    } else {
+      // descuentoPct === 0: precio_lista ya tiene el implícito del PM, no se limpia
+      setFormData(prev => ({ ...prev, aplicaBonoPie: planDepto.aplicaBonoPie }));
+      setDiscountInput(String(descuentoPMDepto || 0));
     }
-    showToast?.('✓ Datos de cotización cargados');
+    setHasBono(planDepto.aplicaBonoPie);
+
+    // Descuento y bono por bodega/estacionamiento vinculados
+    const newLinkedDiscounts: Record<string, number> = {};
+    const newLinkedBono: Record<string, boolean> = {};
+    linkedAssets.storages.forEach(bodega => {
+      const p = todosLosPlanes.find(q => q.unitNumero === bodega.numero);
+      if (p) { newLinkedDiscounts[bodega.id] = p.descuentoPct; newLinkedBono[bodega.id] = p.aplicaBonoPie; }
+    });
+    linkedAssets.parkings.forEach(estac => {
+      const p = todosLosPlanes.find(q => q.unitNumero === estac.numero);
+      if (p) { newLinkedDiscounts[estac.id] = p.descuentoPct; newLinkedBono[estac.id] = p.aplicaBonoPie; }
+    });
+    setLinkedDiscounts(prev => ({ ...prev, ...newLinkedDiscounts }));
+    setLinkedBono(prev => ({ ...prev, ...newLinkedBono }));
+
+    setTodosLosPlanesCargados(todosLosPlanes);
+    setPlanCargado(true);
+    showToast?.('✓ Cotización cargada correctamente');
   };
 
   // ── Fix 1: Unidad asociada a padre ────────────────────────────────────────
@@ -288,6 +354,16 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     };
     return JSON.stringify(normalize(formData)) !== JSON.stringify(normalize(unit));
   }, [formData, unit]);
+
+  // Fix 1: Notificar al padre cuando cambien los unsaved changes
+  useEffect(() => {
+    onUnsavedChangesUpdate?.(hasUnsavedChanges);
+  }, [hasUnsavedChanges]);
+
+  // Fix 1: Exponer handleSaveWithLog al padre vía ref
+  useEffect(() => {
+    if (saveRef) saveRef.current = handleSaveWithLog;
+  });
 
   // ── Fix 5: Edición de fechas por rol ──────────────────────────────────────
   const canEditDates = ['Admin', 'JefeSala', 'Supervisor'].includes(currentUser.role);
@@ -370,8 +446,12 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     const inputs: Record<string, string> = {};
     const bono: Record<string, boolean> = {};
     [...linkedAssets.storages, ...linkedAssets.parkings].forEach(u => {
-      discounts[u.id] = u.descuentoPct ?? 0;
-      inputs[u.id] = String(u.descuentoPct ?? 0);
+      const pm = (u.precioListaOriginal && u.precioLista && u.precioListaOriginal !== u.precioLista)
+        ? Math.round((1 - u.precioLista / u.precioListaOriginal) * 100 * 10) / 10
+        : 0;
+      const eff = (u.descuentoCliente != null && u.descuentoCliente > 0) ? u.descuentoCliente : pm;
+      discounts[u.id] = eff;
+      inputs[u.id] = String(eff);
       bono[u.id] = false;
     });
     setLinkedDiscounts(discounts);
@@ -379,36 +459,35 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     setLinkedBono(bono);
   }, [linkedAssets.storages.map(u => u.id).join(','), linkedAssets.parkings.map(u => u.id).join(',')]);
 
-  // Cálculo bono pie solo para el departamento (Fix 3: renombrado)
-  const bonoCalcDepto = useMemo(() => {
-    const descuentoPct = formData.descuentoPct ?? 0;
-    return calcBonoPie(
-      formData.precioLista,
-      descuentoPct,
-      bonoPct > 0 ? bonoPct : 10,
-      hasBono,
-    );
-  }, [hasBono, bonoPct, formData.precioLista, formData.descuentoPct]);
+  // Descuento del Price Manager para el depto (informativo; base de cálculo si no hay override cliente)
+  const descuentoPMDepto = useMemo(() => {
+    if (!unit.precioListaOriginal || !unit.precioLista || unit.precioListaOriginal === unit.precioLista) return 0;
+    return Math.round((1 - unit.precioLista / unit.precioListaOriginal) * 100 * 10) / 10;
+  }, [unit.precioLista, unit.precioListaOriginal]);
 
-  // Alias para compatibilidad con código existente que usa bonoCalc
-  const bonoCalc = useMemo(() => calcBonoPie(
-    totalPrecioListaAcumulado,
-    formData.descuentoPct ?? 0,
-    bonoPct > 0 ? bonoPct : 10,
-    hasBono,
-  ), [hasBono, bonoPct, totalPrecioListaAcumulado, formData.descuentoPct]);
+  // Descuento efectivo del depto: lo que tiene el input (override o PM precargado)
+  const descuentoInputNum = parseFloat(discountInput);
+  const descuentoEfectivoDepto = !isNaN(descuentoInputNum) ? descuentoInputNum : descuentoPMDepto;
+
+  const bonoCalcDepto = useMemo(() => calcResumenUnidad({
+    precioListaOriginal: unit.precioListaOriginal ?? formData.precioLista,
+    dctoPct: descuentoEfectivoDepto,
+    bonoPct,
+    aplicaBono: hasBono,
+  }), [hasBono, bonoPct, unit.precioListaOriginal, formData.precioLista, descuentoEfectivoDepto]);
 
   // Fix 3: precio de venta total (depto + bodegas + estacs con sus propios descuentos/bonos)
+  // Base: precio_lista_original de cada unidad (spec cotizador — PASO 3: suma de precioConDescuento)
   const totalPrecioVentaNuevo = useMemo(() => {
-    const eff = bonoPct > 0 ? bonoPct : 10;
+    const eff = bonoPct;
     const deptoVenta = bonoCalcDepto.precioVenta;
     const storagesVenta = linkedAssets.storages.reduce((acc, b) => {
       const d = linkedDiscounts[b.id] ?? b.descuentoPct ?? 0;
-      return acc + calcBonoPie(b.precioLista, d, eff, linkedBono[b.id] ?? false).precioVenta;
+      return acc + calcResumenUnidad({ precioListaOriginal: b.precioListaOriginal ?? b.precioLista, dctoPct: d, bonoPct: eff, aplicaBono: linkedBono[b.id] ?? false }).precioVenta;
     }, 0);
     const parkingsVenta = linkedAssets.parkings.reduce((acc, p) => {
       const d = linkedDiscounts[p.id] ?? p.descuentoPct ?? 0;
-      return acc + calcBonoPie(p.precioLista, d, eff, linkedBono[p.id] ?? false).precioVenta;
+      return acc + calcResumenUnidad({ precioListaOriginal: p.precioListaOriginal ?? p.precioLista, dctoPct: d, bonoPct: eff, aplicaBono: linkedBono[p.id] ?? false }).precioVenta;
     }, 0);
     return deptoVenta + storagesVenta + parkingsVenta;
   }, [bonoCalcDepto.precioVenta, linkedAssets, linkedDiscounts, linkedBono, bonoPct]);
@@ -434,7 +513,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     const hoy = new Date().toISOString().split('T')[0];
 
     if (field === 'estado') {
-        if (value === 'Reservado' && !formData.fechaReserva) {
+        if (value === 'Reservado' && formData.clienteId && !formData.fechaReserva) {
             extraUpdates.fechaReserva = hoy;
         }
         if (value === 'Promesado' && !formData.fechaPromesa) {
@@ -456,11 +535,21 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                 fechaEscritura: undefined,
                 fechaAsignacion: undefined,
                 descuentoPct: 0,
+                descuentoCliente: undefined,
                 reservaMonto: 0,
                 pie: 0,
                 reservaVendedorId: undefined,
                 reservaExpira: undefined,
+                aplicaBonoPie: false,
+                planPagos: [],
             }));
+            setHasBono(false);
+            setLinkedBono({});
+            setLinkedDiscounts({});
+            setDiscountInput(String(descuentoPMDepto || 0));
+            setFpPromesaPct(10);
+            setFpCuotasPct(20);
+            setFpEscrituraPct(10);
         } else {
             setFormData(prev => ({ ...prev, ...extraUpdates, estado: value }));
         }
@@ -481,7 +570,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     }));
   };
 
-  const handleSaveWithLog = () => {
+  const performSave = () => {
     const logs: string[] = [];
     const now = new Date().toLocaleString('es-CL', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     const userHeader = `[SISTEMA ${now} - ${currentUser.name}]`;
@@ -520,15 +609,31 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
         finalObservaciones = autoLog + (formData.observaciones || '');
     }
 
+    // Guardar el override de descuento cliente si difiere del PM
+    const inputVal = parseFloat(discountInput);
+    const descuentoClienteValue = !isNaN(inputVal) && inputVal > 0 ? inputVal : undefined;
+
     try {
       onUpdate({
           ...formData,
+          descuentoCliente: descuentoClienteValue,
           observaciones: finalObservaciones
       });
       showToast?.('Cambios guardados');
     } catch {
       showToast?.('Error al guardar', 'error');
     }
+  };
+
+  const handleSaveWithLog = () => {
+    // Si hay cliente y el descuento difiere del PM guardado, pedir confirmación
+    const inputVal = parseFloat(discountInput);
+    const savedValue = unit.descuentoCliente ?? descuentoPMDepto;
+    if (hasClient && !isNaN(inputVal) && inputVal !== savedValue) {
+      setShowSaveOverrideModal(true);
+      return;
+    }
+    performSave();
   };
 
   // Fix 2: navegar atrás con check de cambios pendientes
@@ -572,6 +677,11 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
           };
           return { ...prev, planPagos: [...prev.planPagos, newItem] };
       });
+  };
+
+  const handleLimpiarCronograma = () => {
+    if (isReadOnly) return;
+    setFormData(prev => ({ ...prev, planPagos: [] }));
   };
 
   const generatePaymentSchedule = () => {
@@ -644,8 +754,20 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   const totalPlanificado = formData.planPagos.reduce((acc, curr) => acc + Number(curr.amount || 0), 0);
   const totalEstructuraFinanciera = (formData.reservaMonto || 0) + (formData.pie || 0);
   
-  const saldoPorFinanciarEstructural = Math.max(0, formData.precioVenta - (formData.pie || 0));
-  const percentPaid = formData.precioVenta > 0 ? (totalPaidReal / formData.precioVenta) * 100 : 0;
+  const percentPaid = totalPrecioVentaNuevo > 0 ? (totalPaidReal / totalPrecioVentaNuevo) * 100 : 0;
+
+  const precioBaseForma = totalPrecioVentaNuevo > 0 ? totalPrecioVentaNuevo : (unit.precioLista || 0);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const ufPromesaDisplay = useMemo(() => Math.round(precioBaseForma * fpPromesaPct / 100 * 100) / 100, [precioBaseForma, fpPromesaPct]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const ufCuotasDisplay = useMemo(() => Math.round(precioBaseForma * fpCuotasPct / 100 * 100) / 100, [precioBaseForma, fpCuotasPct]);
+  const ufCuotaUnitDisplay = useMemo(() => cantidadCuotasPie > 0 ? Math.round(ufCuotasDisplay / cantidadCuotasPie * 100) / 100 : 0, [ufCuotasDisplay, cantidadCuotasPie]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const ufEscrituraDisplay = useMemo(() => Math.round(precioBaseForma * fpEscrituraPct / 100 * 100) / 100, [precioBaseForma, fpEscrituraPct]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const ufCreditoDisplay = useMemo(() => Math.round(precioBaseForma * fpCreditoPct / 100 * 100) / 100, [precioBaseForma, fpCreditoPct]);
+  const totalFormaDisplay = useMemo(() => Math.round((ufPromesaDisplay + ufCuotasDisplay + ufEscrituraDisplay + ufCreditoDisplay) * 100) / 100, [ufPromesaDisplay, ufCuotasDisplay, ufEscrituraDisplay, ufCreditoDisplay]);
 
   const isDelayed = (dueStr: string, realStr?: string) => {
       if (!dueStr || !realStr) return false;
@@ -678,6 +800,60 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
               </button>
               <button
                 onClick={() => setShowUnsavedModal(false)}
+                className="w-full py-2.5 border border-gray-200 text-gray-500 rounded-xl font-bold text-sm hover:bg-gray-50 transition-colors"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal confirmar override descuento cliente */}
+      {showSaveOverrideModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
+            <h3 className="text-lg font-bold text-gray-900">Confirmar descuento cliente</h3>
+            <p className="text-sm text-gray-600">
+              El descuento del Price Manager es <strong>{descuentoPMDepto}%</strong>.
+              Estás guardando un override de <strong>{discountInput}%</strong> para este cliente. ¿Confirmar?
+            </p>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => { setShowSaveOverrideModal(false); performSave(); }}
+                className="w-full py-2.5 bg-blue-600 text-white rounded-xl font-bold text-sm hover:bg-blue-700 transition-colors"
+              >
+                Confirmar y guardar
+              </button>
+              <button
+                onClick={() => setShowSaveOverrideModal(false)}
+                className="w-full py-2.5 border border-gray-200 text-gray-500 rounded-xl font-bold text-sm hover:bg-gray-50 transition-colors"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal confirmar carga de cotización */}
+      {showLoadCotizacionModal && pendingCotizacion && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
+            <h3 className="text-lg font-bold text-gray-900">Cargar cotización</h3>
+            <p className="text-sm text-gray-600">
+              Esto reemplazará los descuentos y la forma de pago actuales con los de la cotización del{' '}
+              <strong>{new Date(pendingCotizacion.createdAt).toLocaleDateString('es-CL')}</strong>. ¿Continuar?
+            </p>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => { setShowLoadCotizacionModal(false); cargarDesdeCotizacion(pendingCotizacion); setPendingCotizacion(null); }}
+                className="w-full py-2.5 bg-blue-600 text-white rounded-xl font-bold text-sm hover:bg-blue-700 transition-colors"
+              >
+                Sí, cargar cotización
+              </button>
+              <button
+                onClick={() => { setShowLoadCotizacionModal(false); setPendingCotizacion(null); }}
                 className="w-full py-2.5 border border-gray-200 text-gray-500 rounded-xl font-bold text-sm hover:bg-gray-50 transition-colors"
               >
                 Cancelar
@@ -895,6 +1071,9 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
               <h3 className="text-xs font-bold text-gray-500 flex items-center gap-2 uppercase tracking-widest"><Wallet className="w-4 h-4 text-blue-600"/> Cronograma de Pagos</h3>
               {!isReadOnly && (
                   <div className="flex gap-2">
+                    {formData.planPagos.length > 0 && (
+                      <button onClick={handleLimpiarCronograma} className="text-[10px] bg-white border border-red-200 text-red-500 font-bold px-3 py-1.5 rounded-lg flex items-center gap-2 hover:bg-red-50 transition-all shadow-sm"><Trash2 className="w-3 h-3" /> LIMPIAR TODO</button>
+                    )}
                     <button onClick={addManualPayment} className="text-[10px] bg-white border border-gray-200 text-gray-600 font-bold px-3 py-1.5 rounded-lg flex items-center gap-2 hover:bg-gray-50 transition-all shadow-sm"><Plus className="w-3 h-3" /> AGREGAR CUOTA</button>
                   </div>
               )}
@@ -1226,6 +1405,49 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
               </div>
               )}
           </div>
+
+          {/* Historial de Precios */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50">
+              <h3 className="text-xs font-bold text-gray-500 flex items-center gap-2 uppercase tracking-widest">
+                <Tag className="w-4 h-4 text-amber-500" /> Historial de Precios
+              </h3>
+            </div>
+            {priceHistory.length === 0 ? (
+              <p className="text-xs text-gray-400 italic px-4 py-3">Sin cambios de precio registrados.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-xs">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-100 text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                      <th className="px-4 py-3 text-left">Fecha</th>
+                      <th className="px-4 py-3 text-right">Anterior</th>
+                      <th className="px-4 py-3 text-right">Nuevo</th>
+                      <th className="px-4 py-3 text-right">Variación</th>
+                      <th className="px-4 py-3 text-left">Motivo</th>
+                      <th className="px-4 py-3 text-left">Usuario</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {priceHistory.map(entry => (
+                      <tr key={entry.id} className="hover:bg-gray-50">
+                        <td className="px-4 py-3 text-gray-500 font-mono">
+                          {new Date(entry.createdAt).toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: 'numeric' })}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-gray-500">UF {entry.precioAnterior.toFixed(1)}</td>
+                        <td className="px-4 py-3 text-right font-mono font-bold text-gray-800">UF {entry.precioNuevo.toFixed(1)}</td>
+                        <td className={`px-4 py-3 text-right font-bold font-mono ${entry.variacionPct < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                          {entry.variacionPct > 0 ? '+' : ''}{entry.variacionPct.toFixed(1)}%
+                        </td>
+                        <td className="px-4 py-3 text-gray-400 italic">{entry.motivo || '—'}</td>
+                        <td className="px-4 py-3 text-gray-600">{entry.usuarioNombre}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Desglose Financiero - COLUMNA DERECHA */}
@@ -1238,7 +1460,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
             {/* ── Cargar desde cotización ── */}
             {hasClient && paymentPlans.length === 1 && (
               <button
-                onClick={() => cargarDesdeCotizacion(paymentPlans[0])}
+                onClick={() => { setPendingCotizacion(paymentPlans[0]); setShowLoadCotizacionModal(true); }}
                 className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded-xl hover:bg-blue-100 transition-colors"
               >
                 <ChevronDown className="w-3.5 h-3.5" /> Cargar desde cotización ({new Date(paymentPlans[0].createdAt).toLocaleDateString('es-CL')})
@@ -1249,7 +1471,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                 defaultValue=""
                 onChange={e => {
                   const plan = paymentPlans.find(p => p.id === e.target.value);
-                  if (plan) cargarDesdeCotizacion(plan);
+                  if (plan) { setPendingCotizacion(plan); setShowLoadCotizacionModal(true); }
                 }}
                 className="w-full px-3 py-2 text-xs border border-blue-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100 bg-blue-50 text-blue-700 font-bold"
               >
@@ -1269,7 +1491,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                   <Tag className="w-3 h-3 text-blue-500" />
                   {unit.type === 'Departamento' ? `Depto ${formData.numero}` : `${unit.type} ${formData.numero}`}
                 </span>
-                <span className="text-xs font-mono font-bold text-gray-500">{formatValueStandard(formData.precioLista)} UF</span>
+                <span className="text-xs font-mono font-bold text-gray-500">{formatValueStandard(hasBono ? bonoCalcDepto.valorTotal : bonoCalcDepto.precioConDescuento)} UF</span>
               </div>
               <div className="grid grid-cols-2 gap-2 items-center">
                 <div>
@@ -1278,9 +1500,9 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                     type="number" min="0" max={discountCfg.supervisorMaxPct} step="0.1"
                     value={discountInput}
                     onChange={e => { setDiscountInput(e.target.value); setDiscountError(''); }}
-                    onBlur={applyUnitDiscount}
-                    onKeyDown={e => { if (e.key === 'Enter') applyUnitDiscount(); }}
                     disabled={isReadOnly || discountPending || !hasClient}
+                    title={`PM: ${descuentoPMDepto}%${formData.descuentoCliente ? ` | Override cliente: ${formData.descuentoCliente}%` : ''}`}
+                    placeholder={String(descuentoPMDepto || 0)}
                     className="w-full px-2 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-amber-100 disabled:opacity-50"
                   />
                   {discountError && <p className="text-[9px] text-red-600 font-bold mt-0.5">{discountError}</p>}
@@ -1300,10 +1522,16 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                       }}
                       className="w-4 h-4 accent-blue-600 disabled:opacity-50"
                     />
-                    Bono {bonoPct > 0 ? bonoPct : 10}%
+                    Bono {bonoPct}%
                   </label>
                 </div>
               </div>
+              {hasBono && (
+                <div className="flex justify-between items-center text-[11px] text-blue-600">
+                  <span className="font-bold">Bonificación</span>
+                  <span className="font-mono font-bold">-{formatValueStandard(bonoCalcDepto.bonificacion)} UF</span>
+                </div>
+              )}
               <div className="flex justify-between items-center text-[11px] border-t border-gray-200 pt-2">
                 <span className="text-gray-500 font-bold">Precio Venta</span>
                 <span className="font-mono font-black text-gray-800">{formatValueStandard(bonoCalcDepto.precioVenta)} UF</span>
@@ -1314,14 +1542,14 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
             {linkedAssets.storages.map(b => {
               const disc = linkedDiscounts[b.id] ?? b.descuentoPct ?? 0;
               const bono = linkedBono[b.id] ?? false;
-              const calc = calcBonoPie(b.precioLista, disc, bonoPct > 0 ? bonoPct : 10, bono);
+              const calc = calcResumenUnidad({ precioListaOriginal: b.precioListaOriginal ?? b.precioLista, dctoPct: disc, bonoPct, aplicaBono: bono });
               return (
                 <div key={b.id} className="space-y-2 p-3 bg-gray-50/60 rounded-xl border border-dashed border-gray-200">
                   <div className="flex justify-between items-center">
                     <span className="text-[11px] font-black text-gray-600 uppercase flex items-center gap-1.5">
                       <Package className="w-3 h-3 text-gray-400" /> Bodega {b.numero}
                     </span>
-                    <span className="text-xs font-mono font-bold text-gray-400">{formatValueStandard(b.precioLista)} UF</span>
+                    <span className="text-xs font-mono font-bold text-gray-400">{formatValueStandard(bono ? calc.valorTotal : calc.precioConDescuento)} UF</span>
                   </div>
                   <div className="grid grid-cols-2 gap-2 items-center">
                     <div>
@@ -1349,10 +1577,16 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                           onChange={e => setLinkedBono(prev => ({ ...prev, [b.id]: e.target.checked }))}
                           className="w-4 h-4 accent-blue-600 disabled:opacity-50"
                         />
-                        Bono {bonoPct > 0 ? bonoPct : 10}%
+                        Bono {bonoPct}%
                       </label>
                     </div>
                   </div>
+                  {bono && (
+                    <div className="flex justify-between items-center text-[11px] text-blue-600">
+                      <span className="font-bold">Bonificación</span>
+                      <span className="font-mono font-bold">-{formatValueStandard(calc.bonificacion)} UF</span>
+                    </div>
+                  )}
                   <div className="flex justify-between items-center text-[11px] border-t border-gray-200 pt-2">
                     <span className="text-gray-500 font-bold">Precio Venta</span>
                     <span className="font-mono font-black text-gray-700">{formatValueStandard(calc.precioVenta)} UF</span>
@@ -1365,14 +1599,14 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
             {linkedAssets.parkings.map(p => {
               const disc = linkedDiscounts[p.id] ?? p.descuentoPct ?? 0;
               const bono = linkedBono[p.id] ?? false;
-              const calc = calcBonoPie(p.precioLista, disc, bonoPct > 0 ? bonoPct : 10, bono);
+              const calc = calcResumenUnidad({ precioListaOriginal: p.precioListaOriginal ?? p.precioLista, dctoPct: disc, bonoPct, aplicaBono: bono });
               return (
                 <div key={p.id} className="space-y-2 p-3 bg-gray-50/60 rounded-xl border border-dashed border-gray-200">
                   <div className="flex justify-between items-center">
                     <span className="text-[11px] font-black text-gray-600 uppercase flex items-center gap-1.5">
                       <Car className="w-3 h-3 text-gray-400" /> Estac. {p.numero}
                     </span>
-                    <span className="text-xs font-mono font-bold text-gray-400">{formatValueStandard(p.precioLista)} UF</span>
+                    <span className="text-xs font-mono font-bold text-gray-400">{formatValueStandard(bono ? calc.valorTotal : calc.precioConDescuento)} UF</span>
                   </div>
                   <div className="grid grid-cols-2 gap-2 items-center">
                     <div>
@@ -1400,10 +1634,16 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                           onChange={e => setLinkedBono(prev => ({ ...prev, [p.id]: e.target.checked }))}
                           className="w-4 h-4 accent-blue-600 disabled:opacity-50"
                         />
-                        Bono {bonoPct > 0 ? bonoPct : 10}%
+                        Bono {bonoPct}%
                       </label>
                     </div>
                   </div>
+                  {bono && (
+                    <div className="flex justify-between items-center text-[11px] text-blue-600">
+                      <span className="font-bold">Bonificación</span>
+                      <span className="font-mono font-bold">-{formatValueStandard(calc.bonificacion)} UF</span>
+                    </div>
+                  )}
                   <div className="flex justify-between items-center text-[11px] border-t border-gray-200 pt-2">
                     <span className="text-gray-500 font-bold">Precio Venta</span>
                     <span className="font-mono font-black text-gray-700">{formatValueStandard(calc.precioVenta)} UF</span>
@@ -1420,63 +1660,12 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
               </div>
             </div>
 
-            {/* ── Reserva / Pie / Saldo ── */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className={`bg-white p-3 rounded-2xl border border-gray-100 shadow-sm ${!hasClient ? 'opacity-60' : ''}`}>
-                <span className="text-[10px] font-black text-gray-400 uppercase block mb-1.5">Reserva Pactada</span>
-                <div className="flex items-center gap-1">
-                  <FormattedInput
-                    disabled={isReadOnly || !hasClient}
-                    value={formData.reservaMonto}
-                    onChange={(val) => handleChange('reservaMonto', val)}
-                    className="bg-transparent border-none focus:ring-0 p-0 text-xl font-black text-gray-800 w-full"
-                  />
-                  <span className="text-xs font-bold text-gray-400">UF</span>
-                </div>
-              </div>
-              <div className={`bg-white p-3 rounded-2xl border border-gray-100 shadow-sm ${!hasClient ? 'opacity-60' : ''}`}>
-                <span className="text-[10px] font-black text-gray-400 uppercase block mb-1.5">Pie Acordado</span>
-                <div className="flex items-center gap-1">
-                  <FormattedInput
-                    disabled={isReadOnly || !hasClient}
-                    value={formData.pie}
-                    onChange={(val) => handleChange('pie', val)}
-                    className="bg-transparent border-none focus:ring-0 p-0 text-xl font-black text-gray-800 w-full"
-                  />
-                  <span className="text-xs font-bold text-gray-400">UF</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="p-4 bg-blue-50 rounded-2xl text-center shadow-sm border border-blue-100 relative overflow-hidden group">
-              <div className="absolute top-0 right-0 p-2 opacity-5 group-hover:opacity-10 transition-opacity"><Landmark className="w-12 h-12" /></div>
-              <span className="text-[9px] text-blue-500 font-black block mb-1 uppercase tracking-widest">Saldo por Financiar (Crédito)</span>
-              <div className="text-2xl font-black text-blue-900 font-mono">
-                {formatValueStandard(saldoPorFinanciarEstructural)} <span className="text-xs font-normal">UF</span>
-              </div>
-            </div>
-
             {/* ── Forma de Pago ── */}
             {hasClient && (
               <div className="border-t border-gray-100 pt-5 space-y-4">
-                <div className="flex justify-between items-center">
-                  <h4 className="text-xs font-bold text-gray-400 flex items-center gap-2 uppercase tracking-widest">
-                    <CreditCard className="w-4 h-4 text-blue-600" /> Forma de Pago
-                  </h4>
-                  {paymentPlans.length > 1 && (
-                    <select
-                      value={selectedPlanId}
-                      onChange={e => handleSelectPlan(e.target.value)}
-                      className="text-xs px-2 py-1.5 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-100 bg-white"
-                    >
-                      {paymentPlans.map(p => (
-                        <option key={p.id} value={p.id}>
-                          {p.clienteNombre || p.quotationId.slice(0, 8)} — {new Date(p.createdAt).toLocaleDateString('es-CL')}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                </div>
+                <h4 className="text-xs font-bold text-gray-400 flex items-center gap-2 uppercase tracking-widest">
+                  <CreditCard className="w-4 h-4 text-blue-600" /> Forma de Pago
+                </h4>
                 {paymentPlans.length === 0 && (
                   <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3">
                     <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
@@ -1486,7 +1675,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                 <div className="grid grid-cols-3 gap-3">
                   {[
                     { label: 'Promesa', val: fpPromesaPct, set: setFpPromesaPct },
-                    { label: `Cuotas (${cantidadCuotasPie}x)`, val: fpCuotasPct, set: setFpCuotasPct },
+                    { label: 'Cuotas', val: fpCuotasPct, set: setFpCuotasPct },
                     { label: 'Escritura', val: fpEscrituraPct, set: setFpEscrituraPct },
                   ].map(({ label, val, set }) => (
                     <div key={label}>
@@ -1508,23 +1697,36 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                   <span className="text-xs font-bold text-blue-600 uppercase tracking-tight">Crédito Hipotecario (auto)</span>
                   <span className="font-mono font-black text-blue-700 text-sm">{fpCreditoPct}%</span>
                 </div>
-                <div className="space-y-1">
-                  {[
-                    { label: 'Promesa', pct: fpPromesaPct },
-                    { label: `Cuotas (${cantidadCuotasPie}x)`, pct: fpCuotasPct },
-                    { label: 'Escritura', pct: fpEscrituraPct },
-                    { label: 'Crédito', pct: fpCreditoPct },
-                  ].map(({ label, pct }) => {
-                    const uf = Math.round(totalPrecioVentaNuevo * pct / 100 * 100) / 100;
-                    return (
-                      <div key={label} className="flex justify-between items-center text-xs">
-                        <span className="text-gray-500">{label}</span>
-                        <span className="font-mono font-bold text-gray-700">
-                          {pct}% → {uf.toLocaleString('es-CL', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} UF
-                        </span>
+                <div className="space-y-1.5 bg-gray-50 rounded-xl p-3 border border-gray-100">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-gray-500">Promesa</span>
+                    <span className="font-mono font-bold text-gray-700">{fpPromesaPct}% → {formatValueStandard(ufPromesaDisplay)} UF</span>
+                  </div>
+                  <div className="text-xs">
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-500">Cuotas ({cantidadCuotasPie}x)</span>
+                      <span className="font-mono font-bold text-gray-700">{fpCuotasPct}% → {formatValueStandard(ufCuotasDisplay)} UF</span>
+                    </div>
+                    {cantidadCuotasPie > 0 && ufCuotaUnitDisplay > 0 && (
+                      <div className="text-right text-[10px] text-gray-400 mt-0.5">
+                        {cantidadCuotasPie} cuotas de {formatValueStandard(ufCuotaUnitDisplay)} UF c/u
                       </div>
-                    );
-                  })}
+                    )}
+                  </div>
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-gray-500">Escritura</span>
+                    <span className="font-mono font-bold text-gray-700">{fpEscrituraPct}% → {formatValueStandard(ufEscrituraDisplay)} UF</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-gray-500">Crédito</span>
+                    <span className="font-mono font-bold text-gray-700">{fpCreditoPct}% → {formatValueStandard(ufCreditoDisplay)} UF</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs border-t border-gray-200 pt-1.5 mt-1">
+                    <span className="font-bold text-gray-700">Total</span>
+                    <span className={`font-mono font-black ${Math.abs(totalFormaDisplay - totalPrecioVentaNuevo) < 0.1 ? 'text-green-700' : 'text-orange-600'}`}>
+                      {formatValueStandard(totalFormaDisplay)} UF
+                    </span>
+                  </div>
                 </div>
                 {(fpPromesaPct + fpCuotasPct + fpEscrituraPct + fpCreditoPct) !== 100 && (
                   <p className="text-[10px] text-amber-600 font-bold flex items-center gap-1">

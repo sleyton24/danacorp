@@ -125,9 +125,36 @@ const App: React.FC = () => {
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
   const [pendingOpenDraftId, setPendingOpenDraftId] = useState<string | null>(null);
 
+  // ── UnitDetail unsaved-changes guard ──────────────────────────────────────
+  const [unitDetailHasChanges, setUnitDetailHasChanges] = useState(false);
+  const [pendingViewFromUnit, setPendingViewFromUnit] = useState<typeof currentView | null>(null);
+  const unitDetailSaveRef = useRef<(() => void) | null>(null);
+  const unitDetailHasChangesRef = useRef(false);
+  useEffect(() => { unitDetailHasChangesRef.current = unitDetailHasChanges; }, [unitDetailHasChanges]);
+
+  // Fix 2: Interceptar botón retroceder del navegador cuando UnitDetail está abierto
+  useEffect(() => {
+    if (!selectedUnit) return;
+    window.history.pushState({ unitDetail: true }, '');
+    const handlePopState = () => {
+      if (unitDetailHasChangesRef.current) {
+        setPendingViewFromUnit('inventory');
+        window.history.pushState({ unitDetail: true }, '');
+      } else {
+        setSelectedUnit(null);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [selectedUnit?.id]);
+
   const handleChangeView = (newView: typeof currentView) => {
     if (currentView === 'quoter' && newView !== 'quoter' && activeDraftId) {
       setPendingNavigation(newView);
+      return;
+    }
+    if (unitDetailHasChanges && currentView === 'inventory' && selectedUnit) {
+      setPendingViewFromUnit(newView);
       return;
     }
     setCurrentView(newView);
@@ -354,6 +381,15 @@ const App: React.FC = () => {
     } catch {
       showToast('Error al actualizar unidad', 'error');
     }
+  };
+
+  const refreshUnits = async () => {
+    const tok = localStorage.getItem('dw_token');
+    if (!tok) return;
+    try {
+      const res = await fetch('/api/units', { headers: { Authorization: `Bearer ${tok}` } });
+      if (res.ok) setUnits(await res.json() as RealEstateUnit[]);
+    } catch { /* silencioso */ }
   };
 
   const handleAddClient = (client: Client) => {
@@ -594,6 +630,43 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {/* Fix 1: Modal cambios sin guardar al navegar desde Sidebar o retroceder */}
+      {pendingViewFromUnit && selectedUnit && (
+        <div className="fixed inset-0 bg-black/50 z-[9997] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
+            <h3 className="text-lg font-bold text-gray-900">Cambios sin guardar</h3>
+            <p className="text-sm text-gray-600">
+              Tienes cambios sin guardar en {selectedUnit.type} {selectedUnit.numero}. ¿Qué quieres hacer?
+            </p>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => {
+                  unitDetailSaveRef.current?.();
+                  setCurrentView(pendingViewFromUnit);
+                  setSelectedUnit(null);
+                  setUnitDetailHasChanges(false);
+                  setPendingViewFromUnit(null);
+                }}
+                className="w-full py-2.5 bg-blue-600 text-white rounded-xl font-bold text-sm hover:bg-blue-700 transition-colors"
+              >Guardar y salir</button>
+              <button
+                onClick={() => {
+                  setCurrentView(pendingViewFromUnit);
+                  setSelectedUnit(null);
+                  setUnitDetailHasChanges(false);
+                  setPendingViewFromUnit(null);
+                }}
+                className="w-full py-2.5 bg-red-50 text-red-600 rounded-xl font-bold text-sm hover:bg-red-100 transition-colors border border-red-200"
+              >Descartar cambios</button>
+              <button
+                onClick={() => setPendingViewFromUnit(null)}
+                className="w-full py-2.5 border border-gray-200 text-gray-500 rounded-xl font-bold text-sm hover:bg-gray-50 transition-colors"
+              >Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Fix 1: Modal confirmación cambio de proyecto cuando Quoter tiene datos */}
       {pendingProjectId && (
         <div className="fixed inset-0 bg-black/50 z-[9999] flex items-center justify-center p-4">
@@ -661,15 +734,17 @@ const App: React.FC = () => {
           <UnitDetail
             unit={selectedUnit}
             client={clients.find(c => c.id === selectedUnit.clienteId)}
-            onBack={() => setSelectedUnit(null)}
+            onBack={() => { setSelectedUnit(null); setUnitDetailHasChanges(false); }}
             onUpdate={handleUpdateUnit}
             allUnits={currentProjectUnits}
             currentUser={currentUser}
             clients={clients}
-            onSelectClient={(id) => { setExpandedClientId(id); setCurrentView('clients'); setSelectedUnit(null); }}
+            onSelectClient={(id) => { setExpandedClientId(id); setCurrentView('clients'); setSelectedUnit(null); setUnitDetailHasChanges(false); }}
             onAssignClient={handleAssignUnit}
             onUnassignClient={handleUnassignUnit}
             showToast={showToast}
+            onUnsavedChangesUpdate={setUnitDetailHasChanges}
+            saveRef={unitDetailSaveRef}
           />
         ) : (
           <>
@@ -715,7 +790,7 @@ const App: React.FC = () => {
               } : u))}
               showToast={showToast}
             />}
-            {currentView === 'prices' && <PriceManager units={currentProjectUnits} onUpdateUnit={handleUpdateUnit} currentUser={currentUser} />}
+            {currentView === 'prices' && <PriceManager units={currentProjectUnits} onUpdateUnit={handleUpdateUnit} currentUser={currentUser} onRefreshUnits={refreshUnits} />}
             {currentView === 'create_project' && <ProjectCreationWizard onSave={handleCreateProject} onCancel={() => setCurrentView('summary')} />}
             {currentView === 'audit' && (
               <React.Suspense fallback={<LazyFallback />}>

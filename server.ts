@@ -278,6 +278,7 @@ async function buildAppStateFromTables(): Promise<Record<string, unknown> | null
       documents: JSON.parse((u.documents as string) || '[]'),
       descuentoPct: u.descuento_pct, descuentoPendiente: u.descuento_pendiente === 1,
       descuentoSolicitudId: u.descuento_solicitud_id, aplicaBonoPie: u.aplica_bono_pie === 1,
+      descuentoCliente: (u.descuento_cliente as number | null) ?? undefined,
     })),
   };
 }
@@ -904,25 +905,9 @@ app.post('/api/quotation-drafts/:id/pdf', requireAuth, async (req, res) => {
 });
 
 app.get('/api/payment-plans', requireAuth, async (req, res) => {
-  const { unitNumero, projectId, clienteRut } = req.query as Record<string, string>;
-  if (!unitNumero || !projectId) {
-    res.status(400).json({ error: 'unitNumero y projectId son requeridos' });
-    return;
-  }
-  const conditions: string[] = ['unit_numero = ?', 'project_id = ?'];
-  const params: string[] = [unitNumero, projectId];
-  if (clienteRut) {
-    conditions.push('cliente_rut = ?');
-    params.push(clienteRut);
-  }
-  const rows = await db.prepare(
-    `SELECT id, quotation_id, unit_numero, project_id, cliente_id, cliente_rut, cliente_nombre,
-            precio_venta_final, promesa_pct, cuotas_pct, cuotas_n, escritura_pct, credito_pct,
-            bono_pie_pct, aplica_bono_pie, descuento_pct, created_at
-     FROM payment_plans WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC`
-  ).all(...params) as Array<Record<string, unknown>>;
+  const { unitNumero, projectId, clienteRut, quotationId } = req.query as Record<string, string>;
 
-  res.json(rows.map(r => ({
+  const mapRow = (r: Record<string, unknown>) => ({
     id:               r.id,
     quotationId:      r.quotation_id,
     unitNumero:       r.unit_numero,
@@ -940,7 +925,35 @@ app.get('/api/payment-plans', requireAuth, async (req, res) => {
     aplicaBonoPie:    Boolean(r.aplica_bono_pie),
     descuentoPct:     r.descuento_pct,
     createdAt:        r.created_at,
-  })));
+  });
+
+  const SELECT = `SELECT id, quotation_id, unit_numero, project_id, cliente_id, cliente_rut, cliente_nombre,
+          precio_venta_final, promesa_pct, cuotas_pct, cuotas_n, escritura_pct, credito_pct,
+          bono_pie_pct, aplica_bono_pie, descuento_pct, created_at FROM payment_plans`;
+
+  if (quotationId) {
+    const rows = await db.prepare(
+      `${SELECT} WHERE quotation_id = ? ORDER BY created_at ASC`
+    ).all(quotationId) as Array<Record<string, unknown>>;
+    res.json(rows.map(mapRow));
+    return;
+  }
+
+  if (!unitNumero || !projectId) {
+    res.status(400).json({ error: 'unitNumero y projectId son requeridos' });
+    return;
+  }
+  const conditions: string[] = ['unit_numero = ?', 'project_id = ?'];
+  const params: string[] = [unitNumero, projectId];
+  if (clienteRut) {
+    conditions.push('cliente_rut = ?');
+    params.push(clienteRut);
+  }
+  const rows = await db.prepare(
+    `${SELECT} WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC`
+  ).all(...params) as Array<Record<string, unknown>>;
+
+  res.json(rows.map(mapRow));
 });
 
 // Stub para compatibilidad con Quoter.tsx
@@ -1835,7 +1848,94 @@ app.get('/api/units', requireAuth, async (req, res) => {
     reservaVendedorId: r.reserva_vendedor_id,
     reservaExpira: r.reserva_expira,
     historialOcupacion: (() => { try { return JSON.parse((r.historial_ocupacion as string) || '[]'); } catch { return []; } })(),
+    precioListaOriginal: (r.precio_lista_original as number | null) ?? undefined,
   })));
+});
+
+// ── Price History ─────────────────────────────────────────────────────────────
+
+app.get('/api/units/:id/price-history', requireAuth, async (req, res) => {
+  const rows = await db.prepare(
+    'SELECT * FROM price_history WHERE unit_id = ? ORDER BY created_at DESC'
+  ).all(req.params.id) as Array<Record<string, unknown>>;
+  res.json(rows.map(r => ({
+    id: r.id,
+    unitId: r.unit_id,
+    projectId: r.project_id,
+    precioAnterior: r.precio_anterior,
+    precioNuevo: r.precio_nuevo,
+    variacionPct: r.variacion_pct,
+    motivo: r.motivo ?? undefined,
+    usuarioId: r.usuario_id,
+    usuarioNombre: r.usuario_nombre,
+    createdAt: r.created_at,
+  })));
+});
+
+app.post('/api/units/bulk-price-update', requireAuth, requireRole('Admin', 'Supervisor'), async (req, res) => {
+  const userId = (req as AuthenticatedRequest).userId;
+  const userRole = (req as AuthenticatedRequest).userRole;
+  const { unitIds, tipo, valor, motivo } = req.body as {
+    unitIds: string[];
+    tipo: 'porcentaje' | 'uf';
+    valor: number;
+    motivo?: string;
+  };
+
+  if (!Array.isArray(unitIds) || unitIds.length === 0) {
+    res.status(400).json({ error: 'unitIds es requerido y no puede estar vacío' });
+    return;
+  }
+  if (tipo !== 'porcentaje' && tipo !== 'uf') {
+    res.status(400).json({ error: 'tipo debe ser "porcentaje" o "uf"' });
+    return;
+  }
+  if (typeof valor !== 'number') {
+    res.status(400).json({ error: 'valor debe ser un número' });
+    return;
+  }
+
+  const userName = (await getUserById(userId))?.name || '';
+  const now = new Date().toISOString();
+  const errors: Array<{ unitId: string; error: string }> = [];
+  const historyEntries: Array<{ unitId: string; projectId: string; anterior: number; nuevo: number; pct: number }> = [];
+
+  await withTx(async (tx) => {
+    for (const unitId of unitIds) {
+      const row = await tx.prepare(
+        'SELECT precio_lista, project_id FROM units WHERE id = ?'
+      ).get(unitId) as { precio_lista: number; project_id: string } | undefined;
+
+      if (!row) { errors.push({ unitId, error: 'Unidad no encontrada' }); continue; }
+
+      const precioAnterior = row.precio_lista;
+      const precioNuevo = tipo === 'porcentaje'
+        ? Math.round(precioAnterior * (1 - valor / 100) * 100) / 100
+        : Math.round((precioAnterior - valor) * 100) / 100;
+
+      if (precioNuevo <= 0) { errors.push({ unitId, error: `Precio resultante ${precioNuevo} inválido` }); continue; }
+
+      const variacionPct = Math.round(((precioNuevo - precioAnterior) / precioAnterior) * 10000) / 100;
+
+      await tx.prepare(
+        'UPDATE units SET precio_lista_original = COALESCE(precio_lista_original, precio_lista), precio_lista = ?, updated_at = ? WHERE id = ?'
+      ).run(precioNuevo, now, unitId);
+
+      await tx.prepare(
+        'INSERT INTO price_history (id, unit_id, project_id, precio_anterior, precio_nuevo, variacion_pct, motivo, usuario_id, usuario_nombre, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      ).run(crypto.randomUUID(), unitId, row.project_id, precioAnterior, precioNuevo, variacionPct, motivo ?? null, userId, userName, now);
+
+      historyEntries.push({ unitId, projectId: row.project_id, anterior: precioAnterior, nuevo: precioNuevo, pct: variacionPct });
+    }
+  });
+
+  const updated = historyEntries.length;
+  for (const e of historyEntries) {
+    createAuditLog(userId, userName, userRole, 'Ajuste masivo precio', 'Unit', e.unitId,
+      `Precio lista: ${e.anterior} → ${e.nuevo} UF (${e.pct > 0 ? '+' : ''}${e.pct}%)${motivo ? ` — ${motivo}` : ''}`);
+  }
+
+  res.json({ updated, errors });
 });
 
 app.post('/api/units', requireAuth, requireRole('Admin'), async (req, res) => {
@@ -1897,9 +1997,19 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
     recepcionMunicipalNumero: 'recepcion_municipal_numero', recepcionMunicipalFecha: 'recepcion_municipal_fecha',
     cbrFojas: 'cbr_fojas', cbrNumero: 'cbr_numero', cbrAno: 'cbr_ano',
     observaciones: 'observaciones', descuentoPct: 'descuento_pct',
+    descuentoCliente: 'descuento_cliente',
     descuentoSolicitudId: 'descuento_solicitud_id', clienteId: 'cliente_id',
     asignadoPor: 'asignado_por', fechaAsignacion: 'fecha_asignacion',
   };
+
+  // No persistir fechas de hito si la unidad queda sin cliente o en estado Disponible
+  const estadoFinal = (body.estado ?? existing.estado) as string;
+  const clienteFinal = (body.clienteId !== undefined ? body.clienteId : existing.cliente_id) as string | null;
+  if (estadoFinal === 'Disponible' || clienteFinal == null) {
+    delete body.fechaReserva;
+    delete body.fechaPromesa;
+    delete body.fechaEscritura;
+  }
 
   for (const [jsKey, sqlCol] of Object.entries(fieldMap)) {
     if (jsKey in body) { updates.push(`${sqlCol} = ?`); params.push((body[jsKey] as string | number | null) ?? null); }
@@ -2004,7 +2114,10 @@ app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala',
           hist[lastIdx] = { ...hist[lastIdx], fechaFin: now, motivo: 'Reasignación' };
         }
       }
-      hist.push({ tipo: 'Reserva', clienteId: body.clienteId, clienteNombre, clienteRut, vendedorId: userId, vendedorNombre: userName, fechaInicio: now });
+      const yaExisteEntradaActiva = hist.length > 0 && !hist[hist.length - 1].fechaFin && (hist[hist.length - 1] as any).clienteId === body.clienteId;
+      if (!yaExisteEntradaActiva) {
+        hist.push({ tipo: 'Reserva', clienteId: body.clienteId, clienteNombre, clienteRut, vendedorId: userId, vendedorNombre: userName, fechaInicio: now });
+      }
 
       await tx.prepare(`
         UPDATE units SET
@@ -2050,7 +2163,7 @@ app.patch('/api/units/:id/unassign', requireAuth, requireRole('Admin', 'JefeSala
     : '';
   // Al desistir/desasignar también se limpian los datos de reserva (fecha, vendedor, expiración),
   // si no la fecha de reserva quedaba pegada (bug reportado).
-  const result = await db.prepare(`UPDATE units SET cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, fecha_reserva = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, estado = 'Disponible', updated_at = ? WHERE id = ?`)
+  const result = await db.prepare(`UPDATE units SET cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, fecha_reserva = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, descuento_cliente = NULL, estado = 'Disponible', updated_at = ? WHERE id = ?`)
     .run(now, req.params.id);
   if (result.changes === 0) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
   const unitDesc = unitBeforeUnassign ? `${unitBeforeUnassign.type} ${unitBeforeUnassign.numero}` : req.params.id;
@@ -2198,6 +2311,20 @@ if (isMain) {
     try {
       await ping();
       await db.prepare(`ALTER TABLE quotation_drafts ADD COLUMN IF NOT EXISTS pdf_path TEXT`).run();
+      await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS precio_lista_original REAL`).run();
+      await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS descuento_cliente NUMERIC(5,2)`).run();
+      await db.prepare(`CREATE TABLE IF NOT EXISTS price_history (
+        id TEXT PRIMARY KEY,
+        unit_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        precio_anterior REAL NOT NULL,
+        precio_nuevo REAL NOT NULL,
+        variacion_pct REAL NOT NULL,
+        motivo TEXT,
+        usuario_id TEXT NOT NULL,
+        usuario_nombre TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )`).run();
       await migrateFromAppState();
       await ensureProjectConfigs();
       await migrateReservas();

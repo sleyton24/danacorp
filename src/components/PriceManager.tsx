@@ -1,19 +1,29 @@
 import React, { useState, useMemo } from 'react';
 import { RealEstateUnit, User } from '../types';
-import { Search, Edit2, Check, X, ArrowUp, ArrowDown, Filter, Compass, Layers, Bed, Bath, Car, Package, Home, LayoutGrid, Lock, Ruler, Tag, List, Link as LinkIcon } from 'lucide-react';
+import { Search, Edit2, Check, X, ArrowUp, ArrowDown, Filter, Compass, Layers, Bed, Bath, Car, Package, Home, LayoutGrid, Lock, Ruler, Tag, List, Link as LinkIcon, TrendingDown, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface PriceManagerProps {
   units: RealEstateUnit[];
   onUpdateUnit: (unit: RealEstateUnit) => void;
   currentUser: User;
+  onRefreshUnits?: () => Promise<void> | void;
 }
 
-export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit, currentUser }) => {
+export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit, currentUser, onRefreshUnits }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedUnit, setSelectedUnit] = useState<RealEstateUnit | null>(null);
   const [tempPrice, setTempPrice] = useState<string>('');
   const [filterType, setFilterType] = useState<string>('Todos');
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('table');
+
+  // ── Descuento masivo ──────────────────────────────────────────────────────
+  const [bulkExpanded, setBulkExpanded] = useState(false);
+  const [bulkTipo, setBulkTipo] = useState<'porcentaje' | 'uf'>('porcentaje');
+  const [bulkValor, setBulkValor] = useState('');
+  const [bulkMotivo, setBulkMotivo] = useState('');
+  const [bulkConfirm, setBulkConfirm] = useState(false);
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [bulkToast, setBulkToast] = useState('');
 
   const [filterOrientacion, setFilterOrientacion] = useState('');
   const [filterPiso, setFilterPiso] = useState('');
@@ -198,6 +208,46 @@ export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit,
 
   const hasActiveFilters = filterOrientacion || filterPiso || filterDormitorios || filterBanos || searchTerm;
 
+  const canBulkEdit = currentUser.role === 'Admin' || currentUser.role === 'Supervisor';
+  const bulkTargetUnits = filteredUnits.filter(u => isStatusEditable(getEffectiveStatus(u)));
+
+  const handleBulkApply = async () => {
+    const valor = parseFloat(bulkValor);
+    if (isNaN(valor) || valor <= 0) return;
+    setBulkLoading(true);
+    try {
+      const tok = localStorage.getItem('dw_token');
+      const res = await fetch('/api/units/bulk-price-update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+        body: JSON.stringify({
+          unitIds: bulkTargetUnits.map(u => u.id),
+          tipo: bulkTipo,
+          valor,
+          motivo: bulkMotivo.trim() || undefined,
+        }),
+      });
+      if (res.ok) {
+        const { updated } = await res.json() as { updated: number };
+        setBulkToast(`✓ ${updated} unidad${updated !== 1 ? 'es' : ''} actualizada${updated !== 1 ? 's' : ''}`);
+        setTimeout(() => setBulkToast(''), 3500);
+        setBulkValor('');
+        setBulkMotivo('');
+        setBulkConfirm(false);
+        await onRefreshUnits?.();
+      } else {
+        const err = await res.json() as { error?: string };
+        setBulkToast(`Error: ${err.error || 'no se pudo aplicar'}`);
+        setTimeout(() => setBulkToast(''), 4000);
+      }
+    } catch {
+      setBulkToast('Error de conexión');
+      setTimeout(() => setBulkToast(''), 4000);
+    } finally {
+      setBulkLoading(false);
+    }
+  };
+
   return (
     <div className="animate-fade-in space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -278,6 +328,112 @@ export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit,
         )}
       </div>
 
+      {/* ── Panel descuento masivo (Admin / Supervisor) ── */}
+      {canBulkEdit && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl overflow-hidden">
+          <div
+            onClick={() => setBulkExpanded(v => !v)}
+            className="flex items-center justify-between px-5 py-3.5 cursor-pointer hover:bg-amber-100/60 transition-colors select-none"
+          >
+            <h3 className="text-xs font-black text-amber-800 uppercase tracking-widest flex items-center gap-2">
+              <TrendingDown className="w-4 h-4" /> Gestión Masiva de Precios
+            </h3>
+            <div className="flex items-center gap-2">
+              {bulkToast && (
+                <span className={`text-xs font-bold ${bulkToast.startsWith('✓') ? 'text-green-700' : 'text-red-600'}`}>{bulkToast}</span>
+              )}
+              {bulkExpanded
+                ? <ChevronUp className="w-4 h-4 text-amber-600" />
+                : <ChevronDown className="w-4 h-4 text-amber-600" />}
+            </div>
+          </div>
+
+          {bulkExpanded && (
+            <div className="px-5 pb-5 space-y-4 border-t border-amber-200">
+              <p className="text-[11px] text-amber-700 font-medium pt-3">
+                Aplica a <strong>{bulkTargetUnits.length}</strong> unidad{bulkTargetUnits.length !== 1 ? 'es' : ''} disponible{bulkTargetUnits.length !== 1 ? 's' : ''} (según filtros activos)
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+                <div>
+                  <label className="text-[10px] font-black text-amber-700 uppercase tracking-widest block mb-1">Tipo</label>
+                  <div className="flex gap-1">
+                    <button
+                      onClick={() => setBulkTipo('porcentaje')}
+                      className={`flex-1 py-2 text-xs font-bold rounded-lg border transition-all ${bulkTipo === 'porcentaje' ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-amber-700 border-amber-200 hover:border-amber-400'}`}
+                    >% Porcentaje</button>
+                    <button
+                      onClick={() => setBulkTipo('uf')}
+                      className={`flex-1 py-2 text-xs font-bold rounded-lg border transition-all ${bulkTipo === 'uf' ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-amber-700 border-amber-200 hover:border-amber-400'}`}
+                    >UF Fijo</button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black text-amber-700 uppercase tracking-widest block mb-1">
+                    {bulkTipo === 'porcentaje' ? 'Descuento en %' : 'Descuento en UF'}
+                  </label>
+                  <input
+                    type="number" min="0" step={bulkTipo === 'porcentaje' ? '0.1' : '1'}
+                    value={bulkValor}
+                    onChange={e => setBulkValor(e.target.value)}
+                    placeholder={bulkTipo === 'porcentaje' ? 'Ej: 5' : 'Ej: 100'}
+                    className="w-full px-3 py-2 bg-white border border-amber-200 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-amber-200"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black text-amber-700 uppercase tracking-widest block mb-1">Motivo (opcional)</label>
+                  <input
+                    type="text"
+                    value={bulkMotivo}
+                    onChange={e => setBulkMotivo(e.target.value)}
+                    placeholder="Ej: Revisión semestral"
+                    className="w-full px-3 py-2 bg-white border border-amber-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-amber-200"
+                  />
+                </div>
+
+                <button
+                  onClick={() => setBulkConfirm(true)}
+                  disabled={!bulkValor || parseFloat(bulkValor) <= 0 || bulkTargetUnits.length === 0 || bulkLoading}
+                  className="py-2 px-4 bg-amber-500 text-white text-xs font-black rounded-lg hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+                >
+                  {bulkLoading ? '…' : <><TrendingDown className="w-3.5 h-3.5" /> Aplicar a {bulkTargetUnits.length}</>}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Modal confirmación descuento masivo ── */}
+      {bulkConfirm && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-6 h-6 text-amber-500 shrink-0 mt-0.5" />
+              <div>
+                <h3 className="font-bold text-gray-900">Confirmar descuento masivo</h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  ¿Aplicar descuento de <strong>{bulkValor}{bulkTipo === 'porcentaje' ? '%' : ' UF'}</strong> a <strong>{bulkTargetUnits.length} unidades</strong>?
+                </p>
+                <p className="text-xs text-amber-600 font-medium mt-1">Esta acción modifica los precios de lista y queda registrada en el historial.</p>
+              </div>
+            </div>
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={() => setBulkConfirm(false)}
+                className="flex-1 py-2.5 border border-gray-200 text-gray-500 font-bold rounded-xl text-sm hover:bg-gray-50 transition-colors"
+              >Cancelar</button>
+              <button
+                onClick={() => { setBulkConfirm(false); handleBulkApply(); }}
+                className="flex-1 py-2.5 bg-amber-500 text-white font-bold rounded-xl text-sm hover:bg-amber-600 transition-colors"
+              >Confirmar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {viewMode === 'grid' ? (
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
         {filteredUnits.length === 0 ? (
@@ -296,7 +452,17 @@ export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit,
                 {!isEditable && <div title="Edición bloqueada" className="text-gray-300"><Lock className="w-5 h-5" /></div>}
             </div>
             <div className="px-2 mb-4 text-xs text-gray-500 border-b border-gray-50 pb-3">{getUnitAttributes(unit)}</div>
-            <div className={`flex flex-col items-center py-4 rounded-xl mb-4 transition-colors ${!isEditable ? 'bg-gray-50' : 'bg-gray-50 group-hover:bg-blue-50'}`}><span className="text-sm text-gray-500 font-semibold">Precio de lista</span><span className={`text-3xl font-extrabold ${!isEditable ? 'text-gray-400' : 'text-blue-700'}`}>{formatPrice(unit.precioLista)} <small className="text-sm font-normal text-gray-500">UF</small></span></div>
+            <div className={`flex flex-col items-center py-4 rounded-xl mb-4 transition-colors ${!isEditable ? 'bg-gray-50' : 'bg-gray-50 group-hover:bg-blue-50'}`}>
+              <span className="text-sm text-gray-500 font-semibold">Precio de lista</span>
+              {unit.precioListaOriginal && unit.precioListaOriginal !== unit.precioLista ? (
+                <>
+                  <span className="line-through text-gray-400 text-sm font-mono">{formatPrice(unit.precioListaOriginal)} UF</span>
+                  <span className={`text-3xl font-extrabold ${!isEditable ? 'text-gray-400' : 'text-blue-700'}`}>{formatPrice(unit.precioLista)} <small className="text-sm font-normal text-gray-500">UF</small></span>
+                </>
+              ) : (
+                <span className={`text-3xl font-extrabold ${!isEditable ? 'text-gray-400' : 'text-blue-700'}`}>{formatPrice(unit.precioLista)} <small className="text-sm font-normal text-gray-500">UF</small></span>
+              )}
+            </div>
             <button disabled={!isEditable} className={`w-full py-3 font-bold rounded-xl transition-all flex items-center justify-center gap-2 ${!isEditable ? 'bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed' : 'bg-white border-2 border-blue-100 text-blue-600 hover:bg-blue-600 hover:text-white'}`}>{isEditable ? <Edit2 className="w-4 h-4" /> : <Lock className="w-4 h-4" />}{isEditable ? 'Editar precio' : 'Precio bloqueado'}</button>
           </div>
         )})}
@@ -332,7 +498,16 @@ export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit,
                                     <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${getStatusColor(effectiveStatus)}`}>{effectiveStatus}</span>
                                   </td>
                                   <td className="px-6 py-4 text-gray-500 text-xs">{getUnitAttributes(unit)}</td>
-                                  <td className="px-6 py-4 text-right font-mono font-bold text-blue-700">{formatPrice(unit.precioLista)}</td>
+                                  <td className="px-6 py-4 text-right">
+                                    {unit.precioListaOriginal && unit.precioListaOriginal !== unit.precioLista ? (
+                                      <div className="flex flex-col items-end leading-tight">
+                                        <span className="line-through text-gray-400 text-[11px] font-mono">{formatPrice(unit.precioListaOriginal)}</span>
+                                        <span className="font-mono font-bold text-blue-700">{formatPrice(unit.precioLista)}</span>
+                                      </div>
+                                    ) : (
+                                      <span className="font-mono font-bold text-blue-700">{formatPrice(unit.precioLista)}</span>
+                                    )}
+                                  </td>
                                   <td className="px-6 py-4 text-center">{isEditable ? <Edit2 className="w-4 h-4 text-blue-400" /> : <Lock className="w-4 h-4 text-gray-300" />}</td>
                               </tr>
                           )})}

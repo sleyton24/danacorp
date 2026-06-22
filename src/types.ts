@@ -170,6 +170,7 @@ export interface RealEstateUnit {
 
   // Descuento directo desde UnitDetail
   descuentoPct?: number;
+  descuentoCliente?: number;
   descuentoPendiente?: boolean;
   descuentoSolicitudId?: string;
 
@@ -178,6 +179,7 @@ export interface RealEstateUnit {
   reservaVendedorId?: string;
   reservaExpira?: string;
   historialOcupacion?: OcupacionEntry[];
+  precioListaOriginal?: number;
 }
 
 export interface OcupacionEntry {
@@ -268,6 +270,19 @@ export interface PaymentPlan {
   bonoPiePct: number;
   aplicaBonoPie: boolean;
   descuentoPct: number;
+  createdAt: string;
+}
+
+export interface PriceHistoryEntry {
+  id: string;
+  unitId: string;
+  projectId: string;
+  precioAnterior: number;
+  precioNuevo: number;
+  variacionPct: number;
+  motivo?: string;
+  usuarioId: string;
+  usuarioNombre: string;
   createdAt: string;
 }
 
