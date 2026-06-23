@@ -988,7 +988,7 @@ export const Quoter: React.FC<QuoterProps> = ({
       theme: 'plain',
       columnStyles: {
         3: { halign: 'right' as const },
-        4: { halign: 'right' as const },
+        4: { halign: 'right' as const, cellWidth: 32 },
         5: { halign: 'right' as const, cellWidth: 22 },
       },
       didDrawCell: (data: { section: string; row: { index: number }; cell: { x: number; y: number; height: number }; column: { index: number } }) => {
