@@ -25,7 +25,16 @@
       "Bash(curl -s http://localhost:3000)",
       "PowerShell(Get-Process -Name \"node\")",
       "PowerShell(Stop-Process -Force -ErrorAction SilentlyContinue)",
-      "PowerShell(\"Procesos node terminados\")"
+      "PowerShell(\"Procesos node terminados\")",
+      "Bash(git push *)",
+      "Bash(PGUSER=danacorp_user PGPASSWORD=danacorp2026 PGHOST=localhost PGPORT=5432 PGDATABASE=danacorp psql -c \"SELECT * FROM payment_plans LIMIT 2;\")",
+      "Bash(npx ts-node -e ' *)",
+      "Bash(node --input-type=commonjs)",
+      "Bash(node -e \"const path=require\\('path'\\); const mod=require\\(path.join\\(process.cwd\\(\\),'node_modules','better-sqlite3'\\)\\); const db=new mod\\('./danacorp.db'\\); const rows=db.prepare\\('SELECT * FROM payment_plans LIMIT 2'\\).all\\(\\); if\\(rows.length===0\\){console.log\\('\\(sin filas\\)'\\);}else{rows.forEach\\(\\(r,i\\)=>{console.log\\('--- Fila '+\\(i+1\\)+' ---'\\);Object.entries\\(r\\).forEach\\(\\([k,v]\\)=>console.log\\(k+' = '+JSON.stringify\\(v\\)\\)\\);}\\);}\")",
+      "Bash(python3 -c ' *)",
+      "PowerShell(cd \"c:\\\\Users\\\\nhorn\\\\OneDrive - BNV\\\\Nicholas Horn\\\\Claude Code\\\\danacorp-project - Prod v1\"; $bytes = [System.IO.File]::ReadAllBytes\\(\"danacorp.db\"\\); Write-Host \"DB size: $\\($bytes.Length\\) bytes\"; $header = [System.Text.Encoding]::ASCII.GetString\\($bytes[0..15]\\); Write-Host \"Header: $header\")",
+      "Read(//c/Users/nhorn/**)",
+      "Bash(curl -s http://localhost:3001/api/health)"
     ]
   }
 }
