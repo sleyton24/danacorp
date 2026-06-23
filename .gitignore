@@ -13,10 +13,14 @@ dist-server
 .env.local
 *.local
 
-# Base de datos local
-danacorp.db
-danacorp.db-shm
-danacorp.db-wal
+# Bases de datos SQLite locales (nunca versionar — contienen datos/PII)
+*.db
+*.db-shm
+*.db-wal
+
+# Artefactos temporales de scripts / OneDrive
+_*.json
+.849*
 
 # Uploads de usuarios
 uploads/
