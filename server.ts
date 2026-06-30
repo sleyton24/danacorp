@@ -1,3 +1,8 @@
+// REGLA PERMANENTE: todo cambio de estado de unidad debe limpiar
+// cliente_id + descuento_cliente + reserva_expira en la misma
+// transacción cuando estado → Disponible. Ver checkReservasVencidas
+// como referencia de implementación correcta.
+
 import express from 'express';
 import 'express-async-errors';
 import cors from 'cors';
@@ -462,7 +467,7 @@ async function checkReservasVencidas() {
       type HistEntry = { fechaFin?: string; [k: string]: unknown };
       const hist = (() => { try { return JSON.parse(u.historial_ocupacion || '[]') as HistEntry[]; } catch { return [] as HistEntry[]; } })();
       const updHist = hist.map((h, idx) => idx === hist.length - 1 && !h.fechaFin ? { ...h, fechaFin: nowISO, motivo: 'Vencimiento' } : h);
-      await db.prepare(`UPDATE units SET estado = 'Disponible', cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, historial_ocupacion = ?, updated_at = ? WHERE id = ?`)
+      await db.prepare(`UPDATE units SET estado = 'Disponible', cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, descuento_cliente = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, fecha_reserva = NULL, fecha_promesa = NULL, fecha_escritura = NULL, fecha_solicitud_credito = NULL, fecha_aprobacion_credito = NULL, fecha_termino_pago = NULL, fecha_alzamiento = NULL, fecha_entrega = NULL, fecha_pago = NULL, historial_ocupacion = ?, updated_at = ? WHERE id = ?`)
         .run(JSON.stringify(updHist), nowISO, u.id);
       if (u.cliente_id) {
         await db.prepare(`UPDATE clients SET estado = 'Prospecto' WHERE id = ?`).run(u.cliente_id);
@@ -2005,10 +2010,61 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
   // No persistir fechas de hito si la unidad queda sin cliente o en estado Disponible
   const estadoFinal = (body.estado ?? existing.estado) as string;
   const clienteFinal = (body.clienteId !== undefined ? body.clienteId : existing.cliente_id) as string | null;
-  if (estadoFinal === 'Disponible' || clienteFinal == null) {
+  if (estadoFinal === 'Disponible') {
+    // Strip all hito fields from body and force NULL in DB
+    const hitoJsKeys = ['fechaReserva', 'fechaPromesa', 'fechaEscritura', 'fechaSolicitudCredito',
+      'fechaAprobacionCredito', 'fechaTerminoPago', 'fechaAlzamiento', 'fechaEntrega', 'fechaPago'];
+    for (const k of hitoJsKeys) delete body[k];
+    const hitoSqlCols = ['fecha_reserva', 'fecha_promesa', 'fecha_escritura', 'fecha_solicitud_credito',
+      'fecha_aprobacion_credito', 'fecha_termino_pago', 'fecha_alzamiento', 'fecha_entrega', 'fecha_pago'];
+    for (const col of hitoSqlCols) updates.push(`${col} = NULL`);
+  } else if (clienteFinal == null) {
     delete body.fechaReserva;
     delete body.fechaPromesa;
     delete body.fechaEscritura;
+  }
+  // Nueva regla: estado no puede pasar de Disponible a Reservado/Promesado sin cliente
+  if ('estado' in body && (body.estado === 'Reservado' || body.estado === 'Promesado')) {
+    if ((existing.estado as string) === 'Disponible') {
+      const clienteFinalCheck = (body.clienteId ?? existing.cliente_id) as string | null;
+      if (!clienteFinalCheck) {
+        res.status(400).json({ error: 'Se requiere cliente para cambiar el estado de una unidad disponible' });
+        return;
+      }
+    }
+  }
+  // Enforce business rule: descuento_cliente must be NULL when estado → Disponible or when client changes
+  const prevClienteId = existing.cliente_id as string | null;
+  const clienteIdChanged = 'clienteId' in body && body.clienteId !== prevClienteId;
+  if (estadoFinal === 'Disponible' || (clienteIdChanged && !body.clienteId)) {
+    if (!('descuentoCliente' in body)) {
+      updates.push('descuento_cliente = ?');
+      params.push(null);
+    }
+  }
+
+  // ISSUE 2: Auto-set/clear fecha hitos on estado transition
+  if ('estado' in body && body.estado !== existing.estado) {
+    const newEstado = body.estado as string;
+    const ORDEN: string[] = ['Disponible', 'Reservado', 'Promesado', 'Escriturado'];
+    const prevIdx = ORDEN.indexOf(existing.estado as string);
+    const newIdx = ORDEN.indexOf(newEstado);
+    if (newEstado === 'Promesado') {
+      if (!body.fechaPromesa && !(existing.fecha_promesa as string | null)) {
+        updates.push('fecha_promesa = ?'); params.push(now);
+      }
+      for (const [jsKey, col] of [['fechaEscritura','fecha_escritura'],['fechaSolicitudCredito','fecha_solicitud_credito'],['fechaAprobacionCredito','fecha_aprobacion_credito'],['fechaTerminoPago','fecha_termino_pago'],['fechaAlzamiento','fecha_alzamiento'],['fechaEntrega','fecha_entrega'],['fechaPago','fecha_pago']] as [string,string][]) {
+        delete body[jsKey]; updates.push(`${col} = NULL`);
+      }
+    } else if (newEstado === 'Escriturado') {
+      if (!body.fechaEscritura && !(existing.fecha_escritura as string | null)) {
+        updates.push('fecha_escritura = ?'); params.push(now);
+      }
+    } else if (newEstado === 'Reservado' && prevIdx > newIdx) {
+      for (const [jsKey, col] of [['fechaPromesa','fecha_promesa'],['fechaEscritura','fecha_escritura'],['fechaSolicitudCredito','fecha_solicitud_credito'],['fechaAprobacionCredito','fecha_aprobacion_credito'],['fechaTerminoPago','fecha_termino_pago'],['fechaAlzamiento','fecha_alzamiento'],['fechaEntrega','fecha_entrega'],['fechaPago','fecha_pago']] as [string,string][]) {
+        delete body[jsKey]; updates.push(`${col} = NULL`);
+      }
+    }
   }
 
   for (const [jsKey, sqlCol] of Object.entries(fieldMap)) {
@@ -2020,6 +2076,14 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
   if ('estacionamientos' in body) { updates.push('estacionamientos = ?'); params.push(JSON.stringify(body.estacionamientos)); }
   if ('planPagos' in body) { updates.push('plan_pagos = ?'); params.push(JSON.stringify(body.planPagos)); }
   if ('documents' in body) { updates.push('documents = ?'); params.push(JSON.stringify(body.documents)); }
+
+  // When estado → Reservado, ensure reserva_expira is set in the same transaction
+  if ('estado' in body && body.estado === 'Reservado' && !existing.reserva_expira) {
+    const cfgForReserva = await getProjectDiscountConfig(existing.project_id as string);
+    const expira = new Date(new Date(now).getTime() + cfgForReserva.duracionReservaDias * 24 * 60 * 60 * 1000).toISOString();
+    updates.push('reserva_expira = ?');
+    params.push(expira);
+  }
 
   if (updates.length === 0) { res.json({ ok: true }); return; }
   updates.push('updated_at = ?'); params.push(now); params.push(req.params.id);
@@ -2041,7 +2105,7 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
     type HistEntry = { fechaFin?: string; [k: string]: unknown };
     const hist = (() => { try { return JSON.parse((existing.historial_ocupacion as string) || '[]') as HistEntry[]; } catch { return [] as HistEntry[]; } })();
     const updHist = hist.map((h, idx) => idx === hist.length - 1 && !h.fechaFin ? { ...h, fechaFin: now, motivo: 'Resciliación' } : h);
-    await db.prepare(`UPDATE units SET historial_ocupacion = ?, cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, updated_at = ? WHERE id = ?`)
+    await db.prepare(`UPDATE units SET historial_ocupacion = ?, cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, descuento_cliente = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, fecha_promesa = NULL, fecha_escritura = NULL, fecha_solicitud_credito = NULL, fecha_aprobacion_credito = NULL, fecha_termino_pago = NULL, fecha_alzamiento = NULL, fecha_entrega = NULL, fecha_pago = NULL, updated_at = ? WHERE id = ?`)
       .run(JSON.stringify(updHist), now, req.params.id);
     createAuditLog(userId, userName, userRole, 'Resciliación', 'Unit', req.params.id, `Unidad ${existing.type as string} ${existing.numero as string} resciliada por ${userName}${clienteNombreUnit ? ` — cliente: ${clienteNombreUnit}` : ''}`);
     createNotification({ paraRol: 'JefeSala', titulo: 'Resciliación registrada', mensaje: `${existing.type as string} ${existing.numero as string} fue resciliada por ${userName}${clienteNombreUnit ? ` — Cliente: ${clienteNombreUnit}` : ''}`, tipo: 'warning', linkView: 'inventory', relatedId: req.params.id });
@@ -2052,7 +2116,7 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
     type HistEntry = { fechaFin?: string; [k: string]: unknown };
     const hist = (() => { try { return JSON.parse((existing.historial_ocupacion as string) || '[]') as HistEntry[]; } catch { return [] as HistEntry[]; } })();
     const updHist = hist.map((h, idx) => idx === hist.length - 1 && !h.fechaFin ? { ...h, fechaFin: now, motivo: 'Liberación' } : h);
-    await db.prepare(`UPDATE units SET historial_ocupacion = ?, cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, updated_at = ? WHERE id = ?`)
+    await db.prepare(`UPDATE units SET historial_ocupacion = ?, cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, descuento_cliente = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, fecha_promesa = NULL, fecha_escritura = NULL, fecha_solicitud_credito = NULL, fecha_aprobacion_credito = NULL, fecha_termino_pago = NULL, fecha_alzamiento = NULL, fecha_entrega = NULL, fecha_pago = NULL, updated_at = ? WHERE id = ?`)
       .run(JSON.stringify(updHist), now, req.params.id);
     createAuditLog(userId, userName, userRole, 'Liberación', 'Unit', req.params.id, `Unidad ${existing.type as string} ${existing.numero as string} liberada por ${userName}${clienteNombreUnit ? ` — cliente: ${clienteNombreUnit}` : ''}`);
     createNotification({ paraRol: 'JefeSala', titulo: 'Liberación de reserva', mensaje: `${existing.type as string} ${existing.numero as string} fue liberada por ${userName}${clienteNombreUnit ? ` — Cliente: ${clienteNombreUnit}` : ''}`, tipo: 'warning', linkView: 'inventory', relatedId: req.params.id });
@@ -2129,6 +2193,14 @@ app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala',
           reserva_vendedor_id = ?,
           reserva_expira = ?,
           historial_ocupacion = ?,
+          fecha_promesa = NULL,
+          fecha_escritura = NULL,
+          fecha_solicitud_credito = NULL,
+          fecha_aprobacion_credito = NULL,
+          fecha_termino_pago = NULL,
+          fecha_alzamiento = NULL,
+          fecha_entrega = NULL,
+          fecha_pago = NULL,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `).run(body.clienteId, body.asignadoPor ?? userId, body.fechaAsignacion ?? now, body.fechaReserva ?? now, userId, expira, JSON.stringify(hist), id);
@@ -2163,7 +2235,7 @@ app.patch('/api/units/:id/unassign', requireAuth, requireRole('Admin', 'JefeSala
     : '';
   // Al desistir/desasignar también se limpian los datos de reserva (fecha, vendedor, expiración),
   // si no la fecha de reserva quedaba pegada (bug reportado).
-  const result = await db.prepare(`UPDATE units SET cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, fecha_reserva = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, descuento_cliente = NULL, estado = 'Disponible', updated_at = ? WHERE id = ?`)
+  const result = await db.prepare(`UPDATE units SET cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, fecha_reserva = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, descuento_cliente = NULL, estado = 'Disponible', fecha_promesa = NULL, fecha_escritura = NULL, fecha_solicitud_credito = NULL, fecha_aprobacion_credito = NULL, fecha_termino_pago = NULL, fecha_alzamiento = NULL, fecha_entrega = NULL, fecha_pago = NULL, updated_at = ? WHERE id = ?`)
     .run(now, req.params.id);
   if (result.changes === 0) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
   const unitDesc = unitBeforeUnassign ? `${unitBeforeUnassign.type} ${unitBeforeUnassign.numero}` : req.params.id;
@@ -2196,8 +2268,15 @@ app.post('/api/units/:id/liberar', requireAuth, requireRole('Admin', 'JefeSala',
       fecha_reserva = NULL,
       fecha_promesa = NULL,
       fecha_escritura = NULL,
+      fecha_solicitud_credito = NULL,
+      fecha_aprobacion_credito = NULL,
+      fecha_termino_pago = NULL,
+      fecha_alzamiento = NULL,
+      fecha_entrega = NULL,
+      fecha_pago = NULL,
       descuento_pct = 0,
       descuento_pendiente = 0,
+      descuento_cliente = NULL,
       reserva_vendedor_id = NULL,
       reserva_expira = NULL,
       historial_ocupacion = ?,

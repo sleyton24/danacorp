@@ -12,7 +12,7 @@ import {
   Search, X, UserPlus, MoreVertical
 } from 'lucide-react';
 import { AssetTagInput } from './AssetTagInput';
-import { calcResumenUnidad } from '../utils/pricingUtils';
+import { calcResumenUnidad, calcFormaPago } from '../utils/pricingUtils';
 
 interface UnitDetailProps {
   unit: RealEstateUnit;
@@ -83,6 +83,53 @@ const FormattedInput = ({ value, onChange, className, placeholder, disabled, for
     );
 };
 
+// Input de % que muestra coma como separador decimal (es-CL) y parsea con punto internamente.
+// Mantiene estado local de string para permitir escribir decimales (ej: "10,5") sin que
+// el valor numérico controlado borre la coma a medio escribir.
+const PercentInput = ({ value, onChange, disabled, className, max }: { value: number, onChange: (n: number) => void, disabled?: boolean, className?: string, max?: number }) => {
+    const [editing, setEditing] = useState(false);
+    const [localValue, setLocalValue] = useState(String(value).replace('.', ','));
+    const inputRef = useRef<HTMLInputElement>(null);
+    useEffect(() => {
+        if (!editing) setLocalValue(String(value).replace('.', ','));
+    }, [value, editing]);
+
+    // onInput captura TODOS los tipos de input (teclado principal/numérico, pegar, autocompletar)
+    const handleInput = () => {
+        if (!inputRef.current) return;
+        const raw = inputRef.current.value;
+        const normalized = raw
+            .replace(/[.,·]/g, ',')      // cualquier separador → coma
+            .replace(/[^0-9,\-]/g, '')   // solo dígitos, coma, negativo
+            .replace(/^,/, '')           // no empezar con coma
+            .replace(/(,.*),/g, '$1');   // solo una coma
+        // Actualizar el DOM directamente para evitar lag del state de React
+        if (inputRef.current.value !== normalized) {
+            inputRef.current.value = normalized;
+        }
+        setLocalValue(normalized);
+        const numeric = parseFloat(normalized.replace(',', '.'));
+        if (!isNaN(numeric)) onChange(numeric);
+        else if (normalized === '' || normalized === '-') onChange(0);
+    };
+
+    return (
+        <input
+            ref={inputRef}
+            type="text"
+            inputMode="decimal"
+            value={localValue}
+            disabled={disabled}
+            max={max}
+            className={className}
+            onFocus={() => setEditing(true)}
+            onBlur={() => setEditing(false)}
+            onInput={handleInput}
+            onChange={handleInput}
+        />
+    );
+};
+
 
 export const UnitDetail: React.FC<UnitDetailProps> = ({
   unit, client, onBack, onUpdate, allUnits = [], currentUser, onSelectClient,
@@ -102,7 +149,8 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   const [fpPromesaPct, setFpPromesaPct] = useState(10);
   const [fpCuotasPct, setFpCuotasPct] = useState(20);
   const [fpEscrituraPct, setFpEscrituraPct] = useState(10);
-  const fpCreditoPct = Math.max(0, 100 - fpPromesaPct - fpCuotasPct - fpEscrituraPct);
+  const [fpCreditoPct, setFpCreditoPct] = useState(80);
+  const [pendingEstado, setPendingEstado] = useState<string | null>(null);
 
   // ── Panel de descuento ─────────────────────────────────────────────────────
   const [discountCfg, setDiscountCfg] = useState<{ jefeMaxPct: number; supervisorMaxPct: number }>({ jefeMaxPct: 3, supervisorMaxPct: 7 });
@@ -113,6 +161,11 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   // ── Bono Pie ───────────────────────────────────────────────────────────────
   const [bonoPct, setBonoPct] = useState(0);
   const [hasBono, setHasBono] = useState(unit.aplicaBonoPie ?? false);
+
+  // ── Forma de pago / modos descuento / UF hoy ──────────────────────────────
+  const [includePaymentPlan, setIncludePaymentPlan] = useState(false);
+  const [unitDiscountModes, setUnitDiscountModes] = useState<Record<string, '%'|'UF'>>({});
+  const [ufHoy, setUfHoy] = useState<number | null>(null);
 
   // ── Fix 4: Cronograma paginación ───────────────────────────────────────────
   const [showAllPayments, setShowAllPayments] = useState(false);
@@ -168,6 +221,15 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
       .catch(() => {});
   }, [unit.projectId]);
 
+  useEffect(() => {
+    const token = localStorage.getItem('dw_token');
+    const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
+    fetch('/api/uf-hoy', { headers })
+      .then(r => r.ok ? r.json() : null)
+      .then((d: { uf: number } | null) => { if (d) setUfHoy(d.uf); })
+      .catch(() => {});
+  }, []);
+
   const loadPaymentPlans = (rutFilter?: string) => {
     const token = localStorage.getItem('dw_token');
     if (!token) return;
@@ -184,6 +246,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
           setFpPromesaPct(first.promesaPct);
           setFpCuotasPct(first.cuotasPct);
           setFpEscrituraPct(first.escrituraPct);
+          setFpCreditoPct(first.creditoPct);
           if (first.cuotasN > 0) setCantidadCuotasPie(first.cuotasN);
         }
       })
@@ -196,6 +259,10 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     loadPaymentPlans();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unit.numero, unit.projectId, formData.clienteId]);
+
+  useEffect(() => {
+    if (paymentPlans.length > 0) setIncludePaymentPlan(true);
+  }, [paymentPlans.length]);
 
   useEffect(() => {
     const pm = (unit.precioListaOriginal && unit.precioLista && unit.precioListaOriginal !== unit.precioLista)
@@ -277,6 +344,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     setFpPromesaPct(plan.promesaPct);
     setFpCuotasPct(plan.cuotasPct);
     setFpEscrituraPct(plan.escrituraPct);
+    setFpCreditoPct(plan.creditoPct);
     if (plan.cuotasN > 0) setCantidadCuotasPie(plan.cuotasN);
   };
 
@@ -294,6 +362,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     setFpPromesaPct(plan.promesaPct);
     setFpCuotasPct(plan.cuotasPct);
     setFpEscrituraPct(plan.escrituraPct);
+    setFpCreditoPct(plan.creditoPct);
     if (plan.cuotasN > 0) setCantidadCuotasPie(plan.cuotasN);
 
     // Descuento y bono del departamento actual
@@ -452,7 +521,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
       const eff = (u.descuentoCliente != null && u.descuentoCliente > 0) ? u.descuentoCliente : pm;
       discounts[u.id] = eff;
       inputs[u.id] = String(eff);
-      bono[u.id] = false;
+      bono[u.id] = u.aplicaBonoPie ?? false;
     });
     setLinkedDiscounts(discounts);
     setLinkedDiscountInputs(inputs);
@@ -476,22 +545,90 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     aplicaBono: hasBono,
   }), [hasBono, bonoPct, unit.precioListaOriginal, formData.precioLista, descuentoEfectivoDepto]);
 
-  // Fix 3: precio de venta total (depto + bodegas + estacs con sus propios descuentos/bonos)
-  // Base: precio_lista_original de cada unidad (spec cotizador — PASO 3: suma de precioConDescuento)
+  // Precio de venta total: suma de valorTotal de cada unidad (cuando bono activo, valorTotal > precioConDescuento)
   const totalPrecioVentaNuevo = useMemo(() => {
-    const eff = bonoPct;
-    const deptoVenta = bonoCalcDepto.precioVenta;
+    const r2l = (v: number) => Math.round(v * 100) / 100;
+    const deptoVenta = bonoCalcDepto.valorTotal;
     const storagesVenta = linkedAssets.storages.reduce((acc, b) => {
+      const orig = b.precioListaOriginal ?? b.precioLista;
       const d = linkedDiscounts[b.id] ?? b.descuentoPct ?? 0;
-      return acc + calcResumenUnidad({ precioListaOriginal: b.precioListaOriginal ?? b.precioLista, dctoPct: d, bonoPct: eff, aplicaBono: linkedBono[b.id] ?? false }).precioVenta;
+      return acc + r2l(calcResumenUnidad({ precioListaOriginal: orig, dctoPct: d, bonoPct, aplicaBono: linkedBono[b.id] ?? false }).valorTotal);
     }, 0);
     const parkingsVenta = linkedAssets.parkings.reduce((acc, p) => {
+      const orig = p.precioListaOriginal ?? p.precioLista;
       const d = linkedDiscounts[p.id] ?? p.descuentoPct ?? 0;
-      return acc + calcResumenUnidad({ precioListaOriginal: p.precioListaOriginal ?? p.precioLista, dctoPct: d, bonoPct: eff, aplicaBono: linkedBono[p.id] ?? false }).precioVenta;
+      return acc + r2l(calcResumenUnidad({ precioListaOriginal: orig, dctoPct: d, bonoPct, aplicaBono: linkedBono[p.id] ?? false }).valorTotal);
     }, 0);
-    return deptoVenta + storagesVenta + parkingsVenta;
-  }, [bonoCalcDepto.precioVenta, linkedAssets, linkedDiscounts, linkedBono, bonoPct]);
+    return r2l(deptoVenta + storagesVenta + parkingsVenta);
+  }, [bonoCalcDepto, linkedAssets, linkedDiscounts, linkedBono, bonoPct]);
 
+  const canEditBono = ['Admin', 'Supervisor'].includes(currentUser.role);
+
+  // Marca que el usuario acaba de activar/desactivar el bono (para que el useEffect
+  // redistribuya SOLO en el toggle y no en cada render ni al cargar un plan guardado)
+  const bonoJustToggled = useRef(false);
+
+  // Compra Segura como % del total de venta (0 si no hay bono)
+  const compraSeguraPctOnTotal = () => {
+    const r2l = (v: number) => Math.round(v * 100) / 100;
+    if (!hasBono) return 0;
+    const csUF = r2l(bonoCalcDepto.precioConDescuento * bonoPct / 100);
+    const total = totalPrecioVentaNuevo > 0 ? totalPrecioVentaNuevo : (unit.precioLista || 0);
+    return total > 0 ? r2l(csUF / total * 100) : 0;
+  };
+
+  const handleCreditoPivot = (newCreditoPct: number) => {
+    const r2l = (v: number) => Math.round(v * 100) / 100;
+    const csPct = compraSeguraPctOnTotal();
+    const maxCredito = 100 - csPct - 0.01;
+    const safeCreditoPct = Math.min(newCreditoPct, maxCredito);
+    // Si el valor ingresado supera el máximo disponible, avisar (igual se setea el capeado)
+    if (newCreditoPct > maxCredito) {
+      showToast?.(`El financiamiento no puede superar el ${maxCredito.toFixed(1).replace('.', ',')}% disponible`, 'error');
+    }
+    const remanente = 100 - safeCreditoPct - csPct;
+    // Guard: si no queda remanente para Promesa/Cuotas/Escritura, no actualizar nada
+    if (remanente <= 0) {
+      return;
+    }
+    const oldSum = fpPromesaPct + fpCuotasPct + fpEscrituraPct;
+    if (oldSum <= 0) { setFpPromesaPct(remanente); setFpCreditoPct(safeCreditoPct); return; }
+    const newP = r2l(remanente * fpPromesaPct / oldSum);
+    const newC = r2l(remanente * fpCuotasPct / oldSum);
+    const newE = r2l(remanente - newP - newC);
+    setFpPromesaPct(newP);
+    setFpCuotasPct(newC);
+    setFpEscrituraPct(newE);
+    setFpCreditoPct(safeCreditoPct);
+  };
+
+  // Al activar/desactivar el bono: redistribuir Promesa/Cuotas/Escritura sobre el remanente.
+  // Sólo se dispara cuando el usuario togglea el bono (bonoJustToggled), no al cargar planes.
+  useEffect(() => {
+    if (!bonoJustToggled.current) return;
+    bonoJustToggled.current = false;
+    const r2 = (v: number) => Math.round(v * 100) / 100;
+    const totalPie = fpPromesaPct + fpCuotasPct + fpEscrituraPct;
+    if (totalPie <= 0) return;
+    const csPct = compraSeguraPctOnTotal(); // 0 si bono desactivado
+    const remanente = 100 - fpCreditoPct - csPct;
+    // Guard: si activar el bono deja sin remanente, revertir el bono y avisar
+    if (remanente <= 0) {
+      if (hasBono) {
+        showToast?.('El financiamiento no puede superar el remanente disponible', 'error');
+        setHasBono(false);
+        setFormData(prev => ({ ...prev, aplicaBonoPie: false }));
+      }
+      return;
+    }
+    const newP = r2(remanente * fpPromesaPct / totalPie);
+    const newC = r2(remanente * fpCuotasPct / totalPie);
+    const newE = r2(remanente - newP - newC);
+    setFpPromesaPct(newP);
+    setFpCuotasPct(newC);
+    setFpEscrituraPct(newE);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasBono, bonoPct, totalPrecioVentaNuevo]);
 
   // Sincronizar formData cuando cambian datos clave de la unidad (Fix A)
   useEffect(() => {
@@ -513,6 +650,13 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     const hoy = new Date().toISOString().split('T')[0];
 
     if (field === 'estado') {
+        // Nueva regla: no avanzar desde Disponible sin cliente
+        if ((value === 'Reservado' || value === 'Promesado') && formData.estado === 'Disponible' && !formData.clienteId) {
+            setPendingEstado(value);
+            setAssignSearch('');
+            setIsAssignModalOpen(true);
+            return;
+        }
         if (value === 'Reservado' && formData.clienteId && !formData.fechaReserva) {
             extraUpdates.fechaReserva = hoy;
         }
@@ -522,20 +666,40 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
         if (value === 'Escriturado' && !formData.fechaEscritura) {
             extraUpdates.fechaEscritura = hoy;
         }
+        // ISSUE 2: Rollback — clear downstream dates when going to a lower estado
+        if (value === 'Reservado') {
+            extraUpdates.fechaPromesa = undefined;
+            extraUpdates.fechaEscritura = undefined;
+            extraUpdates.fechaSolicitudCredito = undefined;
+            extraUpdates.fechaAprobacionCredito = undefined;
+            extraUpdates.fechaTerminoPago = undefined;
+            extraUpdates.fechaAlzamiento = undefined;
+            extraUpdates.fechaEntrega = undefined;
+            extraUpdates.fechaPago = undefined;
+        }
+        if (value === 'Promesado') {
+            extraUpdates.fechaEscritura = undefined;
+            extraUpdates.fechaSolicitudCredito = undefined;
+            extraUpdates.fechaAprobacionCredito = undefined;
+            extraUpdates.fechaTerminoPago = undefined;
+            extraUpdates.fechaAlzamiento = undefined;
+            extraUpdates.fechaEntrega = undefined;
+            extraUpdates.fechaPago = undefined;
+        }
         // Fix 2: cambio de estado es local — persiste al presionar "Guardar Cambios"
         if (value === 'Disponible') {
             // Limpiar datos de cliente y transacción visualmente
             setFormData(prev => ({
                 ...prev,
                 estado: 'Disponible',
-                clienteId: undefined,
+                clienteId: null as any,
                 asignadoPor: undefined,
                 fechaReserva: undefined,
                 fechaPromesa: undefined,
                 fechaEscritura: undefined,
                 fechaAsignacion: undefined,
                 descuentoPct: 0,
-                descuentoCliente: undefined,
+                descuentoCliente: null as any,
                 reservaMonto: 0,
                 pie: 0,
                 reservaVendedorId: undefined,
@@ -550,6 +714,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
             setFpPromesaPct(10);
             setFpCuotasPct(20);
             setFpEscrituraPct(10);
+            setFpCreditoPct(80);
         } else {
             setFormData(prev => ({ ...prev, ...extraUpdates, estado: value }));
         }
@@ -609,14 +774,18 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
         finalObservaciones = autoLog + (formData.observaciones || '');
     }
 
-    // Guardar el override de descuento cliente si difiere del PM
+    // Guardar el override de descuento cliente si difiere del PM.
+    // Si no hay cliente asignado, enviar null explícitamente para que el backend
+    // limpie descuento_cliente en la BD (undefined se omite en JSON.stringify).
     const inputVal = parseFloat(discountInput);
-    const descuentoClienteValue = !isNaN(inputVal) && inputVal > 0 ? inputVal : undefined;
+    const descuentoClienteValue = formData.clienteId && !isNaN(inputVal) && inputVal > 0
+      ? inputVal
+      : (formData.clienteId ? undefined : null);
 
     try {
       onUpdate({
           ...formData,
-          descuentoCliente: descuentoClienteValue,
+          descuentoCliente: descuentoClienteValue as any,
           observaciones: finalObservaciones
       });
       showToast?.('Cambios guardados');
@@ -758,16 +927,37 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
 
   const precioBaseForma = totalPrecioVentaNuevo > 0 ? totalPrecioVentaNuevo : (unit.precioLista || 0);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const ufPromesaDisplay = useMemo(() => Math.round(precioBaseForma * fpPromesaPct / 100 * 100) / 100, [precioBaseForma, fpPromesaPct]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const ufCuotasDisplay = useMemo(() => Math.round(precioBaseForma * fpCuotasPct / 100 * 100) / 100, [precioBaseForma, fpCuotasPct]);
-  const ufCuotaUnitDisplay = useMemo(() => cantidadCuotasPie > 0 ? Math.round(ufCuotasDisplay / cantidadCuotasPie * 100) / 100 : 0, [ufCuotasDisplay, cantidadCuotasPie]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const ufEscrituraDisplay = useMemo(() => Math.round(precioBaseForma * fpEscrituraPct / 100 * 100) / 100, [precioBaseForma, fpEscrituraPct]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const ufCreditoDisplay = useMemo(() => Math.round(precioBaseForma * fpCreditoPct / 100 * 100) / 100, [precioBaseForma, fpCreditoPct]);
-  const totalFormaDisplay = useMemo(() => Math.round((ufPromesaDisplay + ufCuotasDisplay + ufEscrituraDisplay + ufCreditoDisplay) * 100) / 100, [ufPromesaDisplay, ufCuotasDisplay, ufEscrituraDisplay, ufCreditoDisplay]);
+  const formaDisplay = useMemo(() => calcFormaPago({
+    precioVenta: precioBaseForma,
+    precioConDescuentoDepto: bonoCalcDepto.precioConDescuento,
+    aplicaBono: hasBono,
+    bonoPct,
+    creditoPct: fpCreditoPct,
+    promesaPct: fpPromesaPct,
+    cuotasPct: fpCuotasPct,
+    escrituraPct: fpEscrituraPct,
+    numCuotas: cantidadCuotasPie,
+  }), [precioBaseForma, bonoCalcDepto.precioConDescuento, hasBono, bonoPct, fpCreditoPct, fpPromesaPct, fpCuotasPct, fpEscrituraPct, cantidadCuotasPie]);
+  const ufPromesaDisplay      = formaDisplay.promesaUF;
+  const ufCuotasDisplay       = formaDisplay.cuotasUF;
+  const ufCuotaUnitDisplay    = formaDisplay.cuotaIndividualUF;
+  const ufEscrituraDisplay    = formaDisplay.escrituraUF;
+  const ufCreditoDisplay      = formaDisplay.creditoUF;
+  const ufCompraSeguraDisplay = formaDisplay.compraSeguaUF;
+  const compraSeguaPctDisplay = formaDisplay.compraSeguaPct;
+  const totalFormaDisplay     = formaDisplay.totalUF;
+  const promesaPctDisplay     = formaDisplay.promesaPctMostrado;
+  const cuotasPctDisplay      = formaDisplay.cuotasPctMostrado;
+  const escrituraPctDisplay   = formaDisplay.escrituraPctMostrado;
+  const creditoPctDisplay     = formaDisplay.creditoPctMostrado;
+
+  const r2pct = (v: number) => Math.round(v * 100) / 100;
+  // Totalizador:
+  //  - Con bono: suma de los % mostrados (reales sobre el total, incluida Compra Segura)
+  //  - Sin bono: suma de los % raw ingresados
+  const totalPctRaw = hasBono
+    ? r2pct(promesaPctDisplay + cuotasPctDisplay + escrituraPctDisplay + formaDisplay.compraSeguaPctMostrado + creditoPctDisplay)
+    : r2pct(fpPromesaPct + fpCuotasPct + fpEscrituraPct + fpCreditoPct);
 
   const isDelayed = (dueStr: string, realStr?: string) => {
       if (!dueStr || !realStr) return false;
@@ -949,7 +1139,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                         )}
                         {canAssign && canAssignClient && onUnassignClient && (
                           <button
-                            onClick={() => { setClientMenuOpen(false); setFormData(prev => ({ ...prev, clienteId: undefined })); }}
+                            onClick={() => { setClientMenuOpen(false); onUnassignClient(unit.id); }}
                             className="w-full px-4 py-3 text-sm font-medium text-left hover:bg-red-50 text-red-600 flex items-center gap-3"
                           >
                             <X className="w-4 h-4" /> Desasignar
@@ -980,7 +1170,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                         <h3 className="text-lg font-bold text-gray-900">
                           Asignar Cliente a {unit.type} {unit.numero}
                         </h3>
-                        <button onClick={() => setIsAssignModalOpen(false)} className="p-1 hover:bg-gray-100 rounded-lg">
+                        <button onClick={() => { setIsAssignModalOpen(false); setPendingEstado(null); }} className="p-1 hover:bg-gray-100 rounded-lg">
                           <X className="w-5 h-5 text-gray-500" />
                         </button>
                       </div>
@@ -1005,7 +1195,19 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                         ) : searchedClients.map(c => (
                           <button
                             key={c.id}
-                            onClick={() => { setFormData(prev => ({ ...prev, clienteId: c.id })); setIsAssignModalOpen(false); }}
+                            onClick={() => {
+                              onAssignClient?.(c.id, unit.id);
+                              setIsAssignModalOpen(false);
+                              if (pendingEstado && pendingEstado !== 'Reservado') {
+                                const hoyPending = new Date().toISOString().split('T')[0];
+                                setFormData(prev => ({
+                                  ...prev,
+                                  estado: pendingEstado as RealEstateUnit['estado'],
+                                  ...(!prev.fechaPromesa && pendingEstado === 'Promesado' ? { fechaPromesa: hoyPending } : {}),
+                                }));
+                              }
+                              setPendingEstado(null);
+                            }}
                             className="w-full p-3 text-left border border-gray-100 rounded-xl hover:border-blue-300 hover:bg-blue-50/30 transition-all flex items-center gap-3"
                           >
                             <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-sm shrink-0">
@@ -1022,7 +1224,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                         ))}
                       </div>
                       <div className="p-4 border-t border-gray-100">
-                        <button onClick={() => setIsAssignModalOpen(false)}
+                        <button onClick={() => { setIsAssignModalOpen(false); setPendingEstado(null); }}
                           className="w-full py-2.5 border border-gray-200 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-50 transition-colors">
                           Cancelar
                         </button>
@@ -1484,259 +1686,406 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
               </select>
             )}
 
-            {/* ── Sección por unidad: Depto ── */}
-            <div className="space-y-2 p-3 bg-gray-50 rounded-xl border border-gray-100">
-              <div className="flex justify-between items-center">
-                <span className="text-[11px] font-black text-gray-700 uppercase flex items-center gap-1.5">
-                  <Tag className="w-3 h-3 text-blue-500" />
-                  {unit.type === 'Departamento' ? `Depto ${formData.numero}` : `${unit.type} ${formData.numero}`}
-                </span>
-                <span className="text-xs font-mono font-bold text-gray-500">{formatValueStandard(hasBono ? bonoCalcDepto.valorTotal : bonoCalcDepto.precioConDescuento)} UF</span>
-              </div>
-              <div className="grid grid-cols-2 gap-2 items-center">
-                <div>
-                  <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest block mb-1">Descuento %</label>
-                  <input
-                    type="number" min="0" max={discountCfg.supervisorMaxPct} step="0.1"
-                    value={discountInput}
-                    onChange={e => { setDiscountInput(e.target.value); setDiscountError(''); }}
-                    disabled={isReadOnly || discountPending || !hasClient}
-                    title={`PM: ${descuentoPMDepto}%${formData.descuentoCliente ? ` | Override cliente: ${formData.descuentoCliente}%` : ''}`}
-                    placeholder={String(descuentoPMDepto || 0)}
-                    className="w-full px-2 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-amber-100 disabled:opacity-50"
-                  />
-                  {discountError && <p className="text-[9px] text-red-600 font-bold mt-0.5">{discountError}</p>}
-                  {discountPending && <p className="text-[9px] text-amber-600 font-bold mt-0.5">Pend. autorización</p>}
-                </div>
-                <div>
-                  <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest block mb-1">Bonificación</label>
-                  <label className="flex items-center gap-2 text-xs font-bold text-blue-700 cursor-pointer select-none mt-1.5">
-                    <input
-                      type="checkbox"
-                      checked={hasBono}
-                      disabled={isReadOnly || currentUser.role === 'Ventas' || !hasClient}
-                      onChange={e => {
-                        const checked = e.target.checked;
-                        setHasBono(checked);
-                        setFormData(prev => ({ ...prev, aplicaBonoPie: checked }));
-                      }}
-                      className="w-4 h-4 accent-blue-600 disabled:opacity-50"
-                    />
-                    Bono {bonoPct}%
-                  </label>
-                </div>
-              </div>
-              {hasBono && (
-                <div className="flex justify-between items-center text-[11px] text-blue-600">
-                  <span className="font-bold">Bonificación</span>
-                  <span className="font-mono font-bold">-{formatValueStandard(bonoCalcDepto.bonificacion)} UF</span>
-                </div>
-              )}
-              <div className="flex justify-between items-center text-[11px] border-t border-gray-200 pt-2">
-                <span className="text-gray-500 font-bold">Precio Venta</span>
-                <span className="font-mono font-black text-gray-800">{formatValueStandard(bonoCalcDepto.precioVenta)} UF</span>
-              </div>
+            {/* ── BLOQUE 1: Tabla de Unidades ── */}
+            <div className="overflow-x-auto rounded-xl border border-gray-200">
+              <table className="w-full text-xs border-collapse">
+                <thead>
+                  <tr className="bg-gray-50 border-b border-gray-100">
+                    <th className="px-3 py-2 text-left text-[9px] font-black text-gray-400 uppercase tracking-widest">Unidad</th>
+                    <th className="px-2 py-2 text-right text-[9px] font-black text-gray-400 uppercase tracking-widest">P. Original</th>
+                    <th className="px-2 py-2 text-center text-[9px] font-black text-gray-400 uppercase tracking-widest">Ajuste</th>
+                    <th className="px-2 py-2 text-right text-[9px] font-black text-gray-400 uppercase tracking-widest">P. Final</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {(() => {
+                    const orig = unit.precioListaOriginal ?? formData.precioLista;
+                    const dctoPct = descuentoEfectivoDepto;
+                    const final = hasBono ? bonoCalcDepto.valorTotal : bonoCalcDepto.precioConDescuento;
+                    const mode = unitDiscountModes['depto'] ?? '%';
+                    const hasDiscount = dctoPct > 0;
+                    const ufAjuste = Math.round((orig - final) * 100) / 100;
+                    return (
+                      <tr className="hover:bg-gray-50/60 transition-colors">
+                        <td className="px-3 py-2 font-bold text-gray-700 text-[11px]">
+                          {unit.type === 'Departamento' ? `Depto ${formData.numero}` : `${unit.type} ${formData.numero}`}
+                        </td>
+                        <td className="px-2 py-2 text-right font-mono text-gray-400 text-[11px]">{formatValueStandard(orig)}</td>
+                        <td className="px-2 py-2">
+                          <div className="flex items-center gap-1 flex-wrap">
+                            <button
+                              onClick={() => setUnitDiscountModes(prev => ({ ...prev, depto: mode === '%' ? 'UF' : '%' }))}
+                              disabled={!hasClient}
+                              className="text-[9px] font-bold text-gray-400 hover:text-blue-600 border border-gray-200 rounded px-1 py-0.5 disabled:opacity-40 shrink-0"
+                            >{mode}</button>
+                            <input
+                              type="number" min="0" step={mode === '%' ? '0.1' : '1'}
+                              value={mode === '%' ? discountInput : String(ufAjuste)}
+                              onChange={e => {
+                                const raw = e.target.value;
+                                if (mode === '%') {
+                                  // Campo vacío o inválido → 0 (no mantener el último valor)
+                                  setDiscountInput(raw === '' || isNaN(parseFloat(raw)) ? '0' : raw);
+                                  setDiscountError('');
+                                } else {
+                                  const ufVal = parseFloat(raw);
+                                  if (!isNaN(ufVal) && orig > 0) {
+                                    setDiscountInput(String(Math.round(ufVal / orig * 10000) / 100));
+                                    setDiscountError('');
+                                  }
+                                }
+                              }}
+                              disabled={isReadOnly || discountPending || !hasClient}
+                              className="w-14 px-1.5 py-1 bg-white border border-gray-200 rounded text-xs font-mono text-right outline-none focus:ring-1 focus:ring-amber-200 disabled:opacity-50"
+                            />
+                            {hasDiscount && (
+                              <span className="text-[9px] font-bold text-red-500 bg-red-50 px-1 rounded shrink-0">
+                                -{mode === '%' ? `${dctoPct.toFixed(1)}%` : `${ufAjuste.toFixed(1)}UF`}
+                              </span>
+                            )}
+                          </div>
+                          {discountError && <p className="text-[9px] text-red-600 font-bold mt-0.5">{discountError}</p>}
+                          {discountPending && <p className="text-[9px] text-amber-600 font-bold mt-0.5">Pend. autorización</p>}
+                        </td>
+                        <td className={`px-2 py-2 text-right font-mono font-bold text-[11px] ${hasDiscount ? 'text-red-600' : 'text-gray-800'}`}>
+                          {formatValueStandard(final)}
+                        </td>
+                      </tr>
+                    );
+                  })()}
+                  {linkedAssets.storages.map(b => {
+                    const orig = b.precioListaOriginal ?? b.precioLista;
+                    const dctoPct = linkedDiscounts[b.id] ?? b.descuentoPct ?? 0;
+                    const calc = calcResumenUnidad({ precioListaOriginal: orig, dctoPct, bonoPct, aplicaBono: linkedBono[b.id] ?? false });
+                    const final = (linkedBono[b.id] ?? false) ? calc.valorTotal : calc.precioConDescuento;
+                    const mode = unitDiscountModes[b.id] ?? '%';
+                    const hasDiscount = dctoPct > 0;
+                    const ufAjuste = Math.round((orig - final) * 100) / 100;
+                    return (
+                      <tr key={b.id} className="hover:bg-gray-50/60 transition-colors">
+                        <td className="px-3 py-2 text-gray-600 text-[11px]">
+                          <span className="flex items-center gap-1"><Package className="w-3 h-3 text-gray-300 shrink-0" /> Bodega {b.numero}</span>
+                        </td>
+                        <td className="px-2 py-2 text-right font-mono text-gray-400 text-[11px]">{formatValueStandard(orig)}</td>
+                        <td className="px-2 py-2">
+                          <div className="flex items-center gap-1 flex-wrap">
+                            <button
+                              onClick={() => setUnitDiscountModes(prev => ({ ...prev, [b.id]: mode === '%' ? 'UF' : '%' }))}
+                              disabled={!hasClient}
+                              className="text-[9px] font-bold text-gray-400 hover:text-blue-600 border border-gray-200 rounded px-1 py-0.5 disabled:opacity-40 shrink-0"
+                            >{mode}</button>
+                            <input
+                              type="number" min="0" step={mode === '%' ? '0.1' : '1'}
+                              value={mode === '%' ? (linkedDiscountInputs[b.id] ?? String(dctoPct)) : String(ufAjuste)}
+                              onChange={e => {
+                                const raw = e.target.value;
+                                if (mode === '%') {
+                                  setLinkedDiscountInputs(prev => ({ ...prev, [b.id]: raw }));
+                                  // Campo vacío o inválido → 0 (no mantener el último valor)
+                                  const num = raw === '' ? 0 : parseFloat(raw);
+                                  setLinkedDiscounts(prev => ({ ...prev, [b.id]: isNaN(num) ? 0 : num }));
+                                } else {
+                                  const ufVal = parseFloat(raw);
+                                  if (!isNaN(ufVal) && orig > 0) {
+                                    const pct = Math.round(ufVal / orig * 10000) / 100;
+                                    setLinkedDiscountInputs(prev => ({ ...prev, [b.id]: String(pct) }));
+                                    setLinkedDiscounts(prev => ({ ...prev, [b.id]: pct }));
+                                  }
+                                }
+                              }}
+                              disabled={isReadOnly || !hasClient}
+                              className="w-14 px-1.5 py-1 bg-white border border-gray-200 rounded text-xs font-mono text-right outline-none focus:ring-1 focus:ring-amber-200 disabled:opacity-50"
+                            />
+                            {hasDiscount && (
+                              <span className="text-[9px] font-bold text-red-500 bg-red-50 px-1 rounded shrink-0">
+                                -{mode === '%' ? `${dctoPct.toFixed(1)}%` : `${ufAjuste.toFixed(1)}UF`}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className={`px-2 py-2 text-right font-mono font-bold text-[11px] ${hasDiscount ? 'text-red-600' : 'text-gray-800'}`}>{formatValueStandard(final)}</td>
+                      </tr>
+                    );
+                  })}
+                  {linkedAssets.parkings.map(p => {
+                    const orig = p.precioListaOriginal ?? p.precioLista;
+                    const dctoPct = linkedDiscounts[p.id] ?? p.descuentoPct ?? 0;
+                    const calc = calcResumenUnidad({ precioListaOriginal: orig, dctoPct, bonoPct, aplicaBono: linkedBono[p.id] ?? false });
+                    const final = (linkedBono[p.id] ?? false) ? calc.valorTotal : calc.precioConDescuento;
+                    const mode = unitDiscountModes[p.id] ?? '%';
+                    const hasDiscount = dctoPct > 0;
+                    const ufAjuste = Math.round((orig - final) * 100) / 100;
+                    return (
+                      <tr key={p.id} className="hover:bg-gray-50/60 transition-colors">
+                        <td className="px-3 py-2 text-gray-600 text-[11px]">
+                          <span className="flex items-center gap-1"><Car className="w-3 h-3 text-gray-300 shrink-0" /> Estac. {p.numero}</span>
+                        </td>
+                        <td className="px-2 py-2 text-right font-mono text-gray-400 text-[11px]">{formatValueStandard(orig)}</td>
+                        <td className="px-2 py-2">
+                          <div className="flex items-center gap-1 flex-wrap">
+                            <button
+                              onClick={() => setUnitDiscountModes(prev => ({ ...prev, [p.id]: mode === '%' ? 'UF' : '%' }))}
+                              disabled={!hasClient}
+                              className="text-[9px] font-bold text-gray-400 hover:text-blue-600 border border-gray-200 rounded px-1 py-0.5 disabled:opacity-40 shrink-0"
+                            >{mode}</button>
+                            <input
+                              type="number" min="0" step={mode === '%' ? '0.1' : '1'}
+                              value={mode === '%' ? (linkedDiscountInputs[p.id] ?? String(dctoPct)) : String(ufAjuste)}
+                              onChange={e => {
+                                const raw = e.target.value;
+                                if (mode === '%') {
+                                  setLinkedDiscountInputs(prev => ({ ...prev, [p.id]: raw }));
+                                  // Campo vacío o inválido → 0 (no mantener el último valor)
+                                  const num = raw === '' ? 0 : parseFloat(raw);
+                                  setLinkedDiscounts(prev => ({ ...prev, [p.id]: isNaN(num) ? 0 : num }));
+                                } else {
+                                  const ufVal = parseFloat(raw);
+                                  if (!isNaN(ufVal) && orig > 0) {
+                                    const pct = Math.round(ufVal / orig * 10000) / 100;
+                                    setLinkedDiscountInputs(prev => ({ ...prev, [p.id]: String(pct) }));
+                                    setLinkedDiscounts(prev => ({ ...prev, [p.id]: pct }));
+                                  }
+                                }
+                              }}
+                              disabled={isReadOnly || !hasClient}
+                              className="w-14 px-1.5 py-1 bg-white border border-gray-200 rounded text-xs font-mono text-right outline-none focus:ring-1 focus:ring-amber-200 disabled:opacity-50"
+                            />
+                            {hasDiscount && (
+                              <span className="text-[9px] font-bold text-red-500 bg-red-50 px-1 rounded shrink-0">
+                                -{mode === '%' ? `${dctoPct.toFixed(1)}%` : `${ufAjuste.toFixed(1)}UF`}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className={`px-2 py-2 text-right font-mono font-bold text-[11px] ${hasDiscount ? 'text-red-600' : 'text-gray-800'}`}>{formatValueStandard(final)}</td>
+                      </tr>
+                    );
+                  })}
+                  <tr className="bg-blue-50/40 border-t-2 border-blue-100">
+                    <td colSpan={3} className="px-3 py-2 text-[9px] font-black text-blue-700 uppercase tracking-widest">Total Precio de Venta</td>
+                    <td className="px-2 py-2 text-right font-mono font-black text-blue-700 text-sm">{formatValueStandard(totalPrecioVentaNuevo)}</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
 
-            {/* ── Sección por unidad: Bodegas ── */}
-            {linkedAssets.storages.map(b => {
-              const disc = linkedDiscounts[b.id] ?? b.descuentoPct ?? 0;
-              const bono = linkedBono[b.id] ?? false;
-              const calc = calcResumenUnidad({ precioListaOriginal: b.precioListaOriginal ?? b.precioLista, dctoPct: disc, bonoPct, aplicaBono: bono });
-              return (
-                <div key={b.id} className="space-y-2 p-3 bg-gray-50/60 rounded-xl border border-dashed border-gray-200">
-                  <div className="flex justify-between items-center">
-                    <span className="text-[11px] font-black text-gray-600 uppercase flex items-center gap-1.5">
-                      <Package className="w-3 h-3 text-gray-400" /> Bodega {b.numero}
-                    </span>
-                    <span className="text-xs font-mono font-bold text-gray-400">{formatValueStandard(bono ? calc.valorTotal : calc.precioConDescuento)} UF</span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 items-center">
-                    <div>
-                      <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest block mb-1">Descuento %</label>
+            {/* ── BLOQUE 2: Bono Pie por Unidad ── */}
+            <div className="space-y-3 p-3 bg-gray-50 rounded-xl border border-gray-100">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <span className="text-[10px] font-black text-gray-500 uppercase tracking-widest flex items-center gap-1.5">
+                  <Sparkles className="w-3 h-3 text-blue-500" /> Bono Pie
+                </span>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {canEditBono ? (
+                    <div className="flex items-center gap-1">
                       <input
-                        type="number" min="0" max="30" step="0.1"
-                        value={linkedDiscountInputs[b.id] ?? String(disc)}
-                        onChange={e => {
-                          const raw = e.target.value;
-                          setLinkedDiscountInputs(prev => ({ ...prev, [b.id]: raw }));
-                          const num = parseFloat(raw);
-                          if (!isNaN(num)) setLinkedDiscounts(prev => ({ ...prev, [b.id]: num }));
-                        }}
-                        disabled={isReadOnly || !hasClient}
-                        className="w-full px-2 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-amber-100 disabled:opacity-50"
+                        type="number" min="0" max="50" step="0.5"
+                        value={bonoPct}
+                        onChange={e => setBonoPct(Number(e.target.value))}
+                        className="w-14 px-1.5 py-1 bg-white border border-gray-200 rounded text-xs font-mono text-right outline-none focus:ring-1 focus:ring-blue-200"
                       />
+                      <span className="text-[10px] text-gray-400">%</span>
                     </div>
-                    <div>
-                      <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest block mb-1">Bonificación</label>
-                      <label className="flex items-center gap-2 text-xs font-bold text-blue-700 cursor-pointer select-none mt-1.5">
-                        <input
-                          type="checkbox"
-                          checked={bono}
+                  ) : (
+                    <span className="text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded">{bonoPct}%</span>
+                  )}
+                  {!isReadOnly && hasClient && (
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => {
+                          bonoJustToggled.current = true;
+                          setHasBono(true);
+                          setFormData(prev => ({ ...prev, aplicaBonoPie: true }));
+                          const allTrue: Record<string, boolean> = {};
+                          [...linkedAssets.storages, ...linkedAssets.parkings].forEach(u => { allTrue[u.id] = true; });
+                          setLinkedBono(allTrue);
+                        }}
+                        className="text-[9px] font-bold px-2 py-0.5 rounded bg-blue-100 text-blue-700 hover:bg-blue-200 transition-colors"
+                      >Todos</button>
+                      <button
+                        onClick={() => {
+                          bonoJustToggled.current = true;
+                          setHasBono(false);
+                          setFormData(prev => ({ ...prev, aplicaBonoPie: false }));
+                          const allFalse: Record<string, boolean> = {};
+                          [...linkedAssets.storages, ...linkedAssets.parkings].forEach(u => { allFalse[u.id] = false; });
+                          setLinkedBono(allFalse);
+                        }}
+                        className="text-[9px] font-bold px-2 py-0.5 rounded bg-gray-200 text-gray-600 hover:bg-gray-300 transition-colors"
+                      >Ninguno</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <label className={`flex items-center justify-between gap-2 ${!isReadOnly && hasClient ? 'cursor-pointer' : ''}`}>
+                  <div className="flex items-center gap-2">
+                    <input type="checkbox" checked={hasBono}
+                      disabled={isReadOnly || currentUser.role === 'Ventas' || !hasClient}
+                      onChange={e => { bonoJustToggled.current = true; setHasBono(e.target.checked); setFormData(prev => ({ ...prev, aplicaBonoPie: e.target.checked })); }}
+                      className="w-3.5 h-3.5 accent-blue-600 disabled:opacity-50 shrink-0"
+                    />
+                    <span className="text-xs text-gray-700 font-medium">
+                      {unit.type === 'Departamento' ? `Depto ${formData.numero}` : `${unit.type} ${formData.numero}`}
+                    </span>
+                  </div>
+                  <span className="text-xs font-mono text-gray-500 shrink-0">
+                    {formatValueStandard(hasBono ? bonoCalcDepto.valorTotal : bonoCalcDepto.precioConDescuento)} UF
+                  </span>
+                </label>
+                {linkedAssets.storages.map(b => {
+                  const bono = linkedBono[b.id] ?? false;
+                  const calcB = calcResumenUnidad({ precioListaOriginal: b.precioListaOriginal ?? b.precioLista, dctoPct: linkedDiscounts[b.id] ?? b.descuentoPct ?? 0, bonoPct, aplicaBono: bono });
+                  return (
+                    <label key={b.id} className={`flex items-center justify-between gap-2 ${!isReadOnly && hasClient ? 'cursor-pointer' : ''}`}>
+                      <div className="flex items-center gap-2">
+                        <input type="checkbox" checked={bono}
                           disabled={isReadOnly || !hasClient}
                           onChange={e => setLinkedBono(prev => ({ ...prev, [b.id]: e.target.checked }))}
-                          className="w-4 h-4 accent-blue-600 disabled:opacity-50"
+                          className="w-3.5 h-3.5 accent-blue-600 disabled:opacity-50 shrink-0"
                         />
-                        Bono {bonoPct}%
-                      </label>
-                    </div>
-                  </div>
-                  {bono && (
-                    <div className="flex justify-between items-center text-[11px] text-blue-600">
-                      <span className="font-bold">Bonificación</span>
-                      <span className="font-mono font-bold">-{formatValueStandard(calc.bonificacion)} UF</span>
-                    </div>
-                  )}
-                  <div className="flex justify-between items-center text-[11px] border-t border-gray-200 pt-2">
-                    <span className="text-gray-500 font-bold">Precio Venta</span>
-                    <span className="font-mono font-black text-gray-700">{formatValueStandard(calc.precioVenta)} UF</span>
-                  </div>
-                </div>
-              );
-            })}
-
-            {/* ── Sección por unidad: Estacionamientos ── */}
-            {linkedAssets.parkings.map(p => {
-              const disc = linkedDiscounts[p.id] ?? p.descuentoPct ?? 0;
-              const bono = linkedBono[p.id] ?? false;
-              const calc = calcResumenUnidad({ precioListaOriginal: p.precioListaOriginal ?? p.precioLista, dctoPct: disc, bonoPct, aplicaBono: bono });
-              return (
-                <div key={p.id} className="space-y-2 p-3 bg-gray-50/60 rounded-xl border border-dashed border-gray-200">
-                  <div className="flex justify-between items-center">
-                    <span className="text-[11px] font-black text-gray-600 uppercase flex items-center gap-1.5">
-                      <Car className="w-3 h-3 text-gray-400" /> Estac. {p.numero}
-                    </span>
-                    <span className="text-xs font-mono font-bold text-gray-400">{formatValueStandard(bono ? calc.valorTotal : calc.precioConDescuento)} UF</span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 items-center">
-                    <div>
-                      <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest block mb-1">Descuento %</label>
-                      <input
-                        type="number" min="0" max="30" step="0.1"
-                        value={linkedDiscountInputs[p.id] ?? String(disc)}
-                        onChange={e => {
-                          const raw = e.target.value;
-                          setLinkedDiscountInputs(prev => ({ ...prev, [p.id]: raw }));
-                          const num = parseFloat(raw);
-                          if (!isNaN(num)) setLinkedDiscounts(prev => ({ ...prev, [p.id]: num }));
-                        }}
-                        disabled={isReadOnly || !hasClient}
-                        className="w-full px-2 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-amber-100 disabled:opacity-50"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest block mb-1">Bonificación</label>
-                      <label className="flex items-center gap-2 text-xs font-bold text-blue-700 cursor-pointer select-none mt-1.5">
-                        <input
-                          type="checkbox"
-                          checked={bono}
+                        <span className="text-xs text-gray-600 font-medium flex items-center gap-1"><Package className="w-3 h-3 text-gray-300 shrink-0" /> Bodega {b.numero}</span>
+                      </div>
+                      <span className="text-xs font-mono text-gray-500 shrink-0">{formatValueStandard(bono ? calcB.valorTotal : calcB.precioConDescuento)} UF</span>
+                    </label>
+                  );
+                })}
+                {linkedAssets.parkings.map(p => {
+                  const bono = linkedBono[p.id] ?? false;
+                  const calcP = calcResumenUnidad({ precioListaOriginal: p.precioListaOriginal ?? p.precioLista, dctoPct: linkedDiscounts[p.id] ?? p.descuentoPct ?? 0, bonoPct, aplicaBono: bono });
+                  return (
+                    <label key={p.id} className={`flex items-center justify-between gap-2 ${!isReadOnly && hasClient ? 'cursor-pointer' : ''}`}>
+                      <div className="flex items-center gap-2">
+                        <input type="checkbox" checked={bono}
                           disabled={isReadOnly || !hasClient}
                           onChange={e => setLinkedBono(prev => ({ ...prev, [p.id]: e.target.checked }))}
-                          className="w-4 h-4 accent-blue-600 disabled:opacity-50"
+                          className="w-3.5 h-3.5 accent-blue-600 disabled:opacity-50 shrink-0"
                         />
-                        Bono {bonoPct}%
-                      </label>
-                    </div>
-                  </div>
-                  {bono && (
-                    <div className="flex justify-between items-center text-[11px] text-blue-600">
-                      <span className="font-bold">Bonificación</span>
-                      <span className="font-mono font-bold">-{formatValueStandard(calc.bonificacion)} UF</span>
-                    </div>
-                  )}
-                  <div className="flex justify-between items-center text-[11px] border-t border-gray-200 pt-2">
-                    <span className="text-gray-500 font-bold">Precio Venta</span>
-                    <span className="font-mono font-black text-gray-700">{formatValueStandard(calc.precioVenta)} UF</span>
-                  </div>
-                </div>
-              );
-            })}
-
-            {/* ── TOTAL PRECIO DE VENTA ── */}
-            <div className="flex flex-col items-center py-4 rounded-2xl bg-blue-50 border border-blue-100 shadow-inner">
-              <span className="text-[10px] text-blue-400 font-black uppercase mb-1 tracking-widest">Total Precio de Venta</span>
-              <div className="text-3xl font-extrabold text-blue-700 font-mono">
-                {formatValueStandard(totalPrecioVentaNuevo)} <span className="text-sm font-normal text-blue-400">UF</span>
+                        <span className="text-xs text-gray-600 font-medium flex items-center gap-1"><Car className="w-3 h-3 text-gray-300 shrink-0" /> Estac. {p.numero}</span>
+                      </div>
+                      <span className="text-xs font-mono text-gray-500 shrink-0">{formatValueStandard(bono ? calcP.valorTotal : calcP.precioConDescuento)} UF</span>
+                    </label>
+                  );
+                })}
               </div>
             </div>
 
-            {/* ── Forma de Pago ── */}
+            {/* ── BLOQUE 3: Distribución del Pago ── */}
             {hasClient && (
-              <div className="border-t border-gray-100 pt-5 space-y-4">
-                <h4 className="text-xs font-bold text-gray-400 flex items-center gap-2 uppercase tracking-widest">
-                  <CreditCard className="w-4 h-4 text-blue-600" /> Forma de Pago
-                </h4>
-                {paymentPlans.length === 0 && (
-                  <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3">
-                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                    <span>Sin cotización cargada. Edita los % manualmente o genera una cotización con "Incluir forma de pago".</span>
+              <div className="border-t border-gray-100 pt-4 space-y-3">
+                <label className="flex items-center gap-3 cursor-pointer group" onClick={() => setIncludePaymentPlan(v => !v)}>
+                  <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors shrink-0 ${includePaymentPlan ? 'bg-blue-600 border-blue-600' : 'border-gray-300 group-hover:border-blue-400'}`}>
+                    {includePaymentPlan && <Check className="w-3 h-3 text-white" />}
                   </div>
-                )}
-                <div className="grid grid-cols-3 gap-3">
-                  {[
-                    { label: 'Promesa', val: fpPromesaPct, set: setFpPromesaPct },
-                    { label: 'Cuotas', val: fpCuotasPct, set: setFpCuotasPct },
-                    { label: 'Escritura', val: fpEscrituraPct, set: setFpEscrituraPct },
-                  ].map(({ label, val, set }) => (
-                    <div key={label}>
-                      <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest block mb-1">{label}</label>
-                      <div className="flex items-center gap-1">
-                        <input
-                          type="number" min="0" max="100" step="1"
-                          value={val}
-                          onChange={e => set(Number(e.target.value))}
+                  <span className="font-bold text-sm text-gray-700">Incluir Forma de Pago</span>
+                </label>
+
+                {includePaymentPlan && (
+                  <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                    <div className="px-4 py-3 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
+                      <span className="text-xs font-black text-gray-500 uppercase tracking-widest">Distribución del Pago</span>
+                      {Math.abs(totalPctRaw - 100) < 0.05
+                        ? <span className="text-[10px] font-bold text-green-600 bg-green-50 px-2 py-0.5 rounded-full">100% ✓</span>
+                        : <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full">Suma ≠ 100% ⚠️</span>
+                      }
+                    </div>
+                    <div className="p-4 space-y-1.5 text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="w-32 shrink-0 text-gray-600">Promesa</span>
+                        <PercentInput value={fpPromesaPct}
+                          onChange={setFpPromesaPct}
+                          disabled={isReadOnly || hasBono}
+                          className="w-14 p-1.5 border border-gray-200 rounded text-xs font-mono text-right outline-none disabled:opacity-50 disabled:bg-gray-100 disabled:cursor-not-allowed" />
+                        <span className="text-gray-400">%</span>
+                        {hasBono && <span className="text-sm font-mono text-amber-800 bg-amber-200 border border-amber-400 px-2 py-0.5 rounded whitespace-nowrap">→ {promesaPctDisplay.toFixed(2)}%</span>}
+                        <span className="ml-auto font-mono font-bold text-gray-700 shrink-0">{formatValueStandard(ufPromesaDisplay)} UF</span>
+                      </div>
+                      {ufHoy && ufPromesaDisplay > 0 && (
+                        <div className="text-right text-[10px] text-gray-400 font-mono -mt-1">
+                          {(ufPromesaDisplay * ufHoy).toLocaleString('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 })}
+                        </div>
+                      )}
+                      <div className="flex items-center gap-2">
+                        <span className="w-32 shrink-0 text-gray-600">Cuotas ({cantidadCuotasPie}x)</span>
+                        <PercentInput value={fpCuotasPct}
+                          onChange={setFpCuotasPct}
+                          disabled={isReadOnly || hasBono}
+                          className="w-14 p-1.5 border border-gray-200 rounded text-xs font-mono text-right outline-none disabled:opacity-50 disabled:bg-gray-100 disabled:cursor-not-allowed" />
+                        <span className="text-gray-400">%</span>
+                        {hasBono && <span className="text-sm font-mono text-amber-800 bg-amber-200 border border-amber-400 px-2 py-0.5 rounded whitespace-nowrap">→ {cuotasPctDisplay.toFixed(2)}%</span>}
+                        <span className="ml-auto font-mono font-bold text-gray-700 shrink-0">{formatValueStandard(ufCuotasDisplay)} UF</span>
+                      </div>
+                      {cantidadCuotasPie > 0 && ufCuotaUnitDisplay > 0 && (
+                        <div className="text-right text-[10px] text-gray-400 -mt-1">
+                          {cantidadCuotasPie} cuotas de {formatValueStandard(ufCuotaUnitDisplay)} UF c/u
+                          {ufHoy ? ` · ${(ufCuotaUnitDisplay * ufHoy).toLocaleString('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 })} c/u` : ''}
+                        </div>
+                      )}
+                      <div className="flex items-center gap-2">
+                        <span className="w-32 shrink-0 text-gray-600">Escritura</span>
+                        <PercentInput value={fpEscrituraPct}
+                          onChange={setFpEscrituraPct}
+                          disabled={isReadOnly || hasBono}
+                          className="w-14 p-1.5 border border-gray-200 rounded text-xs font-mono text-right outline-none disabled:opacity-50 disabled:bg-gray-100 disabled:cursor-not-allowed" />
+                        <span className="text-gray-400">%</span>
+                        {hasBono && <span className="text-sm font-mono text-amber-800 bg-amber-200 border border-amber-400 px-2 py-0.5 rounded whitespace-nowrap">→ {escrituraPctDisplay.toFixed(2)}%</span>}
+                        <span className="ml-auto font-mono font-bold text-gray-700 shrink-0">{formatValueStandard(ufEscrituraDisplay)} UF</span>
+                      </div>
+                      {hasBono && (
+                        <div className="flex items-center gap-2">
+                          <span className="w-32 shrink-0 text-gray-600">Compra Segura</span>
+                          <div className="w-14 p-1.5 bg-gray-50 border border-gray-200 rounded text-xs font-mono text-right text-gray-500">
+                            {compraSeguaPctDisplay.toFixed(1)}
+                          </div>
+                          <span className="text-gray-400">%</span>
+                          <span className="ml-auto font-mono font-bold text-gray-700 shrink-0">{formatValueStandard(ufCompraSeguraDisplay)} UF</span>
+                        </div>
+                      )}
+                      <div className="border-t border-gray-100 my-1" />
+                      <div className="flex items-center gap-2">
+                        <span className={`w-32 shrink-0 font-bold ${fpCreditoPct <= 0 ? 'text-gray-500' : 'text-blue-700'}`}>Crédito Banco</span>
+                        <PercentInput
+                          value={fpCreditoPct}
+                          onChange={handleCreditoPivot}
                           disabled={isReadOnly}
-                          className="w-full px-2 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-xs font-mono text-right outline-none focus:ring-2 focus:ring-blue-100 disabled:opacity-60"
+                          max={hasBono ? r2pct(100 - compraSeguraPctOnTotal() - 0.01) : 99.99}
+                          className={`w-14 p-1.5 border rounded text-xs font-mono text-right font-bold outline-none disabled:opacity-60 ${fpCreditoPct <= 0 ? 'bg-gray-50 border-gray-200 text-gray-500' : 'bg-blue-50 border-blue-200 text-blue-700'}`}
                         />
-                        <span className="text-[10px] text-gray-400 shrink-0">%</span>
+                        <span className="text-gray-400">%</span>
+                        <span className={`ml-auto font-mono font-bold shrink-0 ${fpCreditoPct <= 0 ? 'text-gray-500' : 'text-blue-700'}`}>{formatValueStandard(ufCreditoDisplay)} UF</span>
                       </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="flex items-center justify-between px-3 py-2 bg-blue-50/40 rounded-xl border border-blue-100/60">
-                  <span className="text-xs font-bold text-blue-600 uppercase tracking-tight">Crédito Hipotecario (auto)</span>
-                  <span className="font-mono font-black text-blue-700 text-sm">{fpCreditoPct}%</span>
-                </div>
-                <div className="space-y-1.5 bg-gray-50 rounded-xl p-3 border border-gray-100">
-                  <div className="flex justify-between items-center text-xs">
-                    <span className="text-gray-500">Promesa</span>
-                    <span className="font-mono font-bold text-gray-700">{fpPromesaPct}% → {formatValueStandard(ufPromesaDisplay)} UF</span>
-                  </div>
-                  <div className="text-xs">
-                    <div className="flex justify-between items-center">
-                      <span className="text-gray-500">Cuotas ({cantidadCuotasPie}x)</span>
-                      <span className="font-mono font-bold text-gray-700">{fpCuotasPct}% → {formatValueStandard(ufCuotasDisplay)} UF</span>
-                    </div>
-                    {cantidadCuotasPie > 0 && ufCuotaUnitDisplay > 0 && (
-                      <div className="text-right text-[10px] text-gray-400 mt-0.5">
-                        {cantidadCuotasPie} cuotas de {formatValueStandard(ufCuotaUnitDisplay)} UF c/u
+                      {ufHoy && ufCreditoDisplay > 0 && (
+                        <div className="text-right text-[10px] text-blue-400 font-mono -mt-1">
+                          {(ufCreditoDisplay * ufHoy).toLocaleString('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 })}
+                        </div>
+                      )}
+                      <div className="border-t border-gray-200 mt-1 pt-1.5">
+                        <div className="flex items-center gap-2 font-bold">
+                          <span className="w-32 shrink-0 text-gray-800">TOTAL</span>
+                          <div className="w-14 p-1.5 bg-gray-50 border border-gray-200 rounded text-xs font-mono text-right text-gray-700">{totalPctRaw.toFixed(1)}</div>
+                          <span className="text-gray-400">%</span>
+                          <span className="ml-auto font-mono font-bold text-gray-900 shrink-0">{formatValueStandard(totalFormaDisplay)} UF</span>
+                        </div>
                       </div>
-                    )}
+                      {Math.abs(totalPctRaw - 100) >= 0.05 && (
+                        <p className="text-xs text-red-600 font-bold flex items-center gap-1 pt-1">
+                          <AlertTriangle className="w-3 h-3 shrink-0" /> La suma no es 100%. Ajusta los porcentajes.
+                        </p>
+                      )}
+                      {Math.round((promesaPctDisplay + cuotasPctDisplay + escrituraPctDisplay + compraSeguaPctDisplay + creditoPctDisplay) * 10) !== 1000 && Math.abs(totalPctRaw - 100) < 0.05 && (
+                        <p className="text-[10px] text-amber-600 font-bold flex items-center gap-1">
+                          <AlertTriangle className="w-3 h-3 shrink-0" /> Los porcentajes no suman 100%
+                        </p>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex justify-between items-center text-xs">
-                    <span className="text-gray-500">Escritura</span>
-                    <span className="font-mono font-bold text-gray-700">{fpEscrituraPct}% → {formatValueStandard(ufEscrituraDisplay)} UF</span>
-                  </div>
-                  <div className="flex justify-between items-center text-xs">
-                    <span className="text-gray-500">Crédito</span>
-                    <span className="font-mono font-bold text-gray-700">{fpCreditoPct}% → {formatValueStandard(ufCreditoDisplay)} UF</span>
-                  </div>
-                  <div className="flex justify-between items-center text-xs border-t border-gray-200 pt-1.5 mt-1">
-                    <span className="font-bold text-gray-700">Total</span>
-                    <span className={`font-mono font-black ${Math.abs(totalFormaDisplay - totalPrecioVentaNuevo) < 0.1 ? 'text-green-700' : 'text-orange-600'}`}>
-                      {formatValueStandard(totalFormaDisplay)} UF
-                    </span>
-                  </div>
-                </div>
-                {(fpPromesaPct + fpCuotasPct + fpEscrituraPct + fpCreditoPct) !== 100 && (
-                  <p className="text-[10px] text-amber-600 font-bold flex items-center gap-1">
-                    <AlertTriangle className="w-3 h-3 shrink-0" /> Los porcentajes no suman 100%
-                  </p>
                 )}
+
                 {!isReadOnly && (
                   <button
-                    onClick={generatePaymentSchedule}
-                    className="w-full py-2.5 text-xs font-bold rounded-xl transition-colors bg-green-600 text-white hover:bg-green-700 flex items-center justify-center gap-2"
+                    onClick={includePaymentPlan ? generatePaymentSchedule : undefined}
+                    disabled={!includePaymentPlan || Math.abs(totalPctRaw - 100) >= 0.05}
+                    className="w-full py-2.5 text-xs font-bold rounded-xl transition-colors flex items-center justify-center gap-2 bg-green-600 text-white hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     <Wallet className="w-4 h-4" /> Generar Cronograma de Pagos
                   </button>

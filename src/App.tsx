@@ -446,6 +446,14 @@ const App: React.FC = () => {
         asignadoPor: currentUser.name,
         fechaAsignacion: todayLocal,
         fechaReserva: u.fechaReserva || isoDate,
+        fechaPromesa: undefined,
+        fechaSolicitudCredito: undefined,
+        fechaAprobacionCredito: undefined,
+        fechaEscritura: undefined,
+        fechaTerminoPago: undefined,
+        fechaAlzamiento: undefined,
+        fechaEntrega: undefined,
+        fechaPago: undefined,
       });
 
       setUnits(prev => prev.map(u => u.id === unitId ? applyAssignment(u) : u));

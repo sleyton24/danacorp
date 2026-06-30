@@ -34,7 +34,9 @@
       "Bash(python3 -c ' *)",
       "PowerShell(cd \"c:\\\\Users\\\\nhorn\\\\OneDrive - BNV\\\\Nicholas Horn\\\\Claude Code\\\\danacorp-project - Prod v1\"; $bytes = [System.IO.File]::ReadAllBytes\\(\"danacorp.db\"\\); Write-Host \"DB size: $\\($bytes.Length\\) bytes\"; $header = [System.Text.Encoding]::ASCII.GetString\\($bytes[0..15]\\); Write-Host \"Header: $header\")",
       "Read(//c/Users/nhorn/**)",
-      "Bash(curl -s http://localhost:3001/api/health)"
+      "Bash(curl -s http://localhost:3001/api/health)",
+      "Bash(PGPASSWORD=danacorp2026 \"/c/Program Files/PostgreSQL/17/bin/psql.exe\" -h localhost -p 5432 -U danacorp_user -d danacorp)",
+      "Bash(PGPASSWORD=danacorp2026 \"/c/Program Files/PostgreSQL/17/bin/psql.exe\" -h localhost -p 5432 -U danacorp_user -d danacorp -c \"UPDATE units SET precio_lista_original = precio_lista WHERE \\(precio_lista_original IS NULL OR precio_lista_original = 0\\) AND precio_lista > 0;\")"
     ]
   }
 }
