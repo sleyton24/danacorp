@@ -60,10 +60,28 @@ interface QuoterProps {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 const formatUF = (val: number) =>
-  val.toLocaleString('es-CL', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  val.toLocaleString('es-CL', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 const formatCLP = (val: number) =>
   val.toLocaleString('es-CL', { style: 'currency', currency: 'CLP', minimumFractionDigits: 0 });
+
+// Porcentaje con 1 decimal y coma (formato chileno): 3 → "3,0", 1.6 → "1,6", 80 → "80,0"
+const formatPct = (val: number) =>
+  val.toLocaleString('es-CL', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+
+// ── Características (Piso + orientación) por unidad (Cambio 4/5) ───────────────
+const unitCaracteristicas = (u: RealEstateUnit): string => {
+  const piso = u.piso;
+  if (piso == null || piso === 0) return '';
+  const pisoStr = piso < 0 ? `Piso ${piso}` : `Piso N° ${piso}`;
+  if (u.type === 'Departamento' && u.orientacion && u.orientacion.trim())
+    return `${pisoStr} · ${u.orientacion.trim()}`;
+  return pisoStr;
+};
+
+// Etiqueta de número con marca "(Subterráneo)" para bodegas/estacs en piso negativo
+const unitNumeroLabel = (u: RealEstateUnit): string =>
+  `N°${u.numero}${(u.type !== 'Departamento' && typeof u.piso === 'number' && u.piso < 0) ? ' (Subterráneo)' : ''}`;
 
 const generateId = () =>
   typeof crypto !== 'undefined' && crypto.randomUUID
@@ -212,6 +230,9 @@ export const Quoter: React.FC<QuoterProps> = ({
   const [cuotasPct, setCuotasPct] = useState(7);
   const [escrituraPct, setEscrituraPct] = useState(10);
   const [nCuotasNew, setNCuotasNew] = useState(36);
+
+  // ── Comentarios / Notas del vendedor (Cambio 8) ──────────────────────────
+  const [comentarioVendedor, setComentarioVendedor] = useState('');
 
   // ── Inline search en "Nuevo Prospecto" ───────────────────────────────────
   const [inlineTerm, setInlineTerm] = useState('');
@@ -362,6 +383,33 @@ export const Quoter: React.FC<QuoterProps> = ({
   const compraSeguaPctM   = formaCalc.compraSeguaPctMostrado;
   const creditoPctM       = formaCalc.creditoPctMostrado;
 
+  // ── Cambio 1: % mostrados a 1 decimal con ajuste de drift (suman exacto 100,0) ──
+  // Solo para mostrar — no afecta cálculos internos. El drift se carga al Crédito.
+  const formaPctDisplay = useMemo(() => {
+    const r1 = (v: number) => Math.round(v * 10) / 10;
+    const promesa = r1(promesaPctM);
+    const cuotas = r1(cuotasPctM);
+    const escritura = r1(escrituraPctM);
+    const compraSegura = r1(compraSeguaPctM);
+    let credito = r1(creditoPctM);
+    const suma = promesa + cuotas + escritura + compraSegura + credito;
+    const drift = Math.round((100 - suma) * 10) / 10;
+    credito = r1(credito + drift);
+    return { promesa, cuotas, escritura, compraSegura, credito };
+  }, [promesaPctM, cuotasPctM, escrituraPctM, compraSeguaPctM, creditoPctM]);
+
+  // ── Numeración dinámica de secciones (Cambio 6) ──────────────────────────
+  // INMUEBLES siempre presente; las demás según se incluyan; RESERVA siempre al final.
+  const sectionNumbers = useMemo(() => {
+    let n = 1;
+    const s: { inmuebles: number; formaPago?: number; dividendo?: number; comentarios?: number; reserva: number } = { inmuebles: n++, reserva: 0 };
+    if (includePaymentPlan) s.formaPago = n++;
+    if (includeMortgageSimulation) s.dividendo = n++;
+    if (comentarioVendedor.trim()) s.comentarios = n++;
+    s.reserva = n++;
+    return s;
+  }, [includePaymentPlan, includeMortgageSimulation, comentarioVendedor]);
+
   // ── Close inline dropdown on outside click ───────────────────────────────
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -413,6 +461,7 @@ export const Quoter: React.FC<QuoterProps> = ({
           bonoPct, mortgageFinPct,
           promesaPct, cuotasPct, escrituraPct, nCuotasNew,
           includePaymentPlan, includeMortgageSimulation,
+          comentarioVendedor,
         },
       },
     ],
@@ -423,7 +472,7 @@ export const Quoter: React.FC<QuoterProps> = ({
     detachedAccessories, mortgageInputs, includePaymentPlan, includeMortgageSimulation,
     reservaCLP, pieCuotasDropdown, pieCuotasManual,
     bonoPieUnits, bonoPct, mortgageFinPct,
-    promesaPct, cuotasPct, escrituraPct, nCuotasNew,
+    promesaPct, cuotasPct, escrituraPct, nCuotasNew, comentarioVendedor,
   ]);
 
   const saveImmediately = useCallback(async (): Promise<void> => {
@@ -461,7 +510,7 @@ export const Quoter: React.FC<QuoterProps> = ({
     selectedClient, selectedUnits, mortgageInputs,
     includePaymentPlan, includeMortgageSimulation,
     adjustDrafts, reservaCLP, pieCuotasDropdown, pieCuotasManual,
-    bonoPieUnits, bonoPct,
+    bonoPieUnits, bonoPct, comentarioVendedor,
   ]);
 
   useEffect(() => {
@@ -550,6 +599,7 @@ export const Quoter: React.FC<QuoterProps> = ({
         if (pc.nCuotasNew != null) setNCuotasNew(pc.nCuotasNew as number);
         if (pc.includePaymentPlan != null) setIncludePaymentPlan(pc.includePaymentPlan as boolean);
         if (pc.includeMortgageSimulation != null) setIncludeMortgageSimulation(pc.includeMortgageSimulation as boolean);
+        if (pc.comentarioVendedor != null) setComentarioVendedor(pc.comentarioVendedor as string);
       }
       const qid = getAdj('quoteId') as string | undefined;
       if (qid) quoteIdRef.current = qid;
@@ -896,17 +946,20 @@ export const Quoter: React.FC<QuoterProps> = ({
     let y = HEADER_H + 7;
     const lh4 = 4.5;
 
-    // ── SEÑOR(A) block ─────────────────────────────────────────────────────
-    doc.setTextColor(30, 30, 30);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8);
-    doc.text('Señor(a)', mg, y); y += lh4;
-    doc.setFont('helvetica', 'bold');
-    doc.text(selectedClient.nombre || '', mg, y); y += lh4;
-    doc.setFont('helvetica', 'normal');
-    if (selectedClient.rut)     { doc.text(`Rut : ${selectedClient.rut}`, mg, y); y += lh4; }
-    if (selectedClient.telefono){ doc.text(`Telefono : ${selectedClient.telefono}`, mg, y); y += lh4; }
-    if (selectedClient.email)   { doc.text(`Mail : ${selectedClient.email}`, mg, y); y += lh4; }
+    // ── DATOS CLIENTE (disposición horizontal, 2 columnas) — Cambio 7 ───────
+    const colL = mg;
+    const colR = mg + contentWidth / 2;
+    const writePair = (lblL: string, valL: string, lblR: string, valR: string) => {
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(120, 120, 120);
+      doc.text(lblL, colL, y); doc.text(lblR, colR, y);
+      y += 3.6;
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(30, 30, 30);
+      doc.text(valL || '—', colL, y); doc.text(valR || '—', colR, y);
+      y += lh4 + 1.5;
+    };
+    writePair('Señor(a)', selectedClient.nombre || '', 'RUT', selectedClient.rut || '');
+    writePair('Teléfono', selectedClient.telefono || '', 'Mail', selectedClient.email || '');
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(30, 30, 30);
     doc.text('Presente', mg, y); y += lh4 + 1;
     doc.setFont('helvetica', 'bold');
     doc.text('Estimado(a) cliente:', mg, y); y += lh4;
@@ -924,7 +977,9 @@ export const Quoter: React.FC<QuoterProps> = ({
     if (y > 230) { doc.addPage(); y = mg; }
 
     doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(50, 50, 50);
-    doc.text('1.  INMUEBLES', mg, y); y += 5;
+    doc.text(`${sectionNumbers.inmuebles}.  INMUEBLES`, mg, y); y += 5;
+    const greenTxt: [number, number, number] = [22, 101, 52];   // green-800
+    const greenBg: [number, number, number] = [240, 253, 244];  // green-50
 
     // Helper: label "Descuento Adicional Departamento X% en [unidades]" dinámico
     const bonoTypesArr = [...new Set(bonoPieBreakdown.conBono.map(x => x.unit.type))] as string[];
@@ -943,12 +998,11 @@ export const Quoter: React.FC<QuoterProps> = ({
       let tipoDesc = u.type;
       if (u.type === 'Departamento' && u.dormitorios && u.banos)
         tipoDesc = `Departamento (${u.dormitorios}D-${u.banos}B)`;
-      const nivel = u.piso ? `del Piso N° ${u.piso}` : '';
+      const caracteristicas = unitCaracteristicas(u);
       unitRowsPDF.push([
-        tipoDesc, `N°${u.numero}`, nivel,
+        tipoDesc, unitNumeroLabel(u), caracteristicas,
         { content: formatUF(valorTotal), styles: { halign: 'right' as const } },
         { content: ufHoy ? formatCLP(valorTotal * ufHoy) : '', styles: { halign: 'right' as const } },
-        '',
       ]);
       if (hasDcto) {
         const descMonto = Math.round(valorTotal * dctoP / 100 * 100) / 100;
@@ -957,12 +1011,13 @@ export const Quoter: React.FC<QuoterProps> = ({
           : u.type === 'Bodega'
             ? `${dctoP % 1 === 0 ? dctoP.toFixed(0) : dctoP.toFixed(1)}% Dscto. en Bodega N°${u.numero}`
             : `${dctoP % 1 === 0 ? dctoP.toFixed(0) : dctoP.toFixed(1)}% Dscto. en Estac. N°${u.numero}`;
+        // Fila de descuento destacada (verde) — Cambio 2
         unitRowsPDF.push([
-          { content: dctoLbl, styles: { fontStyle: 'italic' as const, textColor: [100,100,100] as [number,number,number] } },
-          '', '',
-          { content: `-${formatUF(descMonto)}`, styles: { halign: 'right' as const, textColor: [100,100,100] as [number,number,number] } },
-          { content: ufHoy ? `-${formatCLP(descMonto * ufHoy)}` : '', styles: { halign: 'right' as const, textColor: [100,100,100] as [number,number,number] } },
-          '',
+          { content: dctoLbl, styles: { textColor: greenTxt, fillColor: greenBg } },
+          { content: '', styles: { fillColor: greenBg } },
+          { content: '', styles: { fillColor: greenBg } },
+          { content: `-${formatUF(descMonto)}`, styles: { halign: 'right' as const, textColor: greenTxt, fillColor: greenBg } },
+          { content: ufHoy ? `-${formatCLP(descMonto * ufHoy)}` : '', styles: { halign: 'right' as const, textColor: greenTxt, fillColor: greenBg } },
         ]);
       }
     }
@@ -975,22 +1030,21 @@ export const Quoter: React.FC<QuoterProps> = ({
       summaryPDF.push([
         { content: 'PRECIO DE LISTA', styles: { fontStyle: 'bold' as const } }, '', '',
         { content: formatUF(precioListaTotal), styles: { fontStyle: 'bold' as const, halign: 'right' as const } },
-        { content: ufHoy ? formatCLP(precioListaTotal * ufHoy) : '', styles: { fontStyle: 'bold' as const, halign: 'right' as const } }, '',
+        { content: ufHoy ? formatCLP(precioListaTotal * ufHoy) : '', styles: { fontStyle: 'bold' as const, halign: 'right' as const } },
       ]);
     }
     summaryPDF.push([
       { content: 'PRECIO DE VENTA', styles: { fontStyle: 'bold' as const, textColor: [37,99,200] as [number,number,number] } }, '', '',
       { content: formatUF(totalFinal), styles: { fontStyle: 'bold' as const, halign: 'right' as const, textColor: [37,99,200] as [number,number,number] } },
-      { content: ufHoy ? formatCLP(totalFinal * ufHoy) : '', styles: { fontStyle: 'bold' as const, halign: 'right' as const, textColor: [37,99,200] as [number,number,number] } }, '',
+      { content: ufHoy ? formatCLP(totalFinal * ufHoy) : '', styles: { fontStyle: 'bold' as const, halign: 'right' as const, textColor: [37,99,200] as [number,number,number] } },
     ]);
 
     autoTable(doc, {
-      startY: y, margin: { left: mg, right: mg },
+      startY: y, margin: { left: mg, right: mg }, tableWidth: contentWidth,
       head: [[
-        'Tipo', 'Número', 'Ubicación',
+        'Tipo', 'Número', 'Características',
         { content: 'Valor UF', styles: { halign: 'right' as const } },
         { content: 'Valor $', styles: { halign: 'right' as const } },
-        '',
       ]],
       body: [...unitRowsPDF, ...summaryPDF],
       headStyles: {
@@ -998,16 +1052,21 @@ export const Quoter: React.FC<QuoterProps> = ({
         textColor: [60, 60, 60] as [number, number, number],
         fontStyle: 'bold' as const,
         fontSize: 9,
-        cellPadding: { top: 3, bottom: 4, left: 3, right: 3 },
+        cellPadding: { top: 1.6, bottom: 2.2, left: 3, right: 3 },
         lineWidth: { bottom: 0.3 } as unknown as number,
         lineColor: [180, 180, 180] as [number, number, number],
       },
-      bodyStyles: { fontSize: 9, cellPadding: { top: 3, bottom: 3, left: 3, right: 3 } },
+      bodyStyles: { fontSize: 9, cellPadding: { top: 1.6, bottom: 1.6, left: 3, right: 3 } },
       theme: 'plain',
+      // Grilla compartida con FORMA DE PAGO (mismas posiciones de columna).
+      // Tipo 59 · Número 20 · Características 31 · UF 28 · $ 42 = 180mm.
+      // % (col1) cae bajo Número; UF arranca en x=110 y $ en x=138 en ambas tablas.
       columnStyles: {
-        3: { halign: 'right' as const },
-        4: { halign: 'right' as const, cellWidth: 32 },
-        5: { halign: 'right' as const, cellWidth: 22 },
+        0: { cellWidth: 59 },
+        1: { cellWidth: 20 },
+        2: { cellWidth: 31 },
+        3: { halign: 'right' as const, cellWidth: 28 },
+        4: { halign: 'right' as const, cellWidth: 42 },
       },
       didDrawCell: (data: { section: string; row: { index: number }; cell: { x: number; y: number; height: number }; column: { index: number } }) => {
         // Línea bajo encabezado
@@ -1033,37 +1092,40 @@ export const Quoter: React.FC<QuoterProps> = ({
     if (includePaymentPlan) {
       if (y > 220) { doc.addPage(); y = mg; }
       doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(50, 50, 50);
-      doc.text('2.  FORMA DE PAGO', mg, y); y += 5;
+      doc.text(`${sectionNumbers.formaPago}.  FORMA DE PAGO`, mg, y); y += 5;
 
+      // Columna 2 (vacía) = espaciador que alinea con "Características" de INMUEBLES,
+      // dejando "%" bajo "Número" y Valor UF/$ alineados con la tabla de arriba.
       const pagoRows: unknown[][] = [
-        ['A la firma de Promesa', `${promesaPctM.toFixed(2)}%`, '',
+        ['A la firma de Promesa', `${formatPct(formaPctDisplay.promesa)}%`, '',
           { content: formatUF(promesaUF), styles: { halign: 'right' as const } },
           { content: ufHoy ? formatCLP(promesaUF * ufHoy) : '', styles: { halign: 'right' as const } }],
-        [`En ${nCuotasNew} cuota(s)`, `${cuotasPctM.toFixed(2)}%`, `Cuota(s) de UF ${formatUF(cuotaIndividualUF)} c/u.`,
+        // Cambio 9: detalle de cuotas dentro del Concepto
+        [`En ${nCuotasNew} cuota(s) (UF ${formatUF(cuotaIndividualUF)} c/u)`, `${formatPct(formaPctDisplay.cuotas)}%`, '',
           { content: formatUF(cuotasUF), styles: { halign: 'right' as const } },
           { content: ufHoy ? formatCLP(cuotasUF * ufHoy) : '', styles: { halign: 'right' as const } }],
-        ['A la firma de Escritura', `${escrituraPctM.toFixed(2)}%`, '',
+        ['A la firma de Escritura', `${formatPct(formaPctDisplay.escritura)}%`, '',
           { content: formatUF(escrituraUF), styles: { halign: 'right' as const } },
           { content: ufHoy ? formatCLP(escrituraUF * ufHoy) : '', styles: { halign: 'right' as const } }],
         ...(includeBonoPie ? [[
-          'Compra Segura', `${compraSeguaPctM.toFixed(2)}%`, '',
+          'Compra Segura', `${formatPct(formaPctDisplay.compraSegura)}%`, '',
           { content: formatUF(compraSeguraUF), styles: { halign: 'right' as const } },
           { content: ufHoy ? formatCLP(compraSeguraUF * ufHoy) : '', styles: { halign: 'right' as const } },
         ]] : []),
         [{ content: 'Crédito Inst. Financiera', styles: { textColor: [37,99,200] as [number,number,number] } },
-          { content: `${creditoPctM.toFixed(2)}%`, styles: { textColor: [37,99,200] as [number,number,number] } }, '',
+          { content: `${formatPct(formaPctDisplay.credito)}%`, styles: { textColor: [37,99,200] as [number,number,number] } }, '',
           { content: formatUF(creditoUF), styles: { halign: 'right' as const, textColor: [37,99,200] as [number,number,number] } },
           { content: ufHoy ? `${formatCLP(creditoUF * ufHoy)} (*)` : '', styles: { halign: 'right' as const, textColor: [37,99,200] as [number,number,number] } }],
         // Total row — 100% × precioVentaFinal
-        ['', { content: '100,00%', styles: { fontStyle: 'bold' as const } }, '',
+        ['', { content: '100,0%', styles: { fontStyle: 'bold' as const } }, '',
           { content: formatUF(precioVentaFinal), styles: { fontStyle: 'bold' as const, halign: 'right' as const } },
           { content: ufHoy ? formatCLP(precioVentaFinal * ufHoy) : '', styles: { fontStyle: 'bold' as const, halign: 'right' as const } }],
       ];
 
       autoTable(doc, {
-        startY: y, margin: { left: mg, right: mg },
+        startY: y, margin: { left: mg, right: mg }, tableWidth: contentWidth,
         head: [[
-          'Concepto', '%', 'Detalle',
+          'Concepto', '%', '',
           { content: 'Valor UF', styles: { halign: 'right' as const } },
           { content: 'Valor $', styles: { halign: 'right' as const } },
         ]],
@@ -1073,13 +1135,15 @@ export const Quoter: React.FC<QuoterProps> = ({
           textColor: [60, 60, 60] as [number, number, number],
           fontStyle: 'bold' as const,
           fontSize: 9,
-          cellPadding: { top: 3, bottom: 4, left: 3, right: 3 },
+          cellPadding: { top: 1.6, bottom: 2.2, left: 3, right: 3 },
           lineWidth: { bottom: 0.3 } as unknown as number,
           lineColor: [180, 180, 180] as [number, number, number],
         },
-        bodyStyles: { fontSize: 9, cellPadding: { top: 3, bottom: 3, left: 3, right: 3 } },
+        bodyStyles: { fontSize: 9, cellPadding: { top: 1.6, bottom: 1.6, left: 3, right: 3 } },
         theme: 'plain',
-        columnStyles: { 0: { cellWidth: 52 }, 1: { cellWidth: 18, halign: 'right' as const }, 2: { cellWidth: 38 }, 3: { halign: 'right' as const }, 4: { halign: 'right' as const } },
+        // Grilla idéntica a INMUEBLES: Concepto 59 · % 20 · (espaciador) 31 · UF 28 · $ 42 = 180mm.
+        // "%" cae bajo "Número"; UF arranca en x=110 y $ en x=138 (mismas posiciones que INMUEBLES).
+        columnStyles: { 0: { cellWidth: 59 }, 1: { cellWidth: 20, halign: 'right' as const }, 2: { cellWidth: 31 }, 3: { halign: 'right' as const, cellWidth: 28 }, 4: { halign: 'right' as const, cellWidth: 42 } },
         didDrawCell: (data: { section: string; row: { index: number }; cell: { x: number; y: number; height: number }; column: { index: number } }) => {
           // Línea bajo encabezado
           if (data.section === 'head' && data.column.index === 0) {
@@ -1107,8 +1171,7 @@ export const Quoter: React.FC<QuoterProps> = ({
     if (includeMortgageSimulation) {
       if (y > 225) { doc.addPage(); y = mg; }
       doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(50, 50, 50);
-      const secNum = includePaymentPlan ? '3.' : '2.';
-      doc.text(`${secNum}  DIVIDENDO APROXIMADO REFERENCIAL`, mg, y); y += 5;
+      doc.text(`${sectionNumbers.dividendo}.  DIVIDENDO APROXIMADO REFERENCIAL`, mg, y); y += 5;
       doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(80, 80, 80);
       doc.text(`Calculado a la tasa referencial de este día, sin considerar seguros: ${mortgageInputs.tasaAnual.toFixed(2)}%.`, mg, y);
       y += 4;
@@ -1127,11 +1190,11 @@ export const Quoter: React.FC<QuoterProps> = ({
           textColor: [60, 60, 60] as [number, number, number],
           fontStyle: 'bold' as const,
           fontSize: 9,
-          cellPadding: { top: 3, bottom: 4, left: 3, right: 3 },
+          cellPadding: { top: 1.6, bottom: 2.2, left: 3, right: 3 },
           lineWidth: { bottom: 0.3 } as unknown as number,
           lineColor: [180, 180, 180] as [number, number, number],
         },
-        bodyStyles: { fontSize: 9, cellPadding: { top: 3, bottom: 3, left: 3, right: 3 } },
+        bodyStyles: { fontSize: 9, cellPadding: { top: 1.6, bottom: 1.6, left: 3, right: 3 } },
         theme: 'plain',
         columnStyles: {
           0: { halign: 'left' as const },
@@ -1149,6 +1212,21 @@ export const Quoter: React.FC<QuoterProps> = ({
       y = lastY() + 5;
     }
 
+    // ── SECCIÓN: COMENTARIOS (solo si hay texto) — Cambio 8 ───────────────
+    if (comentarioVendedor.trim()) {
+      if (y > 250) { doc.addPage(); y = mg; }
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(50, 50, 50);
+      doc.text(`${sectionNumbers.comentarios}.  COMENTARIOS`, mg, y); y += 5;
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(60, 60, 60);
+      const comLns = doc.splitTextToSize(comentarioVendedor.trim(), contentWidth);
+      for (const ln of comLns) {
+        if (y + 5 > 275) { doc.addPage(); y = mg; }
+        doc.text(ln, mg, y);
+        y += lh4;
+      }
+      y += 3;
+    }
+
     // ── BLOQUE: MONTO DE LA RESERVA + Notas Aclaratorias ─────────────────
     {
       if (y > 215) { doc.addPage(); y = mg; }
@@ -1162,7 +1240,7 @@ export const Quoter: React.FC<QuoterProps> = ({
         : '—';
 
       doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(50, 50, 50);
-      doc.text('4.  MONTO DE LA RESERVA', mg, y); y += 5;
+      doc.text(`${sectionNumbers.reserva}.  MONTO DE LA RESERVA`, mg, y); y += 5;
 
       doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(60, 60, 60);
 
@@ -1440,6 +1518,7 @@ export const Quoter: React.FC<QuoterProps> = ({
     setMortgageFinPct(80);
     setReservaCLP(0); setPieCuotasDropdown(12); setPieCuotasManual(12);
     setPromesaPct(3); setCuotasPct(7); setEscrituraPct(10); setNCuotasNew(36);
+    setComentarioVendedor('');
     setInlineTerm(''); setShowInlineDropdown(false);
     setEmailSent(false); setDraftId(null); setPdfSavedPath(null);
     quoteIdRef.current = generateId().substring(0, 9).toUpperCase();
@@ -2264,6 +2343,18 @@ export const Quoter: React.FC<QuoterProps> = ({
             </div>
           )}
 
+          {/* Comentarios / Notas del vendedor (Cambio 8) */}
+          <div className="print:hidden">
+            <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5 block">Comentarios / Notas (opcional)</label>
+            <textarea
+              value={comentarioVendedor}
+              onChange={e => setComentarioVendedor(e.target.value)}
+              rows={3}
+              placeholder="Texto libre que aparecerá en el PDF antes del Monto de la Reserva…"
+              className="w-full p-3 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-100 resize-y"
+            />
+          </div>
+
           <div className="flex gap-3 justify-end print:hidden flex-wrap">
             {toastMsg && (
               <span className="px-4 py-3 text-green-700 bg-green-50 border border-green-200 font-bold flex items-center gap-2 text-sm rounded-xl">
@@ -2299,13 +2390,26 @@ export const Quoter: React.FC<QuoterProps> = ({
 
             <div className="p-6 space-y-4 text-xs">
 
-              {/* Señor(a) block */}
-              <div className="space-y-0.5 text-sm leading-snug">
-                <div>Señor(a)</div>
-                <div className="font-bold">{selectedClient.nombre}</div>
-                {selectedClient.rut && <div>Rut : {selectedClient.rut}</div>}
-                {selectedClient.telefono && <div>Telefono : {selectedClient.telefono}</div>}
-                {selectedClient.email && <div>Mail : {selectedClient.email}</div>}
+              {/* Datos cliente — disposición horizontal (Cambio 2, consistente con el PDF) */}
+              <div className="text-sm leading-snug">
+                <div className="grid grid-cols-2 gap-x-8 gap-y-2 mb-2">
+                  <div>
+                    <div className="text-[10px] text-gray-400 uppercase tracking-wide">Señor(a)</div>
+                    <div className="font-bold">{selectedClient.nombre || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-gray-400 uppercase tracking-wide">RUT</div>
+                    <div className="font-bold">{selectedClient.rut || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-gray-400 uppercase tracking-wide">Teléfono</div>
+                    <div className="font-bold">{selectedClient.telefono || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-gray-400 uppercase tracking-wide">Mail</div>
+                    <div className="font-bold">{selectedClient.email || '—'}</div>
+                  </div>
+                </div>
                 <div>Presente</div>
                 <div className="pt-1" />
                 <div className="font-bold">Estimado(a) cliente:</div>
@@ -2319,16 +2423,22 @@ export const Quoter: React.FC<QuoterProps> = ({
 
               {/* SECCIÓN 1: INMUEBLES — estilo asiento SSilva */}
               <div>
-                <p className="font-black text-gray-700 text-sm mb-2">1.&nbsp; INMUEBLES</p>
-                <table className="w-full text-xs">
+                <p className="font-black text-gray-700 text-sm mb-2">{sectionNumbers.inmuebles}.&nbsp; INMUEBLES</p>
+                <table className="w-full text-xs table-fixed">
+                  <colgroup>
+                    <col style={{ width: '33%' }} />
+                    <col style={{ width: '11%' }} />
+                    <col style={{ width: '17%' }} />
+                    <col style={{ width: ufHoy ? '16%' : '39%' }} />
+                    {ufHoy && <col style={{ width: '23%' }} />}
+                  </colgroup>
                   <thead>
                     <tr className="border-b border-gray-300">
                       <th className="py-1 pr-2 text-left font-semibold text-gray-500">Tipo</th>
                       <th className="py-1 pr-2 text-left font-semibold text-gray-500">Número</th>
-                      <th className="py-1 pr-2 text-left font-semibold text-gray-500">Ubicación</th>
+                      <th className="py-1 pr-2 text-left font-semibold text-gray-500">Características</th>
                       <th className="py-1 text-right font-semibold text-gray-500 whitespace-nowrap">Valor UF</th>
                       {ufHoy && <th className="py-1 pl-3 text-right font-semibold text-gray-500 whitespace-nowrap">Valor $</th>}
-                      <th />
                     </tr>
                   </thead>
                   <tbody>
@@ -2348,18 +2458,16 @@ export const Quoter: React.FC<QuoterProps> = ({
                         <React.Fragment key={u.id}>
                           <tr className="border-b border-gray-50">
                             <td className="py-1.5 pr-2 text-gray-700">{tipoDesc}</td>
-                            <td className="py-1.5 pr-2 font-bold text-gray-800 whitespace-nowrap">N°{u.numero}</td>
-                            <td className="py-1.5 pr-2 text-gray-400">{u.piso ? `del Piso N° ${u.piso}` : ''}</td>
+                            <td className="py-1.5 pr-2 font-bold text-gray-800 whitespace-nowrap">{unitNumeroLabel(u)}</td>
+                            <td className="py-1.5 pr-2 text-left text-gray-600">{unitCaracteristicas(u)}</td>
                             <td className="py-1.5 text-right font-mono font-bold text-gray-800 whitespace-nowrap">{formatUF(valorTotal)} UF</td>
                             {ufHoy && <td className="py-1.5 pl-3 text-right font-mono text-gray-500 whitespace-nowrap">{formatCLP(valorTotal * ufHoy)}</td>}
-                            <td />
                           </tr>
                           {hasDcto && (
-                            <tr className="border-b border-gray-50">
-                              <td colSpan={3} className="py-1 pl-3 text-gray-400 italic text-[10px]">{dctoLbl}</td>
-                              <td className="py-1 text-right font-mono text-gray-400 whitespace-nowrap text-[10px]">-{formatUF(descMonto)} UF</td>
-                              {ufHoy && <td className="py-1 pl-3 text-right font-mono text-gray-300 whitespace-nowrap text-[10px]">-{formatCLP(descMonto * ufHoy)}</td>}
-                              <td />
+                            <tr className="border-b border-gray-50 bg-green-50">
+                              <td colSpan={3} className="py-1.5 pl-3 text-green-800 font-medium">{dctoLbl}</td>
+                              <td className="py-1.5 text-right font-mono text-green-800 font-medium whitespace-nowrap">-{formatUF(descMonto)} UF</td>
+                              {ufHoy && <td className="py-1.5 pl-3 text-right font-mono text-green-800 font-medium whitespace-nowrap">-{formatCLP(descMonto * ufHoy)}</td>}
                             </tr>
                           )}
                         </React.Fragment>
@@ -2367,7 +2475,7 @@ export const Quoter: React.FC<QuoterProps> = ({
                     })}
                     {/* Separador + resumen */}
                     <tr className="border-t border-gray-300">
-                      <td colSpan={6} className="py-0.5" />
+                      <td colSpan={ufHoy ? 5 : 4} className="py-0.5" />
                     </tr>
                     {selectedUnits.some(u => unitDiscountPct(u, adjustDrafts) > 0.001 && adjustDrafts[u.id]?.applied) && (
                       <>
@@ -2375,7 +2483,6 @@ export const Quoter: React.FC<QuoterProps> = ({
                           <td colSpan={3} className="py-1 font-bold text-gray-700">PRECIO DE LISTA</td>
                           <td className="py-1 text-right font-bold font-mono text-gray-800 whitespace-nowrap">{formatUF(precioListaTotal)} UF</td>
                           {ufHoy && <td className="py-1 pl-3 text-right font-mono text-gray-500 whitespace-nowrap">{formatCLP(precioListaTotal * ufHoy)}</td>}
-                          <td />
                         </tr>
                         <tr className="border-t border-gray-300">
                           <td colSpan={6} className="py-0.5" />
@@ -2386,7 +2493,6 @@ export const Quoter: React.FC<QuoterProps> = ({
                       <td colSpan={3} className="py-1.5 font-black text-blue-700">PRECIO DE VENTA</td>
                       <td className="py-1.5 text-right font-black font-mono text-blue-700 whitespace-nowrap">{formatUF(totalFinal)} UF</td>
                       {ufHoy && <td className="py-1.5 pl-3 text-right font-black font-mono text-blue-600 whitespace-nowrap">{formatCLP(totalFinal * ufHoy)}</td>}
-                      <td />
                     </tr>
                   </tbody>
                 </table>
@@ -2396,39 +2502,47 @@ export const Quoter: React.FC<QuoterProps> = ({
               {(includePaymentPlan || includeMortgageSimulation) && (
                 <>
                   {includePaymentPlan && <div>
-                    <p className="font-black text-gray-700 text-sm mb-2">2.&nbsp; FORMA DE PAGO</p>
-                    <table className="w-full text-xs">
+                    <p className="font-black text-gray-700 text-sm mb-2">{sectionNumbers.formaPago}.&nbsp; FORMA DE PAGO</p>
+                    <table className="w-full text-xs table-fixed">
+                      <colgroup>
+                        <col style={{ width: '33%' }} />
+                        <col style={{ width: '11%' }} />
+                        <col style={{ width: '17%' }} />
+                        <col style={{ width: ufHoy ? '16%' : '39%' }} />
+                        {ufHoy && <col style={{ width: '23%' }} />}
+                      </colgroup>
                       <thead>
                         <tr className="border-b border-gray-300">
                           <th className="py-1 pr-2 text-left font-semibold text-gray-500">Concepto</th>
                           <th className="py-1 pr-2 text-right font-semibold text-gray-500">%</th>
-                          <th className="py-1 pr-2 text-left font-semibold text-gray-500">Detalle</th>
+                          <th />
                           <th className="py-1 text-right font-semibold text-gray-500 whitespace-nowrap">Valor UF</th>
                           {ufHoy && <th className="py-1 pl-3 text-right font-semibold text-gray-500 whitespace-nowrap">Valor $</th>}
                         </tr>
                       </thead>
                       <tbody>
                         {[
-                          { label: 'A la firma de Promesa', pct: promesaPctM, detail: '', uf: promesaUF, isBold: false },
-                          { label: `En ${nCuotasNew} cuota(s)`, pct: cuotasPctM, detail: `Cuota(s) de UF ${formatUF(cuotaIndividualUF)} c/u.`, uf: cuotasUF, isBold: false },
-                          { label: 'A la firma de Escritura', pct: escrituraPctM, detail: '', uf: escrituraUF, isBold: false },
-                          ...(includeBonoPie ? [{ label: 'Compra Segura', pct: compraSeguaPctM, detail: '', uf: compraSeguraUF, isBold: false }] : []),
-                          { label: 'Crédito Inst. Financiera', pct: creditoPctM, detail: '(*)', uf: creditoUF, isBold: true },
+                          { label: 'A la firma de Promesa', pct: formaPctDisplay.promesa, uf: promesaUF, isBold: false },
+                          // Cambio 9: detalle de cuotas dentro del Concepto
+                          { label: `En ${nCuotasNew} cuota(s) (UF ${formatUF(cuotaIndividualUF)} c/u)`, pct: formaPctDisplay.cuotas, uf: cuotasUF, isBold: false },
+                          { label: 'A la firma de Escritura', pct: formaPctDisplay.escritura, uf: escrituraUF, isBold: false },
+                          ...(includeBonoPie ? [{ label: 'Compra Segura', pct: formaPctDisplay.compraSegura, uf: compraSeguraUF, isBold: false }] : []),
+                          { label: 'Crédito Inst. Financiera', pct: formaPctDisplay.credito, uf: creditoUF, isBold: true },
                         ].map(r => (
                           <tr key={r.label} className="border-b border-gray-50">
-                            <td className={`py-1.5 pr-2 ${r.isBold ? 'font-bold text-blue-700' : 'text-gray-700'}`}>{r.label}</td>
-                            <td className={`py-1.5 pr-2 font-mono whitespace-nowrap ${r.isBold ? 'font-bold text-blue-700' : 'text-gray-500'}`}>{r.pct.toFixed(2)}%</td>
-                            <td className="py-1.5 pr-2 text-gray-400 italic">{r.detail}</td>
+                            <td className={`py-1.5 pr-2 truncate ${r.isBold ? 'font-bold text-blue-700' : 'text-gray-700'}`}>{r.label}{r.isBold ? ' (*)' : ''}</td>
+                            <td className={`py-1.5 pr-2 text-right font-mono whitespace-nowrap ${r.isBold ? 'font-bold text-blue-700' : 'text-gray-500'}`}>{formatPct(r.pct)}%</td>
+                            <td />
                             <td className={`py-1.5 text-right font-mono whitespace-nowrap ${r.isBold ? 'font-bold text-blue-700' : 'font-bold text-gray-800'}`}>{formatUF(r.uf)} UF</td>
                             {ufHoy && <td className={`py-1.5 pl-3 text-right font-mono whitespace-nowrap ${r.isBold ? 'text-blue-500' : 'text-gray-500'}`}>{formatCLP(r.uf * ufHoy)}{r.isBold?' (*)':''}</td>}
                           </tr>
                         ))}
                         <tr className="border-t border-gray-300">
-                          <td colSpan={ufHoy ? 6 : 5} className="py-0.5" />
+                          <td colSpan={ufHoy ? 5 : 4} className="py-0.5" />
                         </tr>
                         <tr>
                           <td className="py-1.5 font-black text-gray-800"></td>
-                          <td className="py-1.5 font-black font-mono text-gray-800">100,00%</td>
+                          <td className="py-1.5 text-right font-black font-mono text-gray-800">100,0%</td>
                           <td />
                           <td className="py-1.5 text-right font-black font-mono text-gray-900 whitespace-nowrap">{formatUF(precioVentaFinal)} UF</td>
                           {ufHoy && <td className="py-1.5 pl-3 text-right font-black font-mono text-gray-700 whitespace-nowrap">{formatCLP(precioVentaFinal * ufHoy)}</td>}
@@ -2443,7 +2557,7 @@ export const Quoter: React.FC<QuoterProps> = ({
                   {/* SECCIÓN 4: Dividendo */}
                   {includeMortgageSimulation && <div>
                     <p className="font-black text-gray-700 text-sm mb-1">
-                      {includePaymentPlan ? '3.' : '2.'}&nbsp; DIVIDENDO APROXIMADO REFERENCIAL
+                      {sectionNumbers.dividendo}.&nbsp; DIVIDENDO APROXIMADO REFERENCIAL
                     </p>
                     <p className="text-[10px] text-gray-500 mb-2">Calculado a la tasa referencial de este día, sin considerar seguros: {mortgageInputs.tasaAnual.toFixed(2)}%.</p>
                     <table className="w-full text-xs">
@@ -2469,9 +2583,17 @@ export const Quoter: React.FC<QuoterProps> = ({
                 </>
               )}
 
+              {/* SECCIÓN: COMENTARIOS (solo si hay texto) — Cambio 8 */}
+              {comentarioVendedor.trim() && (
+                <div className="mt-6 border-t border-gray-100 pt-4">
+                  <p className="font-black text-gray-700 text-sm mb-2">{sectionNumbers.comentarios}.&nbsp; COMENTARIOS</p>
+                  <p className="text-[11px] text-gray-700 leading-snug whitespace-pre-wrap">{comentarioVendedor.trim()}</p>
+                </div>
+              )}
+
               {/* BLOQUE: MONTO DE LA RESERVA + Notas Aclaratorias */}
               <div className="mt-6 border-t border-gray-100 pt-4">
-                <p className="font-black text-gray-700 text-sm mb-2">4.&nbsp; MONTO DE LA RESERVA</p>
+                <p className="font-black text-gray-700 text-sm mb-2">{sectionNumbers.reserva}.&nbsp; MONTO DE LA RESERVA</p>
                 <div className="space-y-1 text-[10px] text-gray-700 leading-tight">
                   <p>.- Al concretar la decisión de compra, el cotizante deberá entregar $ {(reservaCLP || 300000).toLocaleString('es-CL')} que se imputarán íntegramente al pago de parte de los gastos operacionales que se generen por la compraventa. En caso que no firmara la respectiva promesa de compraventa, teniendo la pre aprobación o aprobación de un crédito, este monto se imputará por completo al pago de una multa penal compensatoria a favor de {projectConfig.nombreInmobiliaria || 'la Inmobiliaria'}.</p>
                   <p>.- La Inmobiliaria se reserva el derecho de gestionar el crédito hipotecario con las instituciones financieras que considere pertinentes. Para el efecto, el cliente deberá hacer entrega de todos los antecedentes que se soliciten.</p>

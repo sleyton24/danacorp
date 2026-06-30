@@ -102,10 +102,11 @@ const App: React.FC = () => {
     const loadData = async () => {
       try {
         setAuthLoading(true);
-        const [projRes, clientRes, unitRes] = await Promise.all([
+        const [projRes, clientRes, unitRes, usersRes] = await Promise.all([
           fetch('/api/projects', { headers }),
           fetch('/api/clients', { headers }),
           fetch('/api/units', { headers }),
+          fetch('/api/users', { headers }),
         ]);
         if (projRes.ok) {
           const projs = await projRes.json() as Project[];
@@ -114,6 +115,11 @@ const App: React.FC = () => {
         }
         if (clientRes.ok) setClients(await clientRes.json() as Client[]);
         if (unitRes.ok) setUnits(await unitRes.json() as RealEstateUnit[]);
+        // FIX P2-4: usuarios reales de BD (reemplaza defaultUsers para selectores como Ejecutivo)
+        if (usersRes.ok) {
+          const realUsers = await usersRes.json() as User[];
+          if (Array.isArray(realUsers) && realUsers.length > 0) setUsers(realUsers);
+        }
       } catch (err) { console.error('[App] Error cargando datos:', err); }
       finally { setAuthLoading(false); }
     };
@@ -747,6 +753,7 @@ const App: React.FC = () => {
             allUnits={currentProjectUnits}
             currentUser={currentUser}
             clients={clients}
+            users={users}
             onSelectClient={(id) => { setExpandedClientId(id); setCurrentView('clients'); setSelectedUnit(null); setUnitDetailHasChanges(false); }}
             onAssignClient={handleAssignUnit}
             onUnassignClient={handleUnassignUnit}

@@ -262,7 +262,7 @@ async function buildAppStateFromTables(): Promise<Record<string, unknown> | null
       gastosNotariales: u.gastos_notariales, gastosConservador: u.gastos_conservador,
       bodegas: JSON.parse((u.bodegas as string) || '[]'),
       estacionamientos: JSON.parse((u.estacionamientos as string) || '[]'),
-      clienteId: u.cliente_id, asignadoPor: u.asignado_por, fechaAsignacion: u.fecha_asignacion,
+      clienteId: u.cliente_id, asignadoPor: u.asignado_por, ejecutivoId: u.ejecutivo_id, fechaAsignacion: u.fecha_asignacion,
       precioLista: u.precio_lista, precioVenta: u.precio_venta, pie: u.pie,
       pieFormaPago: u.pie_forma_pago, pieCuotas: u.pie_cuotas,
       bonoDescuento: u.bono_descuento, reservaMonto: u.reserva_monto,
@@ -467,7 +467,8 @@ async function checkReservasVencidas() {
       type HistEntry = { fechaFin?: string; [k: string]: unknown };
       const hist = (() => { try { return JSON.parse(u.historial_ocupacion || '[]') as HistEntry[]; } catch { return [] as HistEntry[]; } })();
       const updHist = hist.map((h, idx) => idx === hist.length - 1 && !h.fechaFin ? { ...h, fechaFin: nowISO, motivo: 'Vencimiento' } : h);
-      await db.prepare(`UPDATE units SET estado = 'Disponible', cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, descuento_cliente = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, fecha_reserva = NULL, fecha_promesa = NULL, fecha_escritura = NULL, fecha_solicitud_credito = NULL, fecha_aprobacion_credito = NULL, fecha_termino_pago = NULL, fecha_alzamiento = NULL, fecha_entrega = NULL, fecha_pago = NULL, historial_ocupacion = ?, updated_at = ? WHERE id = ?`)
+      // FIX P2-1: limpiar también descuento_pct y descuento_pendiente (igual que /liberar).
+      await db.prepare(`UPDATE units SET estado = 'Disponible', cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, descuento_cliente = NULL, descuento_pct = 0, descuento_pendiente = 0, reserva_vendedor_id = NULL, reserva_expira = NULL, fecha_reserva = NULL, fecha_promesa = NULL, fecha_escritura = NULL, fecha_solicitud_credito = NULL, fecha_aprobacion_credito = NULL, fecha_termino_pago = NULL, fecha_alzamiento = NULL, fecha_entrega = NULL, fecha_pago = NULL, historial_ocupacion = ?, updated_at = ? WHERE id = ?`)
         .run(JSON.stringify(updHist), nowISO, u.id);
       if (u.cliente_id) {
         await db.prepare(`UPDATE clients SET estado = 'Prospecto' WHERE id = ?`).run(u.cliente_id);
@@ -683,6 +684,22 @@ app.get('/api/me', requireAuth, async (req, res) => {
     return;
   }
   res.json({ user });
+});
+
+// ── 3b. GET /api/users (FIX P2-4) ────────────────────────────────────────────
+// Lista de usuarios reales (para selectores como el de Ejecutivo). Requiere JWT.
+app.get('/api/users', requireAuth, async (_req, res) => {
+  const rows = await db.prepare(
+    'SELECT id, name, email, role, company, assigned_project_ids FROM users ORDER BY name'
+  ).all() as Record<string, unknown>[];
+  res.json(rows.map(r => ({
+    id: r.id as string,
+    name: r.name as string,
+    email: r.email as string,
+    role: r.role as string,
+    company: (r.company as string) ?? '',
+    assignedProjectIds: (r.assigned_project_ids as string[]) ?? [],
+  })));
 });
 
 // ── 4. Borradores de Cotización ──────────────────────────────────────────────
@@ -1285,6 +1302,105 @@ app.post('/api/discount-requests/:id/cancel', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// ── 4c. Solicitudes de aprobación genéricas (FIX 3) ──────────────────────────
+// Salvaguarda: asegura la tabla aunque el server llevara rato corriendo.
+let approvalsTableReady = false;
+async function ensureApprovalsTable() {
+  if (approvalsTableReady) return;
+  await db.prepare(`CREATE TABLE IF NOT EXISTS approval_requests (
+    id TEXT PRIMARY KEY, tipo TEXT NOT NULL, estado TEXT NOT NULL DEFAULT 'pendiente',
+    solicitado_por TEXT NOT NULL, solicitado_nombre TEXT, solicitado_at TIMESTAMPTZ DEFAULT NOW(),
+    resuelto_por TEXT, resuelto_at TIMESTAMPTZ, unit_id TEXT, project_id TEXT,
+    descripcion TEXT, datos JSONB
+  )`).run();
+  approvalsTableReady = true;
+}
+
+// Crear solicitud (cualquier rol autenticado)
+app.post('/api/approval-requests', requireAuth, async (req, res) => {
+  await ensureApprovalsTable();
+  const { tipo, unitId, projectId, descripcion, datos } = req.body as Record<string, unknown>;
+  if (!tipo) { res.status(400).json({ error: 'tipo requerido' }); return; }
+  const userId = (req as AuthenticatedRequest).userId;
+  const user = await getUserById(userId);
+  const id = crypto.randomUUID();
+  await db.prepare(`
+    INSERT INTO approval_requests (id, tipo, estado, solicitado_por, solicitado_nombre, unit_id, project_id, descripcion, datos)
+    VALUES (?, ?, 'pendiente', ?, ?, ?, ?, ?, ?)
+  `).run(id, tipo as string, userId, user?.name || '', (unitId as string) ?? null,
+         (projectId as string) ?? null, (descripcion as string) ?? null,
+         datos != null ? JSON.stringify(datos) : null);
+  createNotification({
+    paraRol: 'Supervisor', titulo: 'Nueva solicitud de aprobación',
+    mensaje: `${user?.name || 'Usuario'}: ${(descripcion as string) || tipo}`,
+    tipo: 'warning', linkView: 'approvals', relatedId: id,
+  });
+  res.json({ id, estado: 'pendiente' });
+});
+
+// Listar solicitudes (solo Admin/Supervisor), filtro opcional ?tipo= y ?estado=
+app.get('/api/approval-requests', requireAuth, requireRole('Admin', 'Supervisor'), async (req, res) => {
+  await ensureApprovalsTable();
+  const { tipo, estado } = req.query as Record<string, string>;
+  let sql = 'SELECT * FROM approval_requests WHERE 1=1';
+  const params: string[] = [];
+  if (tipo) { sql += ' AND tipo = ?'; params.push(tipo); }
+  if (estado) { sql += ' AND estado = ?'; params.push(estado); }
+  sql += ' ORDER BY solicitado_at DESC';
+  const rows = await db.prepare(sql).all(...params);
+  res.json(rows);
+});
+
+// Aprobar: marca aprobada y APLICA el cambio (cronograma_pago → plan_pagos de la unidad)
+app.post('/api/approval-requests/:id/aprobar', requireAuth, requireRole('Admin', 'Supervisor'), async (req, res) => {
+  await ensureApprovalsTable();
+  const userId = (req as AuthenticatedRequest).userId;
+  const now = new Date().toISOString();
+  const ar = await db.prepare('SELECT * FROM approval_requests WHERE id = ?').get(req.params.id) as Record<string, unknown> | undefined;
+  if (!ar) { res.status(404).json({ error: 'Solicitud no encontrada' }); return; }
+  if (ar.estado !== 'pendiente') { res.status(409).json({ error: 'La solicitud ya fue resuelta' }); return; }
+
+  // Aplicar el cambio según tipo
+  if (ar.tipo === 'cronograma_pago' && ar.unit_id) {
+    const datos = (typeof ar.datos === 'string' ? JSON.parse(ar.datos as string) : ar.datos) as { accion: string; pago?: { id: string; [k: string]: unknown } } | null;
+    const unitRow = await db.prepare('SELECT plan_pagos FROM units WHERE id = ?').get(ar.unit_id as string) as { plan_pagos: string } | undefined;
+    if (unitRow && datos?.accion) {
+      type Pago = { id: string; [k: string]: unknown };
+      const plan = (() => { try { return JSON.parse(unitRow.plan_pagos || '[]') as Pago[]; } catch { return [] as Pago[]; } })();
+      let nextPlan = plan;
+      if (datos.accion === 'agregar' && datos.pago) nextPlan = [...plan, datos.pago as Pago];
+      else if (datos.accion === 'eliminar' && datos.pago) nextPlan = plan.filter(p => p.id !== datos.pago!.id);
+      else if (datos.accion === 'modificar' && datos.pago) nextPlan = plan.map(p => p.id === datos.pago!.id ? { ...p, ...datos.pago } : p);
+      await db.prepare('UPDATE units SET plan_pagos = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(nextPlan), now, ar.unit_id as string);
+    }
+  }
+
+  await db.prepare(`UPDATE approval_requests SET estado = 'aprobado', resuelto_por = ?, resuelto_at = ? WHERE id = ?`)
+    .run(userId, now, req.params.id);
+  createNotification({
+    paraUserId: ar.solicitado_por as string, titulo: 'Solicitud aprobada',
+    mensaje: `${(ar.descripcion as string) || ar.tipo} fue aprobada`, tipo: 'success', linkView: 'inventory', relatedId: (ar.unit_id as string) || undefined,
+  });
+  res.json({ ok: true, estado: 'aprobado' });
+});
+
+// Rechazar: marca rechazada, NO aplica cambio
+app.post('/api/approval-requests/:id/rechazar', requireAuth, requireRole('Admin', 'Supervisor'), async (req, res) => {
+  await ensureApprovalsTable();
+  const userId = (req as AuthenticatedRequest).userId;
+  const now = new Date().toISOString();
+  const ar = await db.prepare('SELECT * FROM approval_requests WHERE id = ?').get(req.params.id) as Record<string, unknown> | undefined;
+  if (!ar) { res.status(404).json({ error: 'Solicitud no encontrada' }); return; }
+  if (ar.estado !== 'pendiente') { res.status(409).json({ error: 'La solicitud ya fue resuelta' }); return; }
+  await db.prepare(`UPDATE approval_requests SET estado = 'rechazado', resuelto_por = ?, resuelto_at = ? WHERE id = ?`)
+    .run(userId, now, req.params.id);
+  createNotification({
+    paraUserId: ar.solicitado_por as string, titulo: 'Solicitud rechazada',
+    mensaje: `${(ar.descripcion as string) || ar.tipo} fue rechazada`, tipo: 'error', linkView: 'inventory', relatedId: (ar.unit_id as string) || undefined,
+  });
+  res.json({ ok: true, estado: 'rechazado' });
+});
+
 // ── 5b. Notificaciones ────────────────────────────────────────────────────────
 
 app.get('/api/notifications', requireAuth, async (req, res) => {
@@ -1808,6 +1924,7 @@ app.get('/api/units', requireAuth, async (req, res) => {
     estacionamientos: (() => { try { const v = r.estacionamientos; if (Array.isArray(v)) return v; return JSON.parse((v as string) || '[]'); } catch { return []; } })(),
     clienteId: r.cliente_id,
     asignadoPor: r.asignado_por,
+    ejecutivoId: r.ejecutivo_id,
     fechaAsignacion: r.fecha_asignacion,
     precioLista: r.precio_lista,
     precioVenta: r.precio_venta,
@@ -1985,6 +2102,10 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
   const updates: string[] = [];
   const params: Array<string | number | null> = [];
 
+  // REGLA: todo cambio en UnitDetail debe pasar por performSave(). El fieldMap aquí
+  // debe incluir TODOS los campos editables. Nunca eliminar campos del fieldMap sin
+  // verificar que no hay UI que los use. Verificar el modal conservar/descartar
+  // después de cualquier cambio en el componente.
   const fieldMap: Record<string, string> = {
     estado: 'estado', precioLista: 'precio_lista', precioVenta: 'precio_venta',
     pie: 'pie', pieFormaPago: 'pie_forma_pago', pieCuotas: 'pie_cuotas',
@@ -2005,23 +2126,29 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
     descuentoCliente: 'descuento_cliente',
     descuentoSolicitudId: 'descuento_solicitud_id', clienteId: 'cliente_id',
     asignadoPor: 'asignado_por', fechaAsignacion: 'fecha_asignacion',
+    ejecutivoId: 'ejecutivo_id',
   };
 
-  // No persistir fechas de hito si la unidad queda sin cliente o en estado Disponible
+  // REGLA: la limpieza de fechas SOLO ocurre en transiciones de estado (o al quitar el
+  // cliente), NUNCA en un guardado normal — así un guardado que no cambia el estado
+  // preserva todas las fechas de hito que el usuario editó. (Ver REGLA al pie del archivo.)
   const estadoFinal = (body.estado ?? existing.estado) as string;
-  const clienteFinal = (body.clienteId !== undefined ? body.clienteId : existing.cliente_id) as string | null;
-  if (estadoFinal === 'Disponible') {
-    // Strip all hito fields from body and force NULL in DB
+  const transicionADisponible = 'estado' in body && body.estado === 'Disponible' && (existing.estado as string) !== 'Disponible';
+  const clienteRemovido = 'clienteId' in body && body.clienteId == null && existing.cliente_id != null;
+  if (transicionADisponible) {
+    // Transición → Disponible: limpiar TODAS las fechas de hito
     const hitoJsKeys = ['fechaReserva', 'fechaPromesa', 'fechaEscritura', 'fechaSolicitudCredito',
       'fechaAprobacionCredito', 'fechaTerminoPago', 'fechaAlzamiento', 'fechaEntrega', 'fechaPago'];
     for (const k of hitoJsKeys) delete body[k];
     const hitoSqlCols = ['fecha_reserva', 'fecha_promesa', 'fecha_escritura', 'fecha_solicitud_credito',
       'fecha_aprobacion_credito', 'fecha_termino_pago', 'fecha_alzamiento', 'fecha_entrega', 'fecha_pago'];
     for (const col of hitoSqlCols) updates.push(`${col} = NULL`);
-  } else if (clienteFinal == null) {
+  } else if (clienteRemovido) {
+    // Se quitó el cliente: limpiar fechas asociadas a la ocupación
     delete body.fechaReserva;
     delete body.fechaPromesa;
     delete body.fechaEscritura;
+    updates.push('fecha_reserva = NULL', 'fecha_promesa = NULL', 'fecha_escritura = NULL');
   }
   // Nueva regla: estado no puede pasar de Disponible a Reservado/Promesado sin cliente
   if ('estado' in body && (body.estado === 'Reservado' || body.estado === 'Promesado')) {
@@ -2033,25 +2160,26 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
       }
     }
   }
-  // Enforce business rule: descuento_cliente must be NULL when estado → Disponible or when client changes
+  // FIX 2: descuento_cliente debe ser NULL al pasar a Disponible o cuando CAMBIA el
+  // cliente (asignar nuevo o quitar). También se cero el descuento_pct/pendiente.
   const prevClienteId = existing.cliente_id as string | null;
   const clienteIdChanged = 'clienteId' in body && body.clienteId !== prevClienteId;
-  if (estadoFinal === 'Disponible' || (clienteIdChanged && !body.clienteId)) {
+  if (estadoFinal === 'Disponible' || clienteIdChanged) {
     if (!('descuentoCliente' in body)) {
       updates.push('descuento_cliente = ?');
       params.push(null);
     }
+    if (!('descuentoPct' in body)) { updates.push('descuento_pct = 0'); }
+    if (!('descuentoPendiente' in body)) { updates.push('descuento_pendiente = 0'); }
   }
 
   // ISSUE 2: Auto-set/clear fecha hitos on estado transition
   if ('estado' in body && body.estado !== existing.estado) {
     const newEstado = body.estado as string;
-    const ORDEN: string[] = ['Disponible', 'Reservado', 'Promesado', 'Escriturado'];
-    const prevIdx = ORDEN.indexOf(existing.estado as string);
-    const newIdx = ORDEN.indexOf(newEstado);
     if (newEstado === 'Promesado') {
       if (!body.fechaPromesa && !(existing.fecha_promesa as string | null)) {
         updates.push('fecha_promesa = ?'); params.push(now);
+        delete body.fechaPromesa; // evitar doble asignación a fecha_promesa en el fieldMap
       }
       for (const [jsKey, col] of [['fechaEscritura','fecha_escritura'],['fechaSolicitudCredito','fecha_solicitud_credito'],['fechaAprobacionCredito','fecha_aprobacion_credito'],['fechaTerminoPago','fecha_termino_pago'],['fechaAlzamiento','fecha_alzamiento'],['fechaEntrega','fecha_entrega'],['fechaPago','fecha_pago']] as [string,string][]) {
         delete body[jsKey]; updates.push(`${col} = NULL`);
@@ -2059,8 +2187,16 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
     } else if (newEstado === 'Escriturado') {
       if (!body.fechaEscritura && !(existing.fecha_escritura as string | null)) {
         updates.push('fecha_escritura = ?'); params.push(now);
+        delete body.fechaEscritura; // evitar doble asignación a fecha_escritura en el fieldMap
       }
-    } else if (newEstado === 'Reservado' && prevIdx > newIdx) {
+    } else if (newEstado === 'Reservado') {
+      // FIX 1: al pasar a Reservado, garantizar fecha_reserva (avance Disponible→Reservado
+      // o reactivación), sin depender del frontend.
+      if (!body.fechaReserva && !(existing.fecha_reserva as string | null)) {
+        updates.push('fecha_reserva = ?'); params.push(now);
+        delete body.fechaReserva; // evitar doble asignación a fecha_reserva en el fieldMap
+      }
+      // Limpiar fechas aguas abajo (aplica tanto en avance como en retroceso desde Promesado/Escriturado)
       for (const [jsKey, col] of [['fechaPromesa','fecha_promesa'],['fechaEscritura','fecha_escritura'],['fechaSolicitudCredito','fecha_solicitud_credito'],['fechaAprobacionCredito','fecha_aprobacion_credito'],['fechaTerminoPago','fecha_termino_pago'],['fechaAlzamiento','fecha_alzamiento'],['fechaEntrega','fecha_entrega'],['fechaPago','fecha_pago']] as [string,string][]) {
         delete body[jsKey]; updates.push(`${col} = NULL`);
       }
@@ -2201,6 +2337,9 @@ app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala',
           fecha_alzamiento = NULL,
           fecha_entrega = NULL,
           fecha_pago = NULL,
+          descuento_cliente = NULL,
+          descuento_pct = 0,
+          descuento_pendiente = 0,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `).run(body.clienteId, body.asignadoPor ?? userId, body.fechaAsignacion ?? now, body.fechaReserva ?? now, userId, expira, JSON.stringify(hist), id);
@@ -2227,16 +2366,21 @@ app.patch('/api/units/:id/unassign', requireAuth, requireRole('Admin', 'JefeSala
   const userRole = (req as AuthenticatedRequest).userRole;
   const userName = (await getUserById(userId))?.name || '';
   const now = new Date().toISOString();
-  // Fetch unit info before clearing, for audit log
-  const unitBeforeUnassign = await db.prepare('SELECT numero, type, cliente_id FROM units WHERE id = ?')
-    .get(req.params.id) as { numero: string; type: string; cliente_id: string | null } | undefined;
+  // Fetch unit info before clearing, for audit log + historial
+  const unitBeforeUnassign = await db.prepare('SELECT numero, type, cliente_id, historial_ocupacion FROM units WHERE id = ?')
+    .get(req.params.id) as { numero: string; type: string; cliente_id: string | null; historial_ocupacion: string } | undefined;
   const clienteBeforeUnassign = unitBeforeUnassign?.cliente_id
     ? (await db.prepare('SELECT nombre FROM clients WHERE id = ?').get(unitBeforeUnassign.cliente_id) as { nombre: string } | undefined)?.nombre || ''
     : '';
+  // FIX P2-2: cerrar la última entrada abierta del historial de ocupación
+  type HistEntryU = { fechaFin?: string; [k: string]: unknown };
+  const histU = (() => { try { return JSON.parse(unitBeforeUnassign?.historial_ocupacion || '[]') as HistEntryU[]; } catch { return [] as HistEntryU[]; } })();
+  const updHistU = histU.map((h, idx) => idx === histU.length - 1 && !h.fechaFin ? { ...h, fechaFin: now, motivo: 'Desasignación' } : h);
   // Al desistir/desasignar también se limpian los datos de reserva (fecha, vendedor, expiración),
   // si no la fecha de reserva quedaba pegada (bug reportado).
-  const result = await db.prepare(`UPDATE units SET cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, fecha_reserva = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, descuento_cliente = NULL, estado = 'Disponible', fecha_promesa = NULL, fecha_escritura = NULL, fecha_solicitud_credito = NULL, fecha_aprobacion_credito = NULL, fecha_termino_pago = NULL, fecha_alzamiento = NULL, fecha_entrega = NULL, fecha_pago = NULL, updated_at = ? WHERE id = ?`)
-    .run(now, req.params.id);
+  // FIX P2-1: limpiar también descuento_pct y descuento_pendiente (igual que /liberar).
+  const result = await db.prepare(`UPDATE units SET cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, fecha_reserva = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, descuento_cliente = NULL, descuento_pct = 0, descuento_pendiente = 0, estado = 'Disponible', fecha_promesa = NULL, fecha_escritura = NULL, fecha_solicitud_credito = NULL, fecha_aprobacion_credito = NULL, fecha_termino_pago = NULL, fecha_alzamiento = NULL, fecha_entrega = NULL, fecha_pago = NULL, historial_ocupacion = ?, updated_at = ? WHERE id = ?`)
+    .run(JSON.stringify(updHistU), now, req.params.id);
   if (result.changes === 0) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
   const unitDesc = unitBeforeUnassign ? `${unitBeforeUnassign.type} ${unitBeforeUnassign.numero}` : req.params.id;
   createAuditLog(userId, userName, userRole, 'Desasignación', 'Unit', req.params.id, `${unitDesc} desasignada${clienteBeforeUnassign ? ` de ${clienteBeforeUnassign}` : ''} por ${userName}`);
@@ -2392,6 +2536,7 @@ if (isMain) {
       await db.prepare(`ALTER TABLE quotation_drafts ADD COLUMN IF NOT EXISTS pdf_path TEXT`).run();
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS precio_lista_original REAL`).run();
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS descuento_cliente NUMERIC(5,2)`).run();
+      await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS ejecutivo_id TEXT`).run();
       await db.prepare(`CREATE TABLE IF NOT EXISTS price_history (
         id TEXT PRIMARY KEY,
         unit_id TEXT NOT NULL,
@@ -2403,6 +2548,21 @@ if (isMain) {
         usuario_id TEXT NOT NULL,
         usuario_nombre TEXT NOT NULL,
         created_at TIMESTAMPTZ DEFAULT NOW()
+      )`).run();
+      // FIX 3: solicitudes de aprobación genéricas (p.ej. cronograma_pago)
+      await db.prepare(`CREATE TABLE IF NOT EXISTS approval_requests (
+        id TEXT PRIMARY KEY,
+        tipo TEXT NOT NULL,
+        estado TEXT NOT NULL DEFAULT 'pendiente',
+        solicitado_por TEXT NOT NULL,
+        solicitado_nombre TEXT,
+        solicitado_at TIMESTAMPTZ DEFAULT NOW(),
+        resuelto_por TEXT,
+        resuelto_at TIMESTAMPTZ,
+        unit_id TEXT,
+        project_id TEXT,
+        descripcion TEXT,
+        datos JSONB
       )`).run();
       await migrateFromAppState();
       await ensureProjectConfigs();

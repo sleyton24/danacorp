@@ -27,6 +27,18 @@ interface DiscountRow {
   created_at: string;
 }
 
+interface ApprovalRow {
+  id: string;
+  tipo: string;
+  estado: string;
+  solicitado_por: string;
+  solicitado_nombre: string | null;
+  solicitado_at: string;
+  unit_id: string | null;
+  descripcion: string | null;
+  datos: { accion?: string; pago?: { id?: string; amount?: string; date?: string }; [k: string]: unknown } | null;
+}
+
 interface ApprovalsViewProps {
   currentUser: User;
 }
@@ -98,6 +110,38 @@ export const ApprovalsView: React.FC<ApprovalsViewProps> = ({ currentUser }) => 
         setRejectModal(null);
         setRejectMotivo('');
       }
+    } catch { /* silencioso */ }
+    finally { setProcessing(null); }
+  };
+
+  // ── FIX 3: Solicitudes de cronograma de pagos (approval_requests) ──────────
+  const isAdminOrSup = currentUser.role === 'Admin' || currentUser.role === 'Supervisor';
+  const [mainTab, setMainTab] = useState<'descuentos' | 'cronograma'>('descuentos');
+  const [cronoReqs, setCronoReqs] = useState<ApprovalRow[]>([]);
+  const [cronoLoading, setCronoLoading] = useState(false);
+
+  const fetchCrono = useCallback(async () => {
+    const t = token();
+    if (!t || !isAdminOrSup) return;
+    setCronoLoading(true);
+    try {
+      const res = await fetch('/api/approval-requests?tipo=cronograma_pago', { headers: { Authorization: `Bearer ${t}` } });
+      if (res.ok) setCronoReqs(await res.json() as ApprovalRow[]);
+    } catch { /* silencioso */ }
+    finally { setCronoLoading(false); }
+  }, [isAdminOrSup]);
+
+  useEffect(() => { fetchCrono(); }, [fetchCrono]);
+
+  const resolveCrono = async (id: string, accion: 'aprobar' | 'rechazar') => {
+    const t = token();
+    if (!t) return;
+    setProcessing(id);
+    try {
+      const res = await fetch(`/api/approval-requests/${id}/${accion}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` }, body: JSON.stringify({}),
+      });
+      if (res.ok) setCronoReqs(prev => prev.map(r => r.id === id ? { ...r, estado: accion === 'aprobar' ? 'aprobado' : 'rechazado' } : r));
     } catch { /* silencioso */ }
     finally { setProcessing(null); }
   };
@@ -201,6 +245,24 @@ export const ApprovalsView: React.FC<ApprovalsViewProps> = ({ currentUser }) => 
         </div>
       </div>
 
+      {/* FIX 3: Tabs — Cronograma solo visible para Admin/Supervisor */}
+      {isAdminOrSup && (
+        <div className="flex gap-2">
+          <button onClick={() => setMainTab('descuentos')}
+            className={`px-4 py-2 text-sm font-bold rounded-xl transition-all ${mainTab === 'descuentos' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+            Descuentos
+          </button>
+          <button onClick={() => setMainTab('cronograma')}
+            className={`px-4 py-2 text-sm font-bold rounded-xl transition-all ${mainTab === 'cronograma' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+            Cronograma de Pagos
+            {cronoReqs.filter(r => r.estado === 'pendiente').length > 0 && (
+              <span className={`ml-1 px-1.5 py-0.5 rounded-full text-[10px] ${mainTab === 'cronograma' ? 'bg-white/20' : 'bg-red-100 text-red-600'}`}>{cronoReqs.filter(r => r.estado === 'pendiente').length}</span>
+            )}
+          </button>
+        </div>
+      )}
+
+      {mainTab === 'descuentos' && (<>
       {/* Filters */}
       <div className="flex gap-2 flex-wrap">
         {(['pending', 'approved', 'rejected', 'all'] as FilterType[]).map(f => {
@@ -306,6 +368,68 @@ export const ApprovalsView: React.FC<ApprovalsViewProps> = ({ currentUser }) => 
           </div>
         )}
       </div>
+      </>)}
+
+      {/* FIX 3: Solicitudes de cronograma de pagos */}
+      {mainTab === 'cronograma' && isAdminOrSup && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gray-50">
+            <span className="text-sm font-bold text-gray-700">Solicitudes de cronograma de pagos</span>
+            <button onClick={fetchCrono} className="p-2 border border-gray-200 rounded-xl hover:bg-white transition-all text-gray-500">
+              <RefreshCw className={`w-4 h-4 ${cronoLoading ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
+          {cronoReqs.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-40 text-gray-400 space-y-2">
+              <CheckSquare className="w-8 h-8 opacity-40" />
+              <p className="text-sm font-medium">No hay solicitudes de cronograma</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="bg-gray-50 border-b border-gray-100">
+                  <tr>
+                    {['Solicitante', 'Acción', 'Descripción', 'Fecha', 'Estado', 'Acciones'].map(h => (
+                      <th key={h} className="px-4 py-3 text-left text-xs font-black text-gray-500 uppercase tracking-wide">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {cronoReqs.map(r => (
+                    <tr key={r.id} className="hover:bg-gray-50/50 transition-colors">
+                      <td className="px-4 py-3 text-xs font-medium text-gray-800">{r.solicitado_nombre || r.solicitado_por}</td>
+                      <td className="px-4 py-3 text-xs font-bold text-gray-700 uppercase">{r.datos?.accion || '—'}</td>
+                      <td className="px-4 py-3 text-xs text-gray-600 max-w-[260px]">{r.descripcion}</td>
+                      <td className="px-4 py-3 text-xs text-gray-500">{formatDate(r.solicitado_at)}</td>
+                      <td className="px-4 py-3">
+                        {r.estado === 'pendiente'
+                          ? <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 text-xs font-bold rounded-full"><Clock className="w-3 h-3" /> Pendiente</span>
+                          : r.estado === 'aprobado'
+                          ? <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-700 text-xs font-bold rounded-full"><Check className="w-3 h-3" /> Aprobado</span>
+                          : <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-red-100 text-red-700 text-xs font-bold rounded-full"><X className="w-3 h-3" /> Rechazado</span>}
+                      </td>
+                      <td className="px-4 py-3">
+                        {r.estado === 'pendiente' && (
+                          <div className="flex gap-1.5">
+                            <button onClick={() => resolveCrono(r.id, 'aprobar')} disabled={processing === r.id}
+                              className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white text-xs font-bold rounded-lg hover:bg-green-700 disabled:opacity-50 transition-all">
+                              {processing === r.id ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />} Aprobar
+                            </button>
+                            <button onClick={() => resolveCrono(r.id, 'rechazar')} disabled={processing === r.id}
+                              className="flex items-center gap-1 px-3 py-1.5 bg-red-50 border border-red-200 text-red-600 text-xs font-bold rounded-lg hover:bg-red-100 disabled:opacity-50 transition-all">
+                              <X className="w-3 h-3" /> Rechazar
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };

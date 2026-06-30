@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Notification } from '../types';
-import { Bell, Check, Clock, AlertTriangle, Mail, Calendar, Trash2 } from 'lucide-react';
+import { Bell, Clock, AlertTriangle, Mail, Calendar, Trash2 } from 'lucide-react';
 
 interface NotificationsViewProps {
   notifications: Notification[];
@@ -12,6 +12,20 @@ interface NotificationsViewProps {
 
 export const NotificationsView: React.FC<NotificationsViewProps> = ({ notifications, onMarkAsRead, onDelete, onChangeView, onMarkAllRead }) => {
   const unreadCount = notifications.filter(n => !n.read).length;
+
+  // Selección masiva (estilo bandeja de correo)
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const toggleSelect = (id: string) => setSelected(prev => {
+    const n = new Set(prev);
+    if (n.has(id)) n.delete(id); else n.add(id);
+    return n;
+  });
+  const allSelected = notifications.length > 0 && notifications.every(n => selected.has(n.id));
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(notifications.map(n => n.id)));
+  const handleDeleteSelected = () => {
+    selected.forEach(id => onDelete(id));
+    setSelected(new Set());
+  };
 
   const getTypeIcon = (type: string) => {
       switch(type) {
@@ -58,22 +72,47 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({ notificati
             </div>
         </div>
 
+        {/* Barra de acciones masivas (estilo correo) */}
+        <div className="flex items-center justify-between gap-3 bg-white dark:bg-gray-800 px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm">
+            <label className="flex items-center gap-2 text-sm font-medium text-gray-600 dark:text-gray-300 cursor-pointer">
+                <input type="checkbox" checked={allSelected} onChange={toggleAll}
+                    className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                Seleccionar todas
+                {selected.size > 0 && <span className="text-xs text-gray-400">({selected.size} seleccionada{selected.size > 1 ? 's' : ''})</span>}
+            </label>
+            <button
+                onClick={handleDeleteSelected}
+                disabled={selected.size === 0}
+                className="flex items-center gap-2 px-4 py-1.5 text-sm font-bold rounded-lg transition-colors bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed dark:bg-red-900/20 dark:text-red-400"
+            >
+                <Trash2 className="w-4 h-4" /> Eliminar seleccionadas
+            </button>
+        </div>
+
         <div className="space-y-4">
             {notifications.map(notification => (
                 <div
                     key={notification.id}
                     onClick={() => {
-                      if (notification.linkToView && onChangeView) {
+                      if (!notification.read) {
                         onMarkAsRead(notification.id);
                         const token = localStorage.getItem('dw_token');
                         if (token) fetch(`/api/notifications/${notification.id}/read`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
-                        onChangeView(notification.linkToView);
                       }
+                      if (notification.linkToView && onChangeView) onChangeView(notification.linkToView);
                     }}
                     className={`relative rounded-xl p-5 border shadow-sm transition-all duration-300 ${getTypeStyles(notification.type)} ${notification.read ? 'opacity-70 grayscale-[0.3]' : 'bg-white dark:bg-gray-800 transform hover:-translate-y-1 shadow-md'} ${notification.linkToView ? 'cursor-pointer' : ''}`}
                 >
                     <div className="flex justify-between items-start">
                         <div className="flex gap-4">
+                            <input
+                                type="checkbox"
+                                checked={selected.has(notification.id)}
+                                onClick={(e) => e.stopPropagation()}
+                                onChange={() => toggleSelect(notification.id)}
+                                className="mt-2 w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 shrink-0"
+                                title="Seleccionar"
+                            />
                             <div className="mt-1 bg-white dark:bg-gray-700 p-2 rounded-full shadow-sm h-fit">
                                 {getTypeIcon(notification.type)}
                             </div>
@@ -109,17 +148,8 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({ notificati
                         </div>
 
                         <div className="flex flex-col gap-2">
-                            {!notification.read && (
-                                <button 
-                                    onClick={() => onMarkAsRead(notification.id)}
-                                    className="p-2 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg transition-colors"
-                                    title="Marcar como leída"
-                                >
-                                    <Check className="w-5 h-5" />
-                                </button>
-                            )}
-                            <button 
-                                onClick={() => onDelete(notification.id)}
+                            <button
+                                onClick={(e) => { e.stopPropagation(); onDelete(notification.id); }}
                                 className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-colors"
                                 title="Eliminar notificación"
                             >
