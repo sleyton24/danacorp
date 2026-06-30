@@ -683,8 +683,10 @@ export const ClientList: React.FC<ClientListProps> = ({
                                     <thead className="bg-gray-50/80 border-b border-gray-100">
                                       <tr className="text-[9px] font-black text-gray-400 uppercase tracking-widest">
                                         <th className="px-4 py-3">Proyecto</th>
+                                        <th className="px-4 py-3">N° Ref.</th>
                                         <th className="px-4 py-3">Unidades</th>
                                         <th className="px-4 py-3">Fecha</th>
+                                        <th className="px-4 py-3">Estado</th>
                                         <th className="px-4 py-3 text-right">PDF</th>
                                       </tr>
                                     </thead>
@@ -697,7 +699,16 @@ export const ClientList: React.FC<ClientListProps> = ({
                                         const fechaFmt = q.fechaGenerada
                                           ? (() => { try { const d = new Date(q.fechaGenerada); return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`; } catch { return q.fechaGenerada; } })()
                                           : '—';
-                                        const projectName = projects.find(p => p.id === q.projectId)?.nombre ?? q.projectId ?? '—';
+                                        const proj = projects.find(p => p.id === q.projectId);
+                                        const projectName = proj?.nombre ?? q.projectId ?? '—';
+                                        // N° de referencia único (el ID que aparece arriba en el PDF)
+                                        const adjustments = (q.data?.adjustments as Array<{ key: string; value: unknown }> | undefined) ?? [];
+                                        const quoteRef = (adjustments.find(a => a.key === 'quoteId')?.value as string | undefined) ?? '—';
+                                        // Vigencia según días fijados en Admin · Perfiles (vigenciaCotizacionDias del proyecto)
+                                        const vigenciaDias = proj?.discountConfig?.vigenciaCotizacionDias ?? 7;
+                                        const vigente = q.fechaGenerada
+                                          ? Date.now() <= new Date(q.fechaGenerada).getTime() + vigenciaDias * 24 * 60 * 60 * 1000
+                                          : false;
                                         const isReservada = q.selectedUnits?.some(su => {
                                           const u = units.find(u2 => u2.numero === su.numero);
                                           return u && ['Reservado', 'Promesado', 'Escriturado'].includes(u.estado);
@@ -705,6 +716,7 @@ export const ClientList: React.FC<ClientListProps> = ({
                                         return (
                                           <tr key={q.id} className="hover:bg-blue-50/20 transition-colors">
                                             <td className="px-4 py-3 font-bold text-gray-700">{projectName}</td>
+                                            <td className="px-4 py-3 font-mono text-[11px] text-gray-600">{quoteRef}</td>
                                             <td className="px-4 py-3">
                                               {depto ? (
                                                 <div>
@@ -718,6 +730,15 @@ export const ClientList: React.FC<ClientListProps> = ({
                                               )}
                                             </td>
                                             <td className="px-4 py-3 text-gray-500">{fechaFmt}</td>
+                                            <td className="px-4 py-3">
+                                              <span
+                                                title={`Vigencia: ${vigenciaDias} día(s) desde la generación`}
+                                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${vigente ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}
+                                              >
+                                                <span className={`w-1.5 h-1.5 rounded-full ${vigente ? 'bg-green-500' : 'bg-gray-400'}`} />
+                                                {vigente ? 'Vigente' : 'No vigente'}
+                                              </span>
+                                            </td>
                                             <td className="px-4 py-3">
                                               <div className="flex items-center justify-end gap-2">
                                                 <button

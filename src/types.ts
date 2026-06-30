@@ -118,6 +118,7 @@ export interface RealEstateUnit {
   
   clienteId?: string;
   asignadoPor?: string;
+  ejecutivoId?: string;
   fechaAsignacion?: string;
   
   precioLista: number;

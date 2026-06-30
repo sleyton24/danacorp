@@ -24,6 +24,7 @@ interface UnitDetailProps {
   onSelectClient?: (clientId: string) => void;
   // Asignación desde UnitDetail
   clients?: Client[];
+  users?: User[];
   onAssignClient?: (clientId: string, unitId: string) => void;
   onUnassignClient?: (unitId: string) => void;
   showToast?: (message: string, type?: 'success' | 'error' | 'warning') => void;
@@ -133,7 +134,7 @@ const PercentInput = ({ value, onChange, disabled, className, max }: { value: nu
 
 export const UnitDetail: React.FC<UnitDetailProps> = ({
   unit, client, onBack, onUpdate, allUnits = [], currentUser, onSelectClient,
-  clients = [], onAssignClient, onUnassignClient, showToast,
+  clients = [], users = [], onAssignClient, onUnassignClient, showToast,
   onUnsavedChangesUpdate, saveRef,
 }) => {
   const [formData, setFormData] = useState<RealEstateUnit>(unit);
@@ -145,7 +146,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   // ── Forma de Pago ──────────────────────────────────────────────────────────
   const [paymentPlans, setPaymentPlans] = useState<PaymentPlan[]>([]);
   const [selectedPlanId, setSelectedPlanId] = useState<string>('');
-  const [cantidadCuotasPie, setCantidadCuotasPie] = useState(36);
+  const [cantidadCuotasPie, setCantidadCuotasPie] = useState(unit.pieCuotas ?? 36);
   const [fpPromesaPct, setFpPromesaPct] = useState(10);
   const [fpCuotasPct, setFpCuotasPct] = useState(20);
   const [fpEscrituraPct, setFpEscrituraPct] = useState(10);
@@ -214,12 +215,14 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
         } else {
           setBonoPct(0);
         }
-        if (d?.cantidadCuotasPie != null) {
+        // FIX 2: el default por proyecto SOLO se aplica si la unidad no tiene un
+        // valor persistido (unit.pieCuotas). Si lo tiene, ese valor manda y no se clobbea.
+        if (unit.pieCuotas == null && d?.cantidadCuotasPie != null) {
           setCantidadCuotasPie(d.cantidadCuotasPie);
         }
       })
       .catch(() => {});
-  }, [unit.projectId]);
+  }, [unit.projectId, unit.pieCuotas]);
 
   useEffect(() => {
     const token = localStorage.getItem('dw_token');
@@ -441,8 +444,54 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
 
   const isReadOnly = currentUser.role === 'Lectura' || isAssociatedToParent;
   const puedeReasignar = ['Admin', 'Supervisor', 'JefeSala'].includes(currentUser.role);
+
+  // Cambio 2: reasignación de ejecutivo (solo Admin/Supervisor/JefeSala, cualquier estado)
+  // FIX 4: editable para todos excepto Ventas y Lectura (Admin/Supervisor/JefeSala)
+  const canEditEjecutivo = currentUser.role !== 'Ventas' && currentUser.role !== 'Lectura';
+  // FIX 3: vendedores del proyecto. Filtra por rol Ventas + proyecto asignado;
+  // si ninguno coincide (o no hay info de proyecto), cae a TODOS los Ventas como fallback.
+  const projectVendors = useMemo(() => {
+    const ventas = users.filter(u => u.role === 'Ventas');
+    const matching = ventas.filter(u => u.assignedProjectIds?.includes(unit.projectId));
+    return matching.length > 0 ? matching : ventas;
+  }, [users, unit.projectId]);
+  const ejecutivoActualNombre = useMemo(() => {
+    const found = users.find(u => u.id === formData.ejecutivoId);
+    return found?.name || formData.asignadoPor || '';
+  }, [users, formData.ejecutivoId, formData.asignadoPor]);
+
+  // Cambio 3: estilo del selector de estado por estado
+  const estadoStyles: Record<string, string> = {
+    Disponible:  'bg-white border-green-500 text-green-700',
+    Reservado:   'bg-yellow-50 border-yellow-500 text-yellow-700',
+    Promesado:   'bg-blue-50 border-blue-500 text-blue-700',
+    Escriturado: 'bg-purple-50 border-purple-500 text-purple-700',
+  };
   const canAssign = currentUser.role !== 'Lectura' && (!formData.clienteId || puedeReasignar);
   const canAssignClient = !isAssociatedToParent || parentUnit?.estado === 'Disponible';
+
+  // NUEVA REGLA: permisos del cuadro financiero (descuentos, bono pie, forma de pago) por estado.
+  //  Disponible/Reservado → permisos normales de rol.
+  //  Promesado            → solo Admin/Supervisor.
+  //  Escriturado          → nadie (read-only total).
+  const canEditFinanciero = isReadOnly
+    ? false
+    : (formData.estado === 'Disponible' || formData.estado === 'Reservado')
+      ? true
+      : formData.estado === 'Promesado'
+        ? ['Admin', 'Supervisor'].includes(currentUser.role)
+        : false;
+
+  // NUEVA REGLA: cronograma de pagos.
+  //  Lectura → read-only. Admin/Supervisor → edición completa siempre.
+  //  JefeSala/Ventas → editar pagos existentes directo; agregar/eliminar requiere aprobación
+  //  cuando la unidad está Escriturada (canEditCronogramaEstructura=false en ese caso).
+  const cronogramaReadOnly = isReadOnly; // Lectura / unidad asociada
+  const canEditCronogramaEstructura = isReadOnly
+    ? false
+    : ['Admin', 'Supervisor'].includes(currentUser.role)
+      ? true
+      : formData.estado !== 'Escriturado'; // JefeSala/Ventas: libre salvo Escriturado
 
   // Cierra el menú al hacer clic fuera
   useEffect(() => {
@@ -642,6 +691,11 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     unit.fechaReserva,
   ]);
 
+  // FIX 2: al cambiar de unidad, re-aplicar el N° de cuotas persistido si existe
+  useEffect(() => {
+    if (unit.pieCuotas != null) setCantidadCuotasPie(unit.pieCuotas);
+  }, [unit.id, unit.pieCuotas]);
+
   const handleChange = (field: keyof RealEstateUnit, value: any) => {
     if (isReadOnly) return;
 
@@ -709,8 +763,10 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
             }));
             setHasBono(false);
             setLinkedBono({});
-            setLinkedDiscounts({});
-            setDiscountInput(String(descuentoPMDepto || 0));
+            // FIX 2: descuentos a 0 al desasignar (vía cambio a Disponible)
+            setLinkedDiscounts(prev => Object.fromEntries(Object.keys(prev).map(k => [k, 0])));
+            setLinkedDiscountInputs(prev => Object.fromEntries(Object.keys(prev).map(k => [k, '0'])));
+            setDiscountInput('0');
             setFpPromesaPct(10);
             setFpCuotasPct(20);
             setFpEscrituraPct(10);
@@ -735,6 +791,22 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     }));
   };
 
+  // FIX 2: deja todos los descuentos en 0 (al asignar/reasignar/desasignar cliente)
+  const zeroAllDiscounts = () => {
+    setDiscountInput('0');
+    setLinkedDiscounts(prev => Object.fromEntries(Object.keys(prev).map(k => [k, 0])));
+    setLinkedDiscountInputs(prev => Object.fromEntries(Object.keys(prev).map(k => [k, '0'])));
+  };
+
+  // FIX 1: en Escriturado no aplica Forma de Pago — apagar el checkbox si quedó activo
+  useEffect(() => {
+    if (formData.estado === 'Escriturado' && includePaymentPlan) setIncludePaymentPlan(false);
+  }, [formData.estado, includePaymentPlan]);
+
+  // REGLA: todo cambio en UnitDetail debe pasar por performSave(). El fieldMap en
+  // server.ts debe incluir TODOS los campos editables. Nunca eliminar campos del
+  // fieldMap sin verificar que no hay UI que los use. Verificar el modal
+  // conservar/descartar después de cualquier cambio en el componente.
   const performSave = () => {
     const logs: string[] = [];
     const now = new Date().toLocaleString('es-CL', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -786,6 +858,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
       onUpdate({
           ...formData,
           descuentoCliente: descuentoClienteValue as any,
+          pieCuotas: cantidadCuotasPie,
           observaciones: finalObservaciones
       });
       showToast?.('Cambios guardados');
@@ -851,6 +924,33 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   const handleLimpiarCronograma = () => {
     if (isReadOnly) return;
     setFormData(prev => ({ ...prev, planPagos: [] }));
+  };
+
+  // FIX 3: JefeSala/Ventas con la unidad Escriturada → agregar/eliminar pago crea una
+  // solicitud de aprobación (no aplica el cambio localmente) en vez de editar directo.
+  const requestCronogramaApproval = async (accion: 'agregar' | 'eliminar' | 'modificar', pago: PaymentItem) => {
+    const token = localStorage.getItem('dw_token');
+    if (!token) return;
+    try {
+      const res = await fetch('/api/approval-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          tipo: 'cronograma_pago',
+          unitId: unit.id,
+          projectId: unit.projectId,
+          descripcion: `Solicitud de ${accion} pago en cronograma de unidad ${unit.numero}`,
+          datos: { accion, pago, unitId: unit.id, estadoAntes: formData.planPagos },
+        }),
+      });
+      showToast?.(res.ok ? 'Solicitud enviada para aprobación' : 'Error al enviar solicitud', res.ok ? 'success' : 'error');
+    } catch { showToast?.('Error al enviar solicitud', 'error'); }
+  };
+
+  const requestAgregarCuota = () => {
+    const hoy = new Date().toISOString().split('T')[0];
+    const nuevo: PaymentItem = { id: `Cuota ${formData.planPagos.length + 1}`, date: hoy, amount: '0', status: 'Pendiente', fechaPagoReal: '', observacion: '' };
+    void requestCronogramaApproval('agregar', nuevo);
   };
 
   const generatePaymentSchedule = () => {
@@ -1083,9 +1183,9 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                     disabled={isReadOnly}
                     value={formData.estado}
                     onChange={(e) => handleChange('estado', e.target.value)}
-                    className="ml-4 px-3 py-1.5 rounded-lg text-xs font-bold border border-gray-200 bg-white shadow-sm outline-none cursor-pointer focus:ring-2 focus:ring-blue-100"
+                    className={`ml-4 px-4 py-2 rounded-lg text-base font-semibold border-2 shadow-sm outline-none cursor-pointer focus:ring-2 focus:ring-offset-1 ${estadoStyles[formData.estado] ?? estadoStyles.Disponible}`}
                 >
-                    {['Disponible', 'Reservado', 'Promesado', 'Escriturado'].map(s => <option key={s} value={s}>{s}</option>)}
+                    {['Disponible', 'Reservado', 'Promesado', 'Escriturado'].map(s => <option key={s} value={s}>● {s}</option>)}
                 </select>
             </div>
             {!isReadOnly && (
@@ -1139,7 +1239,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                         )}
                         {canAssign && canAssignClient && onUnassignClient && (
                           <button
-                            onClick={() => { setClientMenuOpen(false); onUnassignClient(unit.id); }}
+                            onClick={() => { setClientMenuOpen(false); zeroAllDiscounts(); onUnassignClient(unit.id); }}
                             className="w-full px-4 py-3 text-sm font-medium text-left hover:bg-red-50 text-red-600 flex items-center gap-3"
                           >
                             <X className="w-4 h-4" /> Desasignar
@@ -1196,6 +1296,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                           <button
                             key={c.id}
                             onClick={() => {
+                              zeroAllDiscounts(); // FIX 2: nuevo cliente → descuentos a 0
                               onAssignClient?.(c.id, unit.id);
                               setIsAssignModalOpen(false);
                               if (pendingEstado && pendingEstado !== 'Reservado') {
@@ -1271,14 +1372,21 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
             <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
               <h3 className="text-xs font-bold text-gray-500 flex items-center gap-2 uppercase tracking-widest"><Wallet className="w-4 h-4 text-blue-600"/> Cronograma de Pagos</h3>
-              {!isReadOnly && (
+              {/* NUEVA REGLA cronograma: agregar/eliminar (estructura) requiere canEditCronogramaEstructura.
+                  Admin/Supervisor siempre; JefeSala/Ventas libre salvo Escriturado; Lectura nunca. */}
+              {canEditCronogramaEstructura ? (
                   <div className="flex gap-2">
                     {formData.planPagos.length > 0 && (
                       <button onClick={handleLimpiarCronograma} className="text-[10px] bg-white border border-red-200 text-red-500 font-bold px-3 py-1.5 rounded-lg flex items-center gap-2 hover:bg-red-50 transition-all shadow-sm"><Trash2 className="w-3 h-3" /> LIMPIAR TODO</button>
                     )}
                     <button onClick={addManualPayment} className="text-[10px] bg-white border border-gray-200 text-gray-600 font-bold px-3 py-1.5 rounded-lg flex items-center gap-2 hover:bg-gray-50 transition-all shadow-sm"><Plus className="w-3 h-3" /> AGREGAR CUOTA</button>
                   </div>
-              )}
+              ) : (!cronogramaReadOnly && formData.estado === 'Escriturado' && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] text-amber-600 font-bold bg-amber-50 border border-amber-200 px-2 py-1 rounded-lg">Requiere aprobación de Admin/Supervisor</span>
+                    <button onClick={requestAgregarCuota} className="text-[10px] bg-white border border-amber-300 text-amber-700 font-bold px-3 py-1.5 rounded-lg flex items-center gap-2 hover:bg-amber-50 transition-all shadow-sm"><Plus className="w-3 h-3" /> SOLICITAR CUOTA</button>
+                  </div>
+              ))}
             </div>
             <div className="w-full overflow-x-auto">
                 <table className="w-full text-left text-sm table-fixed border-collapse">
@@ -1343,7 +1451,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                                 className="w-full bg-transparent border-none focus:ring-0 p-0 text-gray-600 text-[11px] font-medium placeholder:italic placeholder:text-gray-300 truncate" 
                             />
                         </td>
-                        <td className="px-2 py-3 text-center">{!isReadOnly && <button onClick={() => setFormData({...formData, planPagos: formData.planPagos.filter((_, i) => i !== idx)})} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"><Trash2 className="w-3.5 h-3.5" /></button>}</td>
+                        <td className="px-2 py-3 text-center">{canEditCronogramaEstructura ? <button onClick={() => setFormData({...formData, planPagos: formData.planPagos.filter((_, i) => i !== idx)})} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"><Trash2 className="w-3.5 h-3.5" /></button> : (!cronogramaReadOnly && formData.estado === 'Escriturado' && <button title="Solicitar eliminación (requiere aprobación)" onClick={() => requestCronogramaApproval('eliminar', p)} className="text-amber-300 hover:text-amber-600 opacity-0 group-hover:opacity-100 transition-all"><Trash2 className="w-3.5 h-3.5" /></button>)}</td>
                     </tr>
                     )})}
                 </tbody>
@@ -1393,18 +1501,33 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
             <div>
                 <h3 className="text-xs font-bold text-gray-400 mb-6 flex items-center gap-2 uppercase tracking-widest"><Target className="w-4 h-4 text-purple-600" /> Hitos de Gestión</h3>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    {/* Nuevo Campo: Trazabilidad de Asignación */}
+                    {/* FIX 2: Ejecutivo — UN SOLO campo. La fecha de asignación se setea a NOW()
+                        automáticamente al seleccionar (se guarda en BD pero NO se expone como campo). */}
                     <div className="md:col-span-2">
-                        <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">Ejecutivo y Fecha de Asignación</label>
+                        <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">Ejecutivo</label>
                         <div className="relative">
-                            <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300" />
-                            <input 
-                                disabled
-                                type="text" 
-                                value={formData.asignadoPor ? `${formData.asignadoPor} - ${formData.fechaAsignacion}` : ''}
-                                className="w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold text-gray-600 outline-none cursor-not-allowed" 
-                                placeholder="Sin asignar a cliente"
-                            />
+                            <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300 z-10" />
+                            {canEditEjecutivo ? (
+                                <select
+                                    value={formData.ejecutivoId || ''}
+                                    onChange={(e) => {
+                                        const hoy = new Date().toISOString().split('T')[0];
+                                        setFormData(prev => ({ ...prev, ejecutivoId: e.target.value || undefined, fechaAsignacion: e.target.value ? hoy : prev.fechaAsignacion }));
+                                    }}
+                                    className="w-full pl-9 pr-3 py-2 bg-white border border-gray-200 rounded-xl text-xs font-bold text-gray-700 outline-none focus:ring-2 focus:ring-blue-100 cursor-pointer"
+                                >
+                                    <option value="">— Seleccionar ejecutivo —</option>
+                                    {projectVendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                                </select>
+                            ) : (
+                                <input
+                                    disabled
+                                    type="text"
+                                    value={ejecutivoActualNombre}
+                                    className="w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold text-gray-600 outline-none cursor-not-allowed"
+                                    placeholder="Sin asignar"
+                                />
+                            )}
                         </div>
                     </div>
                     <div className="hidden md:block"></div>
@@ -1660,7 +1783,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
             </h3>
 
             {/* ── Cargar desde cotización ── */}
-            {hasClient && paymentPlans.length === 1 && (
+            {canEditFinanciero && hasClient && paymentPlans.length === 1 && (
               <button
                 onClick={() => { setPendingCotizacion(paymentPlans[0]); setShowLoadCotizacionModal(true); }}
                 className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded-xl hover:bg-blue-100 transition-colors"
@@ -1668,7 +1791,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                 <ChevronDown className="w-3.5 h-3.5" /> Cargar desde cotización ({new Date(paymentPlans[0].createdAt).toLocaleDateString('es-CL')})
               </button>
             )}
-            {hasClient && paymentPlans.length > 1 && (
+            {canEditFinanciero && hasClient && paymentPlans.length > 1 && (
               <select
                 defaultValue=""
                 onChange={e => {
@@ -1715,7 +1838,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                           <div className="flex items-center gap-1 flex-wrap">
                             <button
                               onClick={() => setUnitDiscountModes(prev => ({ ...prev, depto: mode === '%' ? 'UF' : '%' }))}
-                              disabled={!hasClient}
+                              disabled={!canEditFinanciero || !hasClient}
                               className="text-[9px] font-bold text-gray-400 hover:text-blue-600 border border-gray-200 rounded px-1 py-0.5 disabled:opacity-40 shrink-0"
                             >{mode}</button>
                             <input
@@ -1735,7 +1858,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                                   }
                                 }
                               }}
-                              disabled={isReadOnly || discountPending || !hasClient}
+                              disabled={!canEditFinanciero || discountPending || !hasClient}
                               className="w-14 px-1.5 py-1 bg-white border border-gray-200 rounded text-xs font-mono text-right outline-none focus:ring-1 focus:ring-amber-200 disabled:opacity-50"
                             />
                             {hasDiscount && (
@@ -1771,7 +1894,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                           <div className="flex items-center gap-1 flex-wrap">
                             <button
                               onClick={() => setUnitDiscountModes(prev => ({ ...prev, [b.id]: mode === '%' ? 'UF' : '%' }))}
-                              disabled={!hasClient}
+                              disabled={!canEditFinanciero || !hasClient}
                               className="text-[9px] font-bold text-gray-400 hover:text-blue-600 border border-gray-200 rounded px-1 py-0.5 disabled:opacity-40 shrink-0"
                             >{mode}</button>
                             <input
@@ -1793,7 +1916,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                                   }
                                 }
                               }}
-                              disabled={isReadOnly || !hasClient}
+                              disabled={!canEditFinanciero || !hasClient}
                               className="w-14 px-1.5 py-1 bg-white border border-gray-200 rounded text-xs font-mono text-right outline-none focus:ring-1 focus:ring-amber-200 disabled:opacity-50"
                             />
                             {hasDiscount && (
@@ -1825,7 +1948,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                           <div className="flex items-center gap-1 flex-wrap">
                             <button
                               onClick={() => setUnitDiscountModes(prev => ({ ...prev, [p.id]: mode === '%' ? 'UF' : '%' }))}
-                              disabled={!hasClient}
+                              disabled={!canEditFinanciero || !hasClient}
                               className="text-[9px] font-bold text-gray-400 hover:text-blue-600 border border-gray-200 rounded px-1 py-0.5 disabled:opacity-40 shrink-0"
                             >{mode}</button>
                             <input
@@ -1847,7 +1970,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                                   }
                                 }
                               }}
-                              disabled={isReadOnly || !hasClient}
+                              disabled={!canEditFinanciero || !hasClient}
                               className="w-14 px-1.5 py-1 bg-white border border-gray-200 rounded text-xs font-mono text-right outline-none focus:ring-1 focus:ring-amber-200 disabled:opacity-50"
                             />
                             {hasDiscount && (
@@ -1876,8 +1999,24 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                   <Sparkles className="w-3 h-3 text-blue-500" /> Bono Pie
                 </span>
                 <div className="flex items-center gap-2 flex-wrap">
-                  {canEditBono ? (
+                  {/* FIX 1: N° Cuotas a la IZQUIERDA del % Bono Pie — editable para todos los roles */}
+                  <div className="flex items-center gap-1">
+                    <span className="text-[10px] text-gray-400 uppercase">N° Cuotas</span>
+                    <input
+                      type="number" min={1} max={120} step={1}
+                      value={cantidadCuotasPie}
+                      onChange={e => {
+                        const n = Math.min(120, Math.max(1, parseInt(e.target.value) || 1));
+                        setCantidadCuotasPie(n);
+                        setFormData(prev => ({ ...prev, pieCuotas: n }));
+                      }}
+                      disabled={!canEditFinanciero}
+                      className="w-16 px-1.5 py-1 bg-white border border-gray-200 rounded text-xs font-mono text-right outline-none focus:ring-1 focus:ring-blue-200 disabled:opacity-60"
+                    />
+                  </div>
+                  {canEditBono && canEditFinanciero ? (
                     <div className="flex items-center gap-1">
+                      <span className="text-[10px] text-gray-400 uppercase">% Bono</span>
                       <input
                         type="number" min="0" max="50" step="0.5"
                         value={bonoPct}
@@ -1889,7 +2028,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                   ) : (
                     <span className="text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded">{bonoPct}%</span>
                   )}
-                  {!isReadOnly && hasClient && (
+                  {canEditFinanciero && hasClient && (
                     <div className="flex gap-1">
                       <button
                         onClick={() => {
@@ -1918,10 +2057,10 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                 </div>
               </div>
               <div className="space-y-1.5">
-                <label className={`flex items-center justify-between gap-2 ${!isReadOnly && hasClient ? 'cursor-pointer' : ''}`}>
+                <label className={`flex items-center justify-between gap-2 ${canEditFinanciero && hasClient ? 'cursor-pointer' : ''}`}>
                   <div className="flex items-center gap-2">
                     <input type="checkbox" checked={hasBono}
-                      disabled={isReadOnly || currentUser.role === 'Ventas' || !hasClient}
+                      disabled={!canEditFinanciero || currentUser.role === 'Ventas' || !hasClient}
                       onChange={e => { bonoJustToggled.current = true; setHasBono(e.target.checked); setFormData(prev => ({ ...prev, aplicaBonoPie: e.target.checked })); }}
                       className="w-3.5 h-3.5 accent-blue-600 disabled:opacity-50 shrink-0"
                     />
@@ -1937,10 +2076,10 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                   const bono = linkedBono[b.id] ?? false;
                   const calcB = calcResumenUnidad({ precioListaOriginal: b.precioListaOriginal ?? b.precioLista, dctoPct: linkedDiscounts[b.id] ?? b.descuentoPct ?? 0, bonoPct, aplicaBono: bono });
                   return (
-                    <label key={b.id} className={`flex items-center justify-between gap-2 ${!isReadOnly && hasClient ? 'cursor-pointer' : ''}`}>
+                    <label key={b.id} className={`flex items-center justify-between gap-2 ${canEditFinanciero && hasClient ? 'cursor-pointer' : ''}`}>
                       <div className="flex items-center gap-2">
                         <input type="checkbox" checked={bono}
-                          disabled={isReadOnly || !hasClient}
+                          disabled={!canEditFinanciero || !hasClient}
                           onChange={e => setLinkedBono(prev => ({ ...prev, [b.id]: e.target.checked }))}
                           className="w-3.5 h-3.5 accent-blue-600 disabled:opacity-50 shrink-0"
                         />
@@ -1954,10 +2093,10 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                   const bono = linkedBono[p.id] ?? false;
                   const calcP = calcResumenUnidad({ precioListaOriginal: p.precioListaOriginal ?? p.precioLista, dctoPct: linkedDiscounts[p.id] ?? p.descuentoPct ?? 0, bonoPct, aplicaBono: bono });
                   return (
-                    <label key={p.id} className={`flex items-center justify-between gap-2 ${!isReadOnly && hasClient ? 'cursor-pointer' : ''}`}>
+                    <label key={p.id} className={`flex items-center justify-between gap-2 ${canEditFinanciero && hasClient ? 'cursor-pointer' : ''}`}>
                       <div className="flex items-center gap-2">
                         <input type="checkbox" checked={bono}
-                          disabled={isReadOnly || !hasClient}
+                          disabled={!canEditFinanciero || !hasClient}
                           onChange={e => setLinkedBono(prev => ({ ...prev, [p.id]: e.target.checked }))}
                           className="w-3.5 h-3.5 accent-blue-600 disabled:opacity-50 shrink-0"
                         />
@@ -1970,8 +2109,8 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
               </div>
             </div>
 
-            {/* ── BLOQUE 3: Distribución del Pago ── */}
-            {hasClient && (
+            {/* ── BLOQUE 3: Distribución del Pago ── (FIX 1: oculto en Escriturado) */}
+            {hasClient && formData.estado !== 'Escriturado' && (
               <div className="border-t border-gray-100 pt-4 space-y-3">
                 <label className="flex items-center gap-3 cursor-pointer group" onClick={() => setIncludePaymentPlan(v => !v)}>
                   <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors shrink-0 ${includePaymentPlan ? 'bg-blue-600 border-blue-600' : 'border-gray-300 group-hover:border-blue-400'}`}>
@@ -1994,7 +2133,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                         <span className="w-32 shrink-0 text-gray-600">Promesa</span>
                         <PercentInput value={fpPromesaPct}
                           onChange={setFpPromesaPct}
-                          disabled={isReadOnly || hasBono}
+                          disabled={!canEditFinanciero || hasBono}
                           className="w-14 p-1.5 border border-gray-200 rounded text-xs font-mono text-right outline-none disabled:opacity-50 disabled:bg-gray-100 disabled:cursor-not-allowed" />
                         <span className="text-gray-400">%</span>
                         {hasBono && <span className="text-sm font-mono text-amber-800 bg-amber-200 border border-amber-400 px-2 py-0.5 rounded whitespace-nowrap">→ {promesaPctDisplay.toFixed(2)}%</span>}
@@ -2009,7 +2148,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                         <span className="w-32 shrink-0 text-gray-600">Cuotas ({cantidadCuotasPie}x)</span>
                         <PercentInput value={fpCuotasPct}
                           onChange={setFpCuotasPct}
-                          disabled={isReadOnly || hasBono}
+                          disabled={!canEditFinanciero || hasBono}
                           className="w-14 p-1.5 border border-gray-200 rounded text-xs font-mono text-right outline-none disabled:opacity-50 disabled:bg-gray-100 disabled:cursor-not-allowed" />
                         <span className="text-gray-400">%</span>
                         {hasBono && <span className="text-sm font-mono text-amber-800 bg-amber-200 border border-amber-400 px-2 py-0.5 rounded whitespace-nowrap">→ {cuotasPctDisplay.toFixed(2)}%</span>}
@@ -2025,7 +2164,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                         <span className="w-32 shrink-0 text-gray-600">Escritura</span>
                         <PercentInput value={fpEscrituraPct}
                           onChange={setFpEscrituraPct}
-                          disabled={isReadOnly || hasBono}
+                          disabled={!canEditFinanciero || hasBono}
                           className="w-14 p-1.5 border border-gray-200 rounded text-xs font-mono text-right outline-none disabled:opacity-50 disabled:bg-gray-100 disabled:cursor-not-allowed" />
                         <span className="text-gray-400">%</span>
                         {hasBono && <span className="text-sm font-mono text-amber-800 bg-amber-200 border border-amber-400 px-2 py-0.5 rounded whitespace-nowrap">→ {escrituraPctDisplay.toFixed(2)}%</span>}
@@ -2047,7 +2186,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                         <PercentInput
                           value={fpCreditoPct}
                           onChange={handleCreditoPivot}
-                          disabled={isReadOnly}
+                          disabled={!canEditFinanciero}
                           max={hasBono ? r2pct(100 - compraSeguraPctOnTotal() - 0.01) : 99.99}
                           className={`w-14 p-1.5 border rounded text-xs font-mono text-right font-bold outline-none disabled:opacity-60 ${fpCreditoPct <= 0 ? 'bg-gray-50 border-gray-200 text-gray-500' : 'bg-blue-50 border-blue-200 text-blue-700'}`}
                         />
@@ -2081,7 +2220,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                   </div>
                 )}
 
-                {!isReadOnly && (
+                {canEditFinanciero && (
                   <button
                     onClick={includePaymentPlan ? generatePaymentSchedule : undefined}
                     disabled={!includePaymentPlan || Math.abs(totalPctRaw - 100) >= 0.05}
