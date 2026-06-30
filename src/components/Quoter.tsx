@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { RealEstateUnit, Client, User, Project, ClientDocument, DiscountConfig, ProjectConfig } from '../types';
-import { calcValorTotal, calcBonificacion } from '../utils/pricingUtils';
+import { calcValorTotal, calcBonificacion, calcFormaPago } from '../utils/pricingUtils';
 import {
   Search, Trash2, CheckCircle, FileText, Calendar,
   Building, Car, Package, Calculator, Save, AlertTriangle,
@@ -290,10 +290,10 @@ export const Quoter: React.FC<QuoterProps> = ({
     [selectedUnits, adjustDrafts],
   );
 
-  // ── finPct deriva de creditoPct (para bono pie) — declarar ANTES de useMemos que lo usan ──
+  // creditoPct = bank credit %, fixed as complement of pie components (NOT subtracting compra segura).
+  // Compra segura compresses the remanente, making promesa/cuotas/escritura smaller in absolute terms.
   const creditoPctEarly = Math.max(0, 100 - promesaPct - cuotasPct - escrituraPct);
   const finPct = creditoPctEarly;
-  const piePct = 100 - finPct;
 
   // ── Bono pie breakdown por unidad (Paso 6) ───────────────────────────────
   const bonoPieBreakdown = useMemo(() => {
@@ -319,31 +319,48 @@ export const Quoter: React.FC<QuoterProps> = ({
   }, [selectedUnits, adjustDrafts, bonoPieUnits, bonoPct, finPct]);
 
   // ── SSilva: precio breakdown ──────────────────────────────────────────────
-  // creditoPct / finPct / piePct ya declarados arriba (antes de bonoPieBreakdown)
-  const creditoPct = creditoPctEarly;
+  // PRECIO DE LISTA = suma de precios de lista de todas las unidades (sin inflación bono)
+  const precioListaTotal = useMemo(
+    () => selectedUnits.reduce((s, u) => s + u.precioLista, 0),
+    [selectedUnits],
+  );
 
-  const totalPrecioListaSinDescuento = useMemo(() => {
-    const effectivePiePct = 100 - finPct;
-    return selectedUnits.reduce((sum, u) => {
-      const calc = calcUnitBonoPie(u.precioLista, bonoPieUnits.has(u.id), bonoPct, effectivePiePct, finPct);
-      return sum + calc.precioInflado;
-    }, 0);
-  }, [selectedUnits, bonoPieUnits, bonoPct, finPct]);
-
-  // PRECIO DE LISTA = suma de precios publicados (inflados donde hay bono)
-  const totalPrecioVentaSSilva = bonoPieBreakdown.totalPrecioInflado;  // alias para PRECIO DE LISTA
-  const precioListaTotal       = totalPrecioVentaSSilva;               // más explícito en contexto
-
-  // PRECIO DE VENTA = PRECIO DE LISTA - bonificación total = totalFinal (valores económicos)
-  // Equivale a: totalFinal = sum(unitFinalPrice) = precioListaTotal - bonoPieBreakdown.totalBonificacion
+  // PRECIO DE VENTA = totalFinal = sum(unitFinalPrice) = PRECIO DE LISTA - suma descuentos
   const precioVentaFinal = totalFinal;  // base para Forma de Pago y Simulador
 
-  // Forma de Pago usa PRECIO DE VENTA como base (spec SSilva)
-  const promesaUF   = Math.round(precioVentaFinal * promesaPct   / 100 * 100) / 100;
-  const cuotasUF    = Math.round(precioVentaFinal * cuotasPct    / 100 * 100) / 100;
-  const escrituraUF = Math.round(precioVentaFinal * escrituraPct / 100 * 100) / 100;
-  const creditoUF   = Math.round(precioVentaFinal * creditoPct   / 100 * 100) / 100;
-  const cuotaIndividualUF = nCuotasNew > 0 ? Math.round(cuotasUF / nCuotasNew * 100) / 100 : 0;
+  // precioConDescuentoDepto: base para Compra Segura = unitFinalPrice del depto
+  const precioConDescuentoDepto = useMemo(() => {
+    const dep = selectedUnits.find(u => u.type === 'Departamento');
+    return dep ? unitFinalPrice(dep, adjustDrafts) : 0;
+  }, [selectedUnits, adjustDrafts]);
+
+  // creditoPct derivado arriba (antes de bonoPieBreakdown)
+  const creditoPct = creditoPctEarly;
+
+  // Forma de Pago usa PRECIO DE VENTA como base
+  const formaCalc = calcFormaPago({
+    precioVenta: precioVentaFinal,
+    precioConDescuentoDepto,
+    aplicaBono: includeBonoPie,
+    bonoPct,
+    creditoPct,
+    promesaPct,
+    cuotasPct,
+    escrituraPct,
+    numCuotas: nCuotasNew,
+  });
+  const promesaUF         = formaCalc.promesaUF;
+  const cuotasUF          = formaCalc.cuotasUF;
+  const escrituraUF       = formaCalc.escrituraUF;
+  const creditoUF         = formaCalc.creditoUF;
+  const cuotaIndividualUF = formaCalc.cuotaIndividualUF;
+  const compraSeguraUF    = formaCalc.compraSeguaUF;
+  const compraSeguaPct    = formaCalc.compraSeguaPct;
+  const promesaPctM       = formaCalc.promesaPctMostrado;
+  const cuotasPctM        = formaCalc.cuotasPctMostrado;
+  const escrituraPctM     = formaCalc.escrituraPctMostrado;
+  const compraSeguaPctM   = formaCalc.compraSeguaPctMostrado;
+  const creditoPctM       = formaCalc.creditoPctMostrado;
 
   // ── Close inline dropdown on outside click ───────────────────────────────
   useEffect(() => {
@@ -489,6 +506,7 @@ export const Quoter: React.FC<QuoterProps> = ({
     setDiscountRequests({});
     setDraftId(null);
     onDraftStateChange?.(null);
+    setDrafts([]);
     setStep(1);
   }, [currentProjectId, onDraftStateChange]);
 
@@ -763,9 +781,7 @@ export const Quoter: React.FC<QuoterProps> = ({
   // Base = creditoPct% del PRECIO DE VENTA (precioVentaFinal = totalFinal)
   // ufCredito = precioVentaFinal × finPct / 100
   const dividendTable = useMemo(() => {
-    const effectiveFinPct = includePaymentPlan
-      ? Math.max(0, 100 - promesaPct - cuotasPct - escrituraPct)
-      : mortgageFinPct;
+    const effectiveFinPct = includePaymentPlan ? creditoPctEarly : mortgageFinPct;
     const base = includeMortgageSimulation && totalFinal > 0
       ? Math.max(0, totalFinal * effectiveFinPct / 100)
       : bonoPieBreakdown.totalPorFinanciar;
@@ -916,50 +932,52 @@ export const Quoter: React.FC<QuoterProps> = ({
     if (bonoTypesArr.includes('Departamento')) btLbls.push('Depto.');
     if (bonoTypesArr.includes('Estacionamiento')) btLbls.push('Estac.');
     if (bonoTypesArr.includes('Bodega')) btLbls.push('Bodega');
-    const bonoLabelPDF = btLbls.length === 0 ? '' :
-      btLbls.length === 1 ? `Bonificación ${bonoPct}% en ${btLbls[0]}` :
-      `Bonificación ${bonoPct}% en ${btLbls.slice(0,-1).join(', ')} y ${btLbls[btLbls.length-1]}`;
+    const bonoLabelPDF = btLbls.length === 0 ? '' : `Bonificación del ${bonoPct}%`;
 
-    // Per-unit rows: precio INFLADO (con bono incorporado), badge dcto manual si aplica
-    const unitRowsPDF: unknown[][] = selectedUnits.map(u => {
-      const calc = bonoPieBreakdown.perUnit.find(x => x.unit.id === u.id)?.calc;
-      const precioMostrado = calc ? calc.precioInflado : unitFinalPrice(u, adjustDrafts);
+    // Per-unit rows: valorTotal = precioLista; fila de dcto por cada unidad con dcto > 0
+    const unitRowsPDF: unknown[][] = [];
+    for (const u of selectedUnits) {
       const dctoP = unitDiscountPct(u, adjustDrafts);
       const hasDcto = dctoP > 0.001 && adjustDrafts[u.id]?.applied;
+      const valorTotal = u.precioLista;
       let tipoDesc = u.type;
       if (u.type === 'Departamento' && u.dormitorios && u.banos)
         tipoDesc = `Departamento (${u.dormitorios}D-${u.banos}B)`;
       const nivel = u.piso ? `del Piso N° ${u.piso}` : '';
-      return [
+      unitRowsPDF.push([
         tipoDesc, `N°${u.numero}`, nivel,
-        { content: formatUF(precioMostrado), styles: { halign: 'right' as const } },
-        { content: ufHoy ? formatCLP(precioMostrado * ufHoy) : '', styles: { halign: 'right' as const } },
-        { content: hasDcto ? `← -${dctoP.toFixed(0)}% dcto` : '',
-          styles: { halign: 'right' as const, textColor: [150,150,150] as [number,number,number], fontStyle: 'italic' as const, fontSize: 6.5 } },
-      ];
-    });
+        { content: formatUF(valorTotal), styles: { halign: 'right' as const } },
+        { content: ufHoy ? formatCLP(valorTotal * ufHoy) : '', styles: { halign: 'right' as const } },
+        '',
+      ]);
+      if (hasDcto) {
+        const descMonto = Math.round(valorTotal * dctoP / 100 * 100) / 100;
+        const dctoLbl = u.type === 'Departamento'
+          ? `${dctoP % 1 === 0 ? dctoP.toFixed(0) : dctoP.toFixed(1)}% Dscto. en Depto.`
+          : u.type === 'Bodega'
+            ? `${dctoP % 1 === 0 ? dctoP.toFixed(0) : dctoP.toFixed(1)}% Dscto. en Bodega N°${u.numero}`
+            : `${dctoP % 1 === 0 ? dctoP.toFixed(0) : dctoP.toFixed(1)}% Dscto. en Estac. N°${u.numero}`;
+        unitRowsPDF.push([
+          { content: dctoLbl, styles: { fontStyle: 'italic' as const, textColor: [100,100,100] as [number,number,number] } },
+          '', '',
+          { content: `-${formatUF(descMonto)}`, styles: { halign: 'right' as const, textColor: [100,100,100] as [number,number,number] } },
+          { content: ufHoy ? `-${formatCLP(descMonto * ufHoy)}` : '', styles: { halign: 'right' as const, textColor: [100,100,100] as [number,number,number] } },
+          '',
+        ]);
+      }
+    }
 
-    const hasBonoPDF  = bonoPieBreakdown.conBono.length > 0;
-    // totalPrecioVentaSSilva = suma de precios inflados = PRECIO DE LISTA
-    // totalFinal = suma de valores económicos reales = PRECIO DE VENTA
+    const hasAnyDcto = selectedUnits.some(u => unitDiscountPct(u, adjustDrafts) > 0.001 && adjustDrafts[u.id]?.applied);
 
     // Filas de resumen
     const summaryPDF: unknown[][] = [];
-    if (hasBonoPDF) {
-      // PRECIO DE LISTA = suma de inflados
+    if (hasAnyDcto) {
       summaryPDF.push([
         { content: 'PRECIO DE LISTA', styles: { fontStyle: 'bold' as const } }, '', '',
-        { content: formatUF(totalPrecioVentaSSilva), styles: { fontStyle: 'bold' as const, halign: 'right' as const } },
-        { content: ufHoy ? formatCLP(totalPrecioVentaSSilva * ufHoy) : '', styles: { fontStyle: 'bold' as const, halign: 'right' as const } }, '',
-      ]);
-      // Bono Pie = monto que se resta
-      summaryPDF.push([
-        { content: bonoLabelPDF, styles: { fontStyle: 'italic' as const, textColor: [100,100,100] as [number,number,number] } }, '', '',
-        { content: formatUF(bonoPieBreakdown.totalBonificacion), styles: { halign: 'right' as const, textColor: [100,100,100] as [number,number,number] } },
-        { content: ufHoy ? formatCLP(bonoPieBreakdown.totalBonificacion * ufHoy) : '', styles: { halign: 'right' as const, textColor: [100,100,100] as [number,number,number] } }, '',
+        { content: formatUF(precioListaTotal), styles: { fontStyle: 'bold' as const, halign: 'right' as const } },
+        { content: ufHoy ? formatCLP(precioListaTotal * ufHoy) : '', styles: { fontStyle: 'bold' as const, halign: 'right' as const } }, '',
       ]);
     }
-    // PRECIO DE VENTA = valor económico real (= totalFinal)
     summaryPDF.push([
       { content: 'PRECIO DE VENTA', styles: { fontStyle: 'bold' as const, textColor: [37,99,200] as [number,number,number] } }, '', '',
       { content: formatUF(totalFinal), styles: { fontStyle: 'bold' as const, halign: 'right' as const, textColor: [37,99,200] as [number,number,number] } },
@@ -1003,7 +1021,7 @@ export const Quoter: React.FC<QuoterProps> = ({
           doc.line(mg, data.cell.y, pageWidth - mg, data.cell.y);
         }
         // Línea separadora antes del TOTAL (cuando hay bono + precio lista + bonificacion)
-        if (data.section === 'body' && hasBonoPDF && data.row.index === unitRowsPDF.length + summaryPDF.length - 1 && data.column.index === 0) {
+        if (data.section === 'body' && summaryPDF.length > 1 && data.row.index === unitRowsPDF.length + summaryPDF.length - 1 && data.column.index === 0) {
           doc.setDrawColor(200, 200, 200); doc.setLineWidth(0.2);
           doc.line(mg, data.cell.y, pageWidth - mg, data.cell.y);
         }
@@ -1018,17 +1036,22 @@ export const Quoter: React.FC<QuoterProps> = ({
       doc.text('2.  FORMA DE PAGO', mg, y); y += 5;
 
       const pagoRows: unknown[][] = [
-        ['A la firma de Promesa', `${promesaPct.toFixed(2)}%`, '',
+        ['A la firma de Promesa', `${promesaPctM.toFixed(2)}%`, '',
           { content: formatUF(promesaUF), styles: { halign: 'right' as const } },
           { content: ufHoy ? formatCLP(promesaUF * ufHoy) : '', styles: { halign: 'right' as const } }],
-        [`En ${nCuotasNew} cuota(s)`, `${cuotasPct.toFixed(2)}%`, `Cuota(s) de UF ${formatUF(cuotaIndividualUF)} c/u.`,
+        [`En ${nCuotasNew} cuota(s)`, `${cuotasPctM.toFixed(2)}%`, `Cuota(s) de UF ${formatUF(cuotaIndividualUF)} c/u.`,
           { content: formatUF(cuotasUF), styles: { halign: 'right' as const } },
           { content: ufHoy ? formatCLP(cuotasUF * ufHoy) : '', styles: { halign: 'right' as const } }],
-        ['A la firma de Escritura', `${escrituraPct.toFixed(2)}%`, '',
+        ['A la firma de Escritura', `${escrituraPctM.toFixed(2)}%`, '',
           { content: formatUF(escrituraUF), styles: { halign: 'right' as const } },
           { content: ufHoy ? formatCLP(escrituraUF * ufHoy) : '', styles: { halign: 'right' as const } }],
+        ...(includeBonoPie ? [[
+          'Compra Segura', `${compraSeguaPctM.toFixed(2)}%`, '',
+          { content: formatUF(compraSeguraUF), styles: { halign: 'right' as const } },
+          { content: ufHoy ? formatCLP(compraSeguraUF * ufHoy) : '', styles: { halign: 'right' as const } },
+        ]] : []),
         [{ content: 'Crédito Inst. Financiera', styles: { textColor: [37,99,200] as [number,number,number] } },
-          { content: `${creditoPct.toFixed(2)}%`, styles: { textColor: [37,99,200] as [number,number,number] } }, '',
+          { content: `${creditoPctM.toFixed(2)}%`, styles: { textColor: [37,99,200] as [number,number,number] } }, '',
           { content: formatUF(creditoUF), styles: { halign: 'right' as const, textColor: [37,99,200] as [number,number,number] } },
           { content: ufHoy ? `${formatCLP(creditoUF * ufHoy)} (*)` : '', styles: { halign: 'right' as const, textColor: [37,99,200] as [number,number,number] } }],
         // Total row — 100% × precioVentaFinal
@@ -2068,6 +2091,7 @@ export const Quoter: React.FC<QuoterProps> = ({
                           onChange={e => setPromesaPct(Number(e.target.value))}
                           className="w-16 p-1.5 border border-gray-200 rounded text-sm font-mono text-right outline-none" />
                         <span className="text-gray-400">%</span>
+                        {includeBonoPie && <span className="text-sm font-mono text-amber-800 bg-amber-200 border border-amber-400 px-2 py-0.5 rounded whitespace-nowrap">→ {promesaPctM.toFixed(2)}%</span>}
                         <span className="ml-auto font-mono font-bold text-gray-700">{formatUF(promesaUF)} UF</span>
                         {ufHoy && <span className="font-mono text-gray-400 ml-2">{formatCLP(promesaUF * ufHoy)}</span>}
                       </div>
@@ -2078,6 +2102,7 @@ export const Quoter: React.FC<QuoterProps> = ({
                           onChange={e => setCuotasPct(Number(e.target.value))}
                           className="w-16 p-1.5 border border-gray-200 rounded text-sm font-mono text-right outline-none" />
                         <span className="text-gray-400">%</span>
+                        {includeBonoPie && <span className="text-sm font-mono text-amber-800 bg-amber-200 border border-amber-400 px-2 py-0.5 rounded whitespace-nowrap">→ {cuotasPctM.toFixed(2)}%</span>}
                         <span className="ml-auto font-mono font-bold text-gray-700">{formatUF(cuotasUF)} UF</span>
                         {ufHoy && <span className="font-mono text-gray-400 ml-2">{formatCLP(cuotasUF * ufHoy)}</span>}
                       </div>
@@ -2094,9 +2119,22 @@ export const Quoter: React.FC<QuoterProps> = ({
                           onChange={e => setEscrituraPct(Number(e.target.value))}
                           className="w-16 p-1.5 border border-gray-200 rounded text-sm font-mono text-right outline-none" />
                         <span className="text-gray-400">%</span>
+                        {includeBonoPie && <span className="text-sm font-mono text-amber-800 bg-amber-200 border border-amber-400 px-2 py-0.5 rounded whitespace-nowrap">→ {escrituraPctM.toFixed(2)}%</span>}
                         <span className="ml-auto font-mono font-bold text-gray-700">{formatUF(escrituraUF)} UF</span>
                         {ufHoy && <span className="font-mono text-gray-400 ml-2">{formatCLP(escrituraUF * ufHoy)}</span>}
                       </div>
+                      {/* Compra Segura (solo cuando aplica bono pie) */}
+                      {includeBonoPie && (
+                        <div className="flex items-center gap-2">
+                          <span className="w-44 shrink-0 text-gray-600">Compra Segura</span>
+                          <div className="w-16 p-1.5 bg-gray-50 border border-gray-200 rounded text-sm font-mono text-right text-gray-500">
+                            {compraSeguaPct.toFixed(1)}
+                          </div>
+                          <span className="text-gray-400">%</span>
+                          <span className="ml-auto font-mono font-bold text-gray-700">{formatUF(compraSeguraUF)} UF</span>
+                          {ufHoy && <span className="font-mono text-gray-400 ml-2">{formatCLP(compraSeguraUF * ufHoy)}</span>}
+                        </div>
+                      )}
                       {/* Separador */}
                       <div className="border-t border-gray-100 my-1" />
                       {/* Crédito Banco (auto) */}
@@ -2295,59 +2333,55 @@ export const Quoter: React.FC<QuoterProps> = ({
                   </thead>
                   <tbody>
                     {selectedUnits.map(u => {
-                      const calc = bonoPieBreakdown.perUnit.find(x => x.unit.id === u.id)?.calc;
-                      const precioMostrado = calc ? calc.precioInflado : unitFinalPrice(u, adjustDrafts);
                       const dctoP = unitDiscountPct(u, adjustDrafts);
                       const hasDcto = dctoP > 0.001 && adjustDrafts[u.id]?.applied;
+                      const valorTotal = u.precioLista;
                       let tipoDesc = u.type;
                       if (u.type === 'Departamento' && u.dormitorios && u.banos) tipoDesc = `Departamento (${u.dormitorios}D-${u.banos}B)`;
+                      const dctoLbl = u.type === 'Departamento'
+                        ? `${dctoP % 1 === 0 ? dctoP.toFixed(0) : dctoP.toFixed(1)}% Dscto. en Depto.`
+                        : u.type === 'Bodega'
+                          ? `${dctoP % 1 === 0 ? dctoP.toFixed(0) : dctoP.toFixed(1)}% Dscto. en Bodega N°${u.numero}`
+                          : `${dctoP % 1 === 0 ? dctoP.toFixed(0) : dctoP.toFixed(1)}% Dscto. en Estac. N°${u.numero}`;
+                      const descMonto = hasDcto ? Math.round(valorTotal * dctoP / 100 * 100) / 100 : 0;
                       return (
-                        <tr key={u.id} className="border-b border-gray-50">
-                          <td className="py-1.5 pr-2 text-gray-700">{tipoDesc}</td>
-                          <td className="py-1.5 pr-2 font-bold text-gray-800 whitespace-nowrap">N°{u.numero}</td>
-                          <td className="py-1.5 pr-2 text-gray-400">{u.piso ? `del Piso N° ${u.piso}` : ''}</td>
-                          <td className="py-1.5 text-right font-mono font-bold text-gray-800 whitespace-nowrap">{formatUF(precioMostrado)} UF</td>
-                          {ufHoy && <td className="py-1.5 pl-3 text-right font-mono text-gray-500 whitespace-nowrap">{formatCLP(precioMostrado * ufHoy)}</td>}
-                          <td className="py-1.5 pl-2 text-right whitespace-nowrap">
-                            {hasDcto && <span className="text-gray-400 italic text-[9px]">← -{dctoP.toFixed(0)}% dcto</span>}
-                          </td>
-                        </tr>
+                        <React.Fragment key={u.id}>
+                          <tr className="border-b border-gray-50">
+                            <td className="py-1.5 pr-2 text-gray-700">{tipoDesc}</td>
+                            <td className="py-1.5 pr-2 font-bold text-gray-800 whitespace-nowrap">N°{u.numero}</td>
+                            <td className="py-1.5 pr-2 text-gray-400">{u.piso ? `del Piso N° ${u.piso}` : ''}</td>
+                            <td className="py-1.5 text-right font-mono font-bold text-gray-800 whitespace-nowrap">{formatUF(valorTotal)} UF</td>
+                            {ufHoy && <td className="py-1.5 pl-3 text-right font-mono text-gray-500 whitespace-nowrap">{formatCLP(valorTotal * ufHoy)}</td>}
+                            <td />
+                          </tr>
+                          {hasDcto && (
+                            <tr className="border-b border-gray-50">
+                              <td colSpan={3} className="py-1 pl-3 text-gray-400 italic text-[10px]">{dctoLbl}</td>
+                              <td className="py-1 text-right font-mono text-gray-400 whitespace-nowrap text-[10px]">-{formatUF(descMonto)} UF</td>
+                              {ufHoy && <td className="py-1 pl-3 text-right font-mono text-gray-300 whitespace-nowrap text-[10px]">-{formatCLP(descMonto * ufHoy)}</td>}
+                              <td />
+                            </tr>
+                          )}
+                        </React.Fragment>
                       );
                     })}
                     {/* Separador + resumen */}
                     <tr className="border-t border-gray-300">
                       <td colSpan={6} className="py-0.5" />
                     </tr>
-                    {bonoPieBreakdown.conBono.length > 0 && (() => {
-                      const btL: string[] = [];
-                      if (bonoPieBreakdown.conBono.some(x => x.unit.type === 'Departamento')) btL.push('Depto.');
-                      if (bonoPieBreakdown.conBono.some(x => x.unit.type === 'Estacionamiento')) btL.push('Estac.');
-                      if (bonoPieBreakdown.conBono.some(x => x.unit.type === 'Bodega')) btL.push('Bodega');
-                      const label = btL.length === 1 ? `Bonificación ${bonoPct}% en ${btL[0]}` :
-                        `Bonificación ${bonoPct}% en ${btL.slice(0,-1).join(', ')} y ${btL[btL.length-1]}`;
-                      return (
-                        <>
-                          {/* PRECIO DE LISTA = suma de precios inflados */}
-                          <tr>
-                            <td colSpan={3} className="py-1 font-bold text-gray-700">PRECIO DE LISTA</td>
-                            <td className="py-1 text-right font-bold font-mono text-gray-800 whitespace-nowrap">{formatUF(totalPrecioVentaSSilva)} UF</td>
-                            {ufHoy && <td className="py-1 pl-3 text-right font-mono text-gray-500 whitespace-nowrap">{formatCLP(totalPrecioVentaSSilva * ufHoy)}</td>}
-                            <td />
-                          </tr>
-                          {/* Bono Pie = monto que se descuenta */}
-                          <tr>
-                            <td colSpan={3} className="py-1 text-gray-500 italic">{label}</td>
-                            <td className="py-1 text-right font-mono text-gray-500 whitespace-nowrap">{formatUF(bonoPieBreakdown.totalBonificacion)} UF</td>
-                            {ufHoy && <td className="py-1 pl-3 text-right font-mono text-gray-400 whitespace-nowrap">{formatCLP(bonoPieBreakdown.totalBonificacion * ufHoy)}</td>}
-                            <td />
-                          </tr>
-                          <tr className="border-t border-gray-300">
-                            <td colSpan={6} className="py-0.5" />
-                          </tr>
-                        </>
-                      );
-                    })()}
-                    {/* PRECIO DE VENTA = valor económico real */}
+                    {selectedUnits.some(u => unitDiscountPct(u, adjustDrafts) > 0.001 && adjustDrafts[u.id]?.applied) && (
+                      <>
+                        <tr>
+                          <td colSpan={3} className="py-1 font-bold text-gray-700">PRECIO DE LISTA</td>
+                          <td className="py-1 text-right font-bold font-mono text-gray-800 whitespace-nowrap">{formatUF(precioListaTotal)} UF</td>
+                          {ufHoy && <td className="py-1 pl-3 text-right font-mono text-gray-500 whitespace-nowrap">{formatCLP(precioListaTotal * ufHoy)}</td>}
+                          <td />
+                        </tr>
+                        <tr className="border-t border-gray-300">
+                          <td colSpan={6} className="py-0.5" />
+                        </tr>
+                      </>
+                    )}
                     <tr>
                       <td colSpan={3} className="py-1.5 font-black text-blue-700">PRECIO DE VENTA</td>
                       <td className="py-1.5 text-right font-black font-mono text-blue-700 whitespace-nowrap">{formatUF(totalFinal)} UF</td>
@@ -2375,10 +2409,11 @@ export const Quoter: React.FC<QuoterProps> = ({
                       </thead>
                       <tbody>
                         {[
-                          { label: 'A la firma de Promesa', pct: promesaPct, detail: '', uf: promesaUF, isBold: false },
-                          { label: `En ${nCuotasNew} cuota(s)`, pct: cuotasPct, detail: `Cuota(s) de UF ${formatUF(cuotaIndividualUF)} c/u.`, uf: cuotasUF, isBold: false },
-                          { label: 'A la firma de Escritura', pct: escrituraPct, detail: '', uf: escrituraUF, isBold: false },
-                          { label: 'Crédito Inst. Financiera', pct: creditoPct, detail: '(*)', uf: creditoUF, isBold: true },
+                          { label: 'A la firma de Promesa', pct: promesaPctM, detail: '', uf: promesaUF, isBold: false },
+                          { label: `En ${nCuotasNew} cuota(s)`, pct: cuotasPctM, detail: `Cuota(s) de UF ${formatUF(cuotaIndividualUF)} c/u.`, uf: cuotasUF, isBold: false },
+                          { label: 'A la firma de Escritura', pct: escrituraPctM, detail: '', uf: escrituraUF, isBold: false },
+                          ...(includeBonoPie ? [{ label: 'Compra Segura', pct: compraSeguaPctM, detail: '', uf: compraSeguraUF, isBold: false }] : []),
+                          { label: 'Crédito Inst. Financiera', pct: creditoPctM, detail: '(*)', uf: creditoUF, isBold: true },
                         ].map(r => (
                           <tr key={r.label} className="border-b border-gray-50">
                             <td className={`py-1.5 pr-2 ${r.isBold ? 'font-bold text-blue-700' : 'text-gray-700'}`}>{r.label}</td>
