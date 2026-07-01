@@ -1410,6 +1410,7 @@ app.get('/api/notifications', requireAuth, async (req, res) => {
   const rows = await db.prepare(`
     SELECT * FROM notifications
     WHERE (para_user_id = ? OR para_rol = ? OR para_rol = 'All')
+      AND COALESCE(eliminada, 0) = 0
     ORDER BY created_at DESC
     LIMIT 50
   `).all(userId, userRole);
@@ -1419,6 +1420,12 @@ app.get('/api/notifications', requireAuth, async (req, res) => {
 
 app.post('/api/notifications/:id/read', requireAuth, async (req, res) => {
   await db.prepare('UPDATE notifications SET leida = 1 WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// Soft-delete: la notificación desaparece de la bandeja y no reaparece al re-fetch
+app.delete('/api/notifications/:id', requireAuth, async (req, res) => {
+  await db.prepare('UPDATE notifications SET eliminada = 1 WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
 
@@ -2537,6 +2544,7 @@ if (isMain) {
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS precio_lista_original REAL`).run();
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS descuento_cliente NUMERIC(5,2)`).run();
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS ejecutivo_id TEXT`).run();
+      await db.prepare(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS eliminada INTEGER DEFAULT 0`).run();
       await db.prepare(`CREATE TABLE IF NOT EXISTS price_history (
         id TEXT PRIMARY KEY,
         unit_id TEXT NOT NULL,

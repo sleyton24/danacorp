@@ -823,7 +823,11 @@ const App: React.FC = () => {
                 onMarkAsRead={id => {
                   setNotifications(p => p.map(n => n.id === id ? { ...n, read: true } : n));
                 }}
-                onDelete={id => setNotifications(p => p.filter(n => n.id !== id))}
+                onDelete={id => {
+                  setNotifications(p => p.filter(n => n.id !== id));
+                  const tok = localStorage.getItem('dw_token');
+                  if (tok) fetch(`/api/notifications/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${tok}` } }).catch(() => {});
+                }}
                 onChangeView={v => setCurrentView(v as typeof currentView)}
                 onMarkAllRead={() => {
                   const tok = localStorage.getItem('dw_token');
