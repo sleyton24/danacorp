@@ -128,7 +128,9 @@ CREATE TABLE IF NOT EXISTS units (
   reserva_vendedor_id TEXT,
   reserva_expira TEXT,
   historial_ocupacion TEXT DEFAULT '[]',
-  precio_lista_original REAL
+  precio_lista_original REAL,
+  descuento_cliente NUMERIC(5,2),
+  ejecutivo_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS quotation_drafts (
@@ -223,6 +225,28 @@ CREATE TABLE IF NOT EXISTS app_state (
   key TEXT PRIMARY KEY,
   value TEXT DEFAULT '{}' NOT NULL,
   updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS indicadores_cache (
+  clave TEXT PRIMARY KEY,
+  valor NUMERIC,
+  fecha TEXT,
+  actualizado_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS approval_requests (
+  id TEXT PRIMARY KEY,
+  tipo TEXT NOT NULL,
+  estado TEXT NOT NULL DEFAULT 'pendiente',
+  solicitado_por TEXT NOT NULL,
+  solicitado_nombre TEXT,
+  solicitado_at TIMESTAMPTZ DEFAULT now(),
+  resuelto_por TEXT,
+  resuelto_at TIMESTAMPTZ,
+  unit_id TEXT,
+  project_id TEXT,
+  descripcion TEXT,
+  datos JSONB
 );
 
 -- Usuarios (antes hardcodeados en server.ts; ahora con hash bcrypt).

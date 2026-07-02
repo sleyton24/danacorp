@@ -1042,9 +1042,11 @@ export const Quoter: React.FC<QuoterProps> = ({
     autoTable(doc, {
       startY: y, margin: { left: mg, right: mg }, tableWidth: contentWidth,
       head: [[
-        'Tipo', 'Número', 'Características',
-        { content: 'Valor UF', styles: { halign: 'right' as const } },
-        { content: 'Valor $', styles: { halign: 'right' as const } },
+        { content: 'Tipo', styles: { halign: 'center' as const } },
+        { content: 'Número', styles: { halign: 'center' as const } },
+        { content: 'Características', styles: { halign: 'center' as const } },
+        { content: 'Valor UF', styles: { halign: 'center' as const } },
+        { content: 'Valor $', styles: { halign: 'center' as const } },
       ]],
       body: [...unitRowsPDF, ...summaryPDF],
       headStyles: {
@@ -1101,7 +1103,7 @@ export const Quoter: React.FC<QuoterProps> = ({
           { content: formatUF(promesaUF), styles: { halign: 'right' as const } },
           { content: ufHoy ? formatCLP(promesaUF * ufHoy) : '', styles: { halign: 'right' as const } }],
         // Cambio 9: detalle de cuotas dentro del Concepto
-        [`En ${nCuotasNew} cuota(s) (UF ${formatUF(cuotaIndividualUF)} c/u)`, `${formatPct(formaPctDisplay.cuotas)}%`, '',
+        [`En ${nCuotasNew} cuotas (UF ${formatUF(cuotaIndividualUF)} c/u)`, `${formatPct(formaPctDisplay.cuotas)}%`, '',
           { content: formatUF(cuotasUF), styles: { halign: 'right' as const } },
           { content: ufHoy ? formatCLP(cuotasUF * ufHoy) : '', styles: { halign: 'right' as const } }],
         ['A la firma de Escritura', `${formatPct(formaPctDisplay.escritura)}%`, '',
@@ -1125,9 +1127,11 @@ export const Quoter: React.FC<QuoterProps> = ({
       autoTable(doc, {
         startY: y, margin: { left: mg, right: mg }, tableWidth: contentWidth,
         head: [[
-          'Concepto', '%', '',
-          { content: 'Valor UF', styles: { halign: 'right' as const } },
-          { content: 'Valor $', styles: { halign: 'right' as const } },
+          { content: 'Concepto', styles: { halign: 'center' as const } },
+          { content: '%', styles: { halign: 'center' as const } },
+          '',
+          { content: 'Valor UF', styles: { halign: 'center' as const } },
+          { content: 'Valor $', styles: { halign: 'center' as const } },
         ]],
         body: pagoRows,
         headStyles: {
@@ -1181,9 +1185,9 @@ export const Quoter: React.FC<QuoterProps> = ({
         head: [['Plazo Crédito', 'Dividendo en UF', 'Dividendo en $', 'Renta mínima aprox. $']],
         body: dividendTable.map(r => [
           `${r.years} años`,
-          { content: formatUF(r.divUF), styles: { halign: 'right' as const } },
-          { content: r.divCLP ? formatCLP(r.divCLP) : '—', styles: { halign: 'right' as const } },
-          { content: r.rentaMin ? formatCLP(r.rentaMin) : '—', styles: { halign: 'right' as const } },
+          formatUF(r.divUF),
+          r.divCLP ? formatCLP(r.divCLP) : '—',
+          r.rentaMin ? formatCLP(r.rentaMin) : '—',
         ]),
         headStyles: {
           fillColor: [255, 255, 255] as [number, number, number],
@@ -1197,10 +1201,10 @@ export const Quoter: React.FC<QuoterProps> = ({
         bodyStyles: { fontSize: 9, cellPadding: { top: 1.6, bottom: 1.6, left: 3, right: 3 } },
         theme: 'plain',
         columnStyles: {
-          0: { halign: 'left' as const },
-          1: { halign: 'right' as const },
-          2: { halign: 'right' as const },
-          3: { halign: 'right' as const },
+          0: { halign: 'center' as const },
+          1: { halign: 'center' as const },
+          2: { halign: 'center' as const },
+          3: { halign: 'center' as const },
         },
         didDrawCell: (data: { section: string; row: { index: number }; cell: { x: number; y: number; height: number }; column: { index: number } }) => {
           if (data.section === 'head' && data.column.index === 0) {
@@ -1442,7 +1446,7 @@ export const Quoter: React.FC<QuoterProps> = ({
       alert('Faltan datos obligatorios del cliente (nombre y RUT).');
       return;
     }
-    const hasPending = Object.values(discountRequests).some(r => r.estado === 'Pendiente');
+    const hasPending = (Object.values(discountRequests) as DiscountRequest[]).some(r => r.estado === 'Pendiente');
     if (hasPending) {
       alert('Hay descuentos pendientes de autorización. Aguarda aprobación.');
       return;
@@ -1525,7 +1529,7 @@ export const Quoter: React.FC<QuoterProps> = ({
     initNewClient(); loadDraftsList();
   };
 
-  const hasPendingDiscount = Object.values(discountRequests).some(r => r.estado === 'Pendiente');
+  const hasPendingDiscount = (Object.values(discountRequests) as DiscountRequest[]).some(r => r.estado === 'Pendiente');
 
   // ══════════════════════════════════════════════════════════════════════════
   // RENDER
@@ -2434,11 +2438,11 @@ export const Quoter: React.FC<QuoterProps> = ({
                   </colgroup>
                   <thead>
                     <tr className="border-b border-gray-300">
-                      <th className="py-1 pr-2 text-left font-semibold text-gray-500">Tipo</th>
-                      <th className="py-1 pr-2 text-left font-semibold text-gray-500">Número</th>
-                      <th className="py-1 pr-2 text-left font-semibold text-gray-500">Características</th>
-                      <th className="py-1 text-right font-semibold text-gray-500 whitespace-nowrap">Valor UF</th>
-                      {ufHoy && <th className="py-1 pl-3 text-right font-semibold text-gray-500 whitespace-nowrap">Valor $</th>}
+                      <th className="py-1 text-center font-semibold text-gray-500">Tipo</th>
+                      <th className="py-1 text-center font-semibold text-gray-500">Número</th>
+                      <th className="py-1 text-center font-semibold text-gray-500">Características</th>
+                      <th className="py-1 text-center font-semibold text-gray-500 whitespace-nowrap">Valor UF</th>
+                      {ufHoy && <th className="py-1 text-center font-semibold text-gray-500 whitespace-nowrap">Valor $</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -2513,18 +2517,18 @@ export const Quoter: React.FC<QuoterProps> = ({
                       </colgroup>
                       <thead>
                         <tr className="border-b border-gray-300">
-                          <th className="py-1 pr-2 text-left font-semibold text-gray-500">Concepto</th>
-                          <th className="py-1 pr-2 text-right font-semibold text-gray-500">%</th>
+                          <th className="py-1 text-center font-semibold text-gray-500">Concepto</th>
+                          <th className="py-1 text-center font-semibold text-gray-500">%</th>
                           <th />
-                          <th className="py-1 text-right font-semibold text-gray-500 whitespace-nowrap">Valor UF</th>
-                          {ufHoy && <th className="py-1 pl-3 text-right font-semibold text-gray-500 whitespace-nowrap">Valor $</th>}
+                          <th className="py-1 text-center font-semibold text-gray-500 whitespace-nowrap">Valor UF</th>
+                          {ufHoy && <th className="py-1 text-center font-semibold text-gray-500 whitespace-nowrap">Valor $</th>}
                         </tr>
                       </thead>
                       <tbody>
                         {[
                           { label: 'A la firma de Promesa', pct: formaPctDisplay.promesa, uf: promesaUF, isBold: false },
                           // Cambio 9: detalle de cuotas dentro del Concepto
-                          { label: `En ${nCuotasNew} cuota(s) (UF ${formatUF(cuotaIndividualUF)} c/u)`, pct: formaPctDisplay.cuotas, uf: cuotasUF, isBold: false },
+                          { label: `En ${nCuotasNew} cuotas (UF ${formatUF(cuotaIndividualUF)} c/u)`, pct: formaPctDisplay.cuotas, uf: cuotasUF, isBold: false },
                           { label: 'A la firma de Escritura', pct: formaPctDisplay.escritura, uf: escrituraUF, isBold: false },
                           ...(includeBonoPie ? [{ label: 'Compra Segura', pct: formaPctDisplay.compraSegura, uf: compraSeguraUF, isBold: false }] : []),
                           { label: 'Crédito Inst. Financiera', pct: formaPctDisplay.credito, uf: creditoUF, isBold: true },
@@ -2564,17 +2568,17 @@ export const Quoter: React.FC<QuoterProps> = ({
                       <thead>
                         <tr className="border-b border-gray-300">
                           {['Plazo Crédito','Dividendo UF','Dividendo $','Renta mínima aprox. $'].map(h=>(
-                            <th key={h} className="py-1 text-right first:text-left font-black text-[10px] text-gray-600 uppercase tracking-wide">{h}</th>
+                            <th key={h} className="py-1 text-center font-black text-[10px] text-gray-600 uppercase tracking-wide">{h}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
                         {dividendTable.map(r=>(
                           <tr key={r.years} className="border-b border-gray-50">
-                            <td className="py-1.5 font-bold text-gray-700">{r.years} años</td>
-                            <td className="py-1.5 text-right font-mono text-gray-800">{formatUF(r.divUF)} UF</td>
-                            <td className="py-1.5 text-right font-mono text-gray-600">{r.divCLP?formatCLP(r.divCLP):'—'}</td>
-                            <td className="py-1.5 text-right font-mono text-green-700">{r.rentaMin?formatCLP(r.rentaMin):'—'}</td>
+                            <td className="py-1.5 text-center font-bold text-gray-700">{r.years} años</td>
+                            <td className="py-1.5 text-center font-mono text-gray-800">{formatUF(r.divUF)} UF</td>
+                            <td className="py-1.5 text-center font-mono text-gray-600">{r.divCLP?formatCLP(r.divCLP):'—'}</td>
+                            <td className="py-1.5 text-center font-mono text-green-700">{r.rentaMin?formatCLP(r.rentaMin):'—'}</td>
                           </tr>
                         ))}
                       </tbody>
