@@ -16,6 +16,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import 'dotenv/config';
 import { db, withTx, ping, pool } from './db';
 import { extractTransactionData } from './ai';
+import { canAccessProject, getProjectAccessDecision } from './projectAccess';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -533,6 +534,66 @@ async function checkFollowUpAlerts() {
 let ufCache: { value: number; fecha: string; cachedAt: number } | null = null;
 const UF_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hora
 
+// Salvaguarda: asegura la tabla de caché de indicadores aunque el server ya estuviera arriba.
+let indicadoresCacheReady = false;
+async function ensureIndicadoresCache() {
+  if (indicadoresCacheReady) return;
+  await db.prepare(`CREATE TABLE IF NOT EXISTS indicadores_cache (
+    clave TEXT PRIMARY KEY,
+    valor NUMERIC,
+    fecha TEXT,
+    actualizado_at TIMESTAMPTZ DEFAULT NOW()
+  )`).run();
+  indicadoresCacheReady = true;
+}
+
+// Intenta varias fuentes públicas de la UF; devuelve null si todas fallan.
+// Fuente principal: CMF Chile (oficial, sin API key). Fallbacks: mindicador.cl.
+async function fetchUFExterno(): Promise<{ valor: number; fecha: string } | null> {
+  const hoy = new Date();
+  const dd = String(hoy.getDate()).padStart(2, '0');
+  const mm = String(hoy.getMonth() + 1).padStart(2, '0');
+  const yyyy = hoy.getFullYear();
+
+  // Fuente 1 — CMF Chile (oficial, sin API key). Formato: { UFs: [{ Valor: "40.823,03", Fecha }] }
+  try {
+    const r = await fetch(
+      `https://api.cmfchile.cl/api-sbifv3/recursos/v1/uf/dias/d/${dd}/m/${mm}/a/${yyyy}?formato=json`,
+      { signal: AbortSignal.timeout(6000) },
+    );
+    if (r.ok) {
+      const d = await r.json() as { UFs?: Array<{ Valor?: string; Fecha?: string }> };
+      const raw = d?.UFs?.[0]?.Valor;
+      if (raw) {
+        const valor = parseFloat(raw.replace(/\./g, '').replace(',', '.'));
+        if (!isNaN(valor) && valor > 0) return { valor, fecha: d.UFs?.[0]?.Fecha ?? hoy.toISOString() };
+      }
+    }
+  } catch { /* siguiente fuente */ }
+
+  // Fuente 2 — mindicador.cl /api/uf/hoy
+  try {
+    const r = await fetch('https://mindicador.cl/api/uf/hoy', { signal: AbortSignal.timeout(6000) });
+    if (r.ok) {
+      const d = await r.json() as { serie?: Array<{ valor: number; fecha: string }> };
+      const valor = d.serie?.[0]?.valor;
+      if (typeof valor === 'number' && valor > 0) return { valor, fecha: d.serie?.[0]?.fecha ?? hoy.toISOString() };
+    }
+  } catch { /* siguiente fuente */ }
+
+  // Fuente 3 — mindicador.cl /api/uf (más reciente, sin fecha específica)
+  try {
+    const r = await fetch('https://mindicador.cl/api/uf', { signal: AbortSignal.timeout(6000) });
+    if (r.ok) {
+      const d = await r.json() as { serie?: Array<{ valor: number; fecha: string }> };
+      const valor = d.serie?.[0]?.valor;
+      if (typeof valor === 'number' && valor > 0) return { valor, fecha: d.serie?.[0]?.fecha ?? hoy.toISOString() };
+    }
+  } catch { /* sin fuentes disponibles */ }
+
+  return null;
+}
+
 // ── Usuarios (en tabla `users`, con hash bcrypt; seed en scripts/seed-users.ts) ─
 type AppUser = { id: string; name: string; email: string; role: string; company: string; assignedProjectIds: string[] };
 
@@ -581,6 +642,31 @@ const requireRole = (...roles: string[]) => (req: express.Request, res: express.
   next();
 };
 
+async function auditProjectAccess(req: express.Request, projectId: string | null | undefined, context: string) {
+  if (!projectId) return;
+  const userId = (req as AuthenticatedRequest).userId;
+  if (!userId) return;
+
+  const user = await getUserById(userId);
+  if (!user || canAccessProject(user, projectId)) return;
+
+  const decision = getProjectAccessDecision(user, projectId);
+  const description = `AUDIT: ${context} habria sido bloqueado para projectId=${projectId} (${decision.reason})`;
+  console.warn(`[project-access:audit] user=${user.email} role=${user.role} projectId=${projectId} context="${context}" reason=${decision.reason}`);
+  await createAuditLog(user.id, user.name, user.role, 'Project access audit', 'Project', projectId, description, req.ip);
+}
+
+async function auditProjectAccessForProjectIds(req: express.Request, projectIds: Array<string | null | undefined>, context: string) {
+  const uniqueIds = [...new Set(projectIds.filter((id): id is string => typeof id === 'string' && id.length > 0))];
+  for (const projectId of uniqueIds) {
+    await auditProjectAccess(req, projectId, context);
+  }
+}
+
+async function auditProjectAccessForRows(req: express.Request, rows: Array<Record<string, unknown>>, context: string) {
+  await auditProjectAccessForProjectIds(req, rows.map(r => (r.project_id ?? r.projectId) as string | undefined), context);
+}
+
 // Los errores de los handlers async los captura `express-async-errors` (importado
 // arriba) y los enruta al middleware de errores global definido al final del archivo.
 
@@ -616,26 +702,45 @@ app.get('/api/health', async (_req, res) => {
 
 // ── 1. GET /api/uf-hoy ──────────────────────────────────────────────────────
 app.get('/api/uf-hoy', async (_req, res) => {
-  if (ufCache && Date.now() - ufCache.cachedAt < UF_CACHE_TTL_MS) {
-    res.json({ uf: ufCache.value, fecha: ufCache.fecha });
+  await ensureIndicadoresCache();
+
+  // 1. Leer caché persistente en BD
+  const cached = await db.prepare(
+    `SELECT valor, fecha, actualizado_at FROM indicadores_cache WHERE clave = 'uf_hoy'`
+  ).get() as { valor: number | string; fecha: string | null; actualizado_at: string } | undefined;
+  const cachedValor = cached ? Number(cached.valor) : NaN;
+  const cachedEdadMs = cached ? Date.now() - new Date(cached.actualizado_at).getTime() : Infinity;
+
+  // 2. Si la caché tiene menos de 1 hora → usarla directamente
+  if (cached && cachedValor > 0 && cachedEdadMs < UF_CACHE_TTL_MS) {
+    ufCache = { value: cachedValor, fecha: cached.fecha ?? new Date().toISOString(), cachedAt: Date.now() - cachedEdadMs };
+    res.json({ uf: cachedValor, fecha: cached.fecha ?? new Date().toISOString() });
     return;
   }
-  try {
-    const r = await fetch('https://mindicador.cl/api/uf');
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const data = await r.json() as Record<string, unknown>;
-    const serie = data.serie as Array<{ valor: number; fecha: string }> | undefined;
-    const valor: number = serie?.[0]?.valor ?? (data.valor as number);
-    const fecha: string = serie?.[0]?.fecha ?? new Date().toISOString();
-    ufCache = { value: valor, fecha, cachedAt: Date.now() };
-    res.json({ uf: valor, fecha });
-  } catch {
-    if (ufCache) {
-      res.json({ uf: ufCache.value, fecha: ufCache.fecha, cached: true });
-      return;
-    }
-    res.status(503).json({ error: 'Servicio UF no disponible temporalmente' });
+
+  // 3. Caché vencida o inexistente → intentar fuentes externas
+  const fresh = await fetchUFExterno();
+  if (fresh) {
+    await db.prepare(`
+      INSERT INTO indicadores_cache (clave, valor, fecha, actualizado_at)
+      VALUES ('uf_hoy', ?, ?, NOW())
+      ON CONFLICT (clave) DO UPDATE SET valor = excluded.valor, fecha = excluded.fecha, actualizado_at = NOW()
+    `).run(fresh.valor, fresh.fecha);
+    ufCache = { value: fresh.valor, fecha: fresh.fecha, cachedAt: Date.now() };
+    res.json({ uf: fresh.valor, fecha: fresh.fecha });
+    return;
   }
+
+  // 4. Fetch falló → servir el último valor cacheado aunque sea antiguo
+  if (cached && cachedValor > 0) {
+    res.json({ uf: cachedValor, fecha: cached.fecha ?? new Date().toISOString(), cached: true, stale: true });
+    return;
+  }
+  if (ufCache) {
+    res.json({ uf: ufCache.value, fecha: ufCache.fecha, cached: true, stale: true });
+    return;
+  }
+  res.status(503).json({ error: 'Servicio UF no disponible temporalmente' });
 });
 
 // ── 1b. POST /api/ai/extract-transaction ──────────────────────────────────────
@@ -710,6 +815,7 @@ app.post('/api/quotation-drafts', requireAuth, async (req, res) => {
   const draftId = (id as string) || crypto.randomUUID();
   const now = new Date().toISOString();
   const data = JSON.stringify({ projectId, clienteRut, clienteNombre, clienteId, ...rest });
+  await auditProjectAccess(req, projectId as string | undefined, 'POST /api/quotation-drafts');
 
   await db.prepare(`
     INSERT INTO quotation_drafts (id, project_id, user_id, cliente_rut, cliente_nombre, cliente_id, data, created_at, updated_at)
@@ -729,6 +835,7 @@ app.get('/api/quotation-drafts', requireAuth, async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
   const { unitNumero, projectId: qProjectId } = req.query as { unitNumero?: string; projectId?: string };
+  await auditProjectAccess(req, qProjectId, 'GET /api/quotation-drafts');
 
   let rows: Array<Record<string, unknown>>;
 
@@ -784,6 +891,7 @@ app.get('/api/quotation-drafts', requireAuth, async (req, res) => {
     }
   }
 
+  await auditProjectAccessForRows(req, rows, 'GET /api/quotation-drafts');
   res.json(rows.map(r => ({
     ...r,
     clienteNombre: r.cliente_nombre,
@@ -795,6 +903,10 @@ app.get('/api/quotation-drafts', requireAuth, async (req, res) => {
 
 app.delete('/api/quotation-drafts/:id', requireAuth, async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
+  const existing = await db.prepare(
+    'SELECT project_id FROM quotation_drafts WHERE id = ? AND user_id = ?'
+  ).get(req.params.id, userId) as { project_id: string | null } | undefined;
+  await auditProjectAccess(req, existing?.project_id, 'DELETE /api/quotation-drafts/:id');
   const result = await db.prepare(
     'DELETE FROM quotation_drafts WHERE id = ? AND user_id = ?'
   ).run(req.params.id, userId);
@@ -872,6 +984,7 @@ app.post('/api/quotation-drafts/:id/generate', requireAuth, async (req, res) => 
     });
 
     const genUser = await getUserById(userId);
+    await auditProjectAccess(req, draft.project_id, 'POST /api/quotation-drafts/:id/generate');
     const parsedDataForAudit = (() => { try { return JSON.parse(draft.data || '{}') as { selectedUnits?: Array<{ numero: string }> }; } catch { return {}; } })();
     const unidadesStr = parsedDataForAudit.selectedUnits?.map(u => u.numero).join(', ') || 'sin unidades';
     createAuditLog(userId, genUser?.name || '', genUser?.role || '', 'Cotización generada', 'Quotation', id,
@@ -905,13 +1018,14 @@ app.post('/api/quotation-drafts/:id/pdf', requireAuth, async (req, res) => {
   }
 
   const draft = (['Admin', 'Supervisor', 'JefeSala'].includes(userRole))
-    ? await db.prepare('SELECT id, user_id, cliente_nombre FROM quotation_drafts WHERE id = ?').get(id) as { id: string; user_id: string; cliente_nombre: string } | undefined
-    : await db.prepare('SELECT id, user_id, cliente_nombre FROM quotation_drafts WHERE id = ? AND user_id = ?').get(id, userId) as { id: string; user_id: string; cliente_nombre: string } | undefined;
+    ? await db.prepare('SELECT id, user_id, cliente_nombre, project_id FROM quotation_drafts WHERE id = ?').get(id) as { id: string; user_id: string; cliente_nombre: string; project_id: string | null } | undefined
+    : await db.prepare('SELECT id, user_id, cliente_nombre, project_id FROM quotation_drafts WHERE id = ? AND user_id = ?').get(id, userId) as { id: string; user_id: string; cliente_nombre: string; project_id: string | null } | undefined;
 
   if (!draft) {
     res.status(404).json({ error: 'Borrador no encontrado o sin permisos' });
     return;
   }
+  await auditProjectAccess(req, draft.project_id, 'POST /api/quotation-drafts/:id/pdf');
 
   const dir = path.join(UPLOADS_DIR, 'cotizaciones');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -957,6 +1071,7 @@ app.get('/api/payment-plans', requireAuth, async (req, res) => {
     const rows = await db.prepare(
       `${SELECT} WHERE quotation_id = ? ORDER BY created_at ASC`
     ).all(quotationId) as Array<Record<string, unknown>>;
+    await auditProjectAccessForRows(req, rows, 'GET /api/payment-plans');
     res.json(rows.map(mapRow));
     return;
   }
@@ -965,6 +1080,7 @@ app.get('/api/payment-plans', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'unitNumero y projectId son requeridos' });
     return;
   }
+  await auditProjectAccess(req, projectId, 'GET /api/payment-plans');
   const conditions: string[] = ['unit_numero = ?', 'project_id = ?'];
   const params: string[] = [unitNumero, projectId];
   if (clienteRut) {
@@ -975,6 +1091,7 @@ app.get('/api/payment-plans', requireAuth, async (req, res) => {
     `${SELECT} WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC`
   ).all(...params) as Array<Record<string, unknown>>;
 
+  await auditProjectAccessForRows(req, rows, 'GET /api/payment-plans');
   res.json(rows.map(mapRow));
 });
 
@@ -1533,7 +1650,7 @@ app.post('/api/quotations/send-email', requireAuth, async (req, res) => {
 
 // ── 8. Projects ──────────────────────────────────────────────────────────────
 
-app.get('/api/projects', requireAuth, async (_req, res) => {
+app.get('/api/projects', requireAuth, async (req, res) => {
   const rows = await db.prepare(`
     SELECT p.*, pc.jefe_max_pct, pc.supervisor_max_pct, pc.bono_pie_pct,
       pc.vigencia_cotizacion_dias, pc.reserva_clp, pc.nombre_inmobiliaria,
@@ -1542,6 +1659,7 @@ app.get('/api/projects', requireAuth, async (_req, res) => {
     LEFT JOIN project_configs pc ON pc.project_id = p.id
     ORDER BY p.created_at DESC
   `).all() as Array<Record<string, unknown>>;
+  await auditProjectAccessForProjectIds(req, rows.map(r => r.id as string | undefined), 'GET /api/projects');
   res.json(rows.map(r => ({
     id: r.id,
     nombre: r.nombre,
@@ -1616,6 +1734,7 @@ app.delete('/api/projects/:id', requireAuth, requireRole('Admin'), async (req, r
 });
 
 app.get('/api/projects/:id/config', requireAuth, async (req, res) => {
+  await auditProjectAccess(req, req.params.id, 'GET /api/projects/:id/config');
   const row = await db.prepare('SELECT * FROM project_configs WHERE project_id = ?').get(req.params.id) as Record<string, unknown> | undefined;
   if (!row) { res.status(404).json({ error: 'Config no encontrada' }); return; }
   res.json({
@@ -1640,6 +1759,7 @@ app.get('/api/projects/:id/config', requireAuth, async (req, res) => {
 app.post('/api/projects/:id/config', requireAuth, requireRole('Admin', 'Supervisor'), async (req, res) => {
   const body = req.body as Record<string, unknown>;
   const now = new Date().toISOString();
+  await auditProjectAccess(req, req.params.id, 'POST /api/projects/:id/config');
   syncProjectConfigToTable(req.params.id, body, now);
   if (body.duracionReservaDias != null) {
     await db.prepare('UPDATE project_configs SET duracion_cotizacion_dias = ? WHERE project_id = ?')
@@ -1654,6 +1774,7 @@ app.get('/api/clients', requireAuth, async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
   const { projectId, estado, ejecutivoId } = req.query as Record<string, string>;
+  await auditProjectAccess(req, projectId, 'GET /api/clients');
 
   let sql = 'SELECT * FROM clients WHERE 1=1';
   const params: Array<string | number | null> = [];
@@ -1668,6 +1789,7 @@ app.get('/api/clients', requireAuth, async (req, res) => {
   sql += ' ORDER BY created_at DESC';
 
   const rows = await db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+  await auditProjectAccessForRows(req, rows, 'GET /api/clients');
   res.json(rows.map(r => ({
     id: r.id,
     projectId: r.project_id,
@@ -1702,6 +1824,7 @@ app.post('/api/clients', requireAuth, requireRole('Admin', 'JefeSala', 'Supervis
   const body = req.body as Record<string, unknown>;
   const now = new Date().toISOString();
   const id = (body.id as string | undefined) || crypto.randomUUID();
+  await auditProjectAccess(req, body.projectId as string | undefined, 'POST /api/clients');
   await db.prepare(`INSERT INTO clients (id, project_id, tipo_persona, nombre, rut, nacionalidad, profesion, sueldo_range, fecha_nacimiento, email, telefono, direccion, ciudad, comuna, region, ejecutivo_id, estado, fecha_registro, representante_nombre, representante_rut, representante_nacionalidad, representante_email, representante_telefono, representante_direccion, historial, documents, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET nombre = excluded.nombre, rut = excluded.rut, email = excluded.email, telefono = excluded.telefono, estado = excluded.estado, ejecutivo_id = excluded.ejecutivo_id, historial = excluded.historial, documents = excluded.documents, updated_at = excluded.updated_at`)
@@ -1733,6 +1856,7 @@ app.patch('/api/clients/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Sup
   const now = new Date().toISOString();
   const existing = await db.prepare('SELECT * FROM clients WHERE id = ?').get(req.params.id) as Record<string, string | null> | undefined;
   if (!existing) { res.status(404).json({ error: 'Cliente no encontrado' }); return; }
+  await auditProjectAccess(req, existing.project_id, 'PATCH /api/clients/:id');
   // IDOR: un rol Ventas solo puede editar clientes de los que es ejecutivo.
   if (userRole === 'Ventas' && existing.ejecutivo_id !== userId) {
     res.status(403).json({ error: 'No puedes editar clientes de otro ejecutivo' });
@@ -1775,8 +1899,9 @@ app.patch('/api/clients/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Sup
 
 // GET /api/clients/:id/quotations — ACCIÓN 1: cotizaciones generadas del cliente
 app.get('/api/clients/:id/quotations', requireAuth, async (req, res) => {
-  const client = await db.prepare('SELECT id, rut, nombre FROM clients WHERE id = ?').get(req.params.id) as { id: string; rut: string; nombre: string } | undefined;
+  const client = await db.prepare('SELECT id, rut, nombre, project_id FROM clients WHERE id = ?').get(req.params.id) as { id: string; rut: string; nombre: string; project_id: string | null } | undefined;
   if (!client) { res.status(404).json({ error: 'Cliente no encontrado' }); return; }
+  await auditProjectAccess(req, client.project_id, 'GET /api/clients/:id/quotations');
 
   const rows = await db.prepare(`
     SELECT * FROM quotation_drafts
@@ -1822,6 +1947,7 @@ app.post('/api/clients/bulk-import', requireAuth, requireRole('Admin', 'JefeSala
     res.status(400).json({ error: 'Lista de clientes vacía' });
     return;
   }
+  await auditProjectAccess(req, projectId, 'POST /api/clients/bulk-import');
 
   const results = { success: 0, errors: [] as string[] };
   const now = new Date().toISOString();
@@ -1882,6 +2008,8 @@ app.post('/api/clients/bulk-import', requireAuth, requireRole('Admin', 'JefeSala
 });
 
 app.delete('/api/clients/:id', requireAuth, requireRole('Admin', 'Supervisor'), async (req, res) => {
+  const existing = await db.prepare('SELECT project_id FROM clients WHERE id = ?').get(req.params.id) as { project_id: string | null } | undefined;
+  await auditProjectAccess(req, existing?.project_id, 'DELETE /api/clients/:id');
   const result = await db.prepare('DELETE FROM clients WHERE id = ?').run(req.params.id);
   if (result.changes === 0) { res.status(404).json({ error: 'Cliente no encontrado' }); return; }
   res.json({ ok: true });
@@ -1893,6 +2021,7 @@ app.get('/api/units', requireAuth, async (req, res) => {
   const { projectId, estado, type } = req.query as Record<string, string>;
   const userRole = (req as AuthenticatedRequest).userRole;
   const userId = (req as AuthenticatedRequest).userId;
+  await auditProjectAccess(req, projectId, 'GET /api/units');
 
   let rows: Array<Record<string, unknown>>;
   if (userRole === 'Ventas') {
@@ -1912,6 +2041,7 @@ app.get('/api/units', requireAuth, async (req, res) => {
     sql += ' ORDER BY numero ASC';
     rows = await db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
   }
+  await auditProjectAccessForRows(req, rows, 'GET /api/units');
   res.json(rows.map(r => ({
     id: r.id,
     projectId: r.project_id,
@@ -1987,6 +2117,7 @@ app.get('/api/units/:id/price-history', requireAuth, async (req, res) => {
   const rows = await db.prepare(
     'SELECT * FROM price_history WHERE unit_id = ? ORDER BY created_at DESC'
   ).all(req.params.id) as Array<Record<string, unknown>>;
+  await auditProjectAccessForRows(req, rows, 'GET /api/units/:id/price-history');
   res.json(rows.map(r => ({
     id: r.id,
     unitId: r.unit_id,
@@ -2059,6 +2190,7 @@ app.post('/api/units/bulk-price-update', requireAuth, requireRole('Admin', 'Supe
   });
 
   const updated = historyEntries.length;
+  await auditProjectAccessForProjectIds(req, historyEntries.map(e => e.projectId), 'POST /api/units/bulk-price-update');
   for (const e of historyEntries) {
     createAuditLog(userId, userName, userRole, 'Ajuste masivo precio', 'Unit', e.unitId,
       `Precio lista: ${e.anterior} → ${e.nuevo} UF (${e.pct > 0 ? '+' : ''}${e.pct}%)${motivo ? ` — ${motivo}` : ''}`);
@@ -2071,6 +2203,7 @@ app.post('/api/units', requireAuth, requireRole('Admin'), async (req, res) => {
   const body = req.body as Record<string, unknown>;
   const now = new Date().toISOString();
   const id = (body.id as string | undefined) || crypto.randomUUID();
+  await auditProjectAccess(req, body.projectId as string | undefined, 'POST /api/units');
   upsertUnit(body, id, now);
   res.json({ id, ...body });
 });
@@ -2083,6 +2216,7 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
   const now = new Date().toISOString();
   const existing = await db.prepare('SELECT * FROM units WHERE id = ?').get(req.params.id) as Record<string, unknown> | undefined;
   if (!existing) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
+  await auditProjectAccess(req, existing.project_id as string | undefined, 'PATCH /api/units/:id');
   const clienteNombreUnit = existing.cliente_id
     ? (await db.prepare('SELECT nombre FROM clients WHERE id = ?').get(existing.cliente_id as string) as { nombre: string } | undefined)?.nombre || null
     : null;
@@ -2288,7 +2422,7 @@ app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala',
   const now = new Date().toISOString();
 
   try {
-    const { numero, type, clienteNombre, clienteRut } = await withTx(async (tx) => {
+    const { numero, type, clienteNombre, clienteRut, projectId } = await withTx(async (tx) => {
       const unit = await tx.prepare(
         'SELECT id, estado, cliente_id, project_id, numero, type, historial_ocupacion FROM units WHERE id = ?'
       ).get(id) as { id: string; estado: string; cliente_id: string | null; project_id: string; numero: string; type: string; historial_ocupacion: string } | undefined;
@@ -2351,8 +2485,9 @@ app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala',
         WHERE id = ?
       `).run(body.clienteId, body.asignadoPor ?? userId, body.fechaAsignacion ?? now, body.fechaReserva ?? now, userId, expira, JSON.stringify(hist), id);
 
-      return { numero: unit.numero, type: unit.type, clienteNombre, clienteRut };
+      return { numero: unit.numero, type: unit.type, clienteNombre, clienteRut, projectId: unit.project_id };
     });
+    await auditProjectAccess(req, projectId, 'PATCH /api/units/:id/assign');
     createAuditLog(userId, userName, userRole, 'Asignación', 'Unit', id, `${type} ${numero} asignada a ${clienteNombre} (RUT: ${clienteRut}) por ${userName}`);
     createNotification({ paraRol: 'JefeSala', titulo: 'Unidad reservada', mensaje: `${userName} reservó ${type} ${numero} para ${clienteNombre}`, tipo: 'info', linkView: 'inventory', relatedId: id });
     res.json({ ok: true });
@@ -2374,8 +2509,9 @@ app.patch('/api/units/:id/unassign', requireAuth, requireRole('Admin', 'JefeSala
   const userName = (await getUserById(userId))?.name || '';
   const now = new Date().toISOString();
   // Fetch unit info before clearing, for audit log + historial
-  const unitBeforeUnassign = await db.prepare('SELECT numero, type, cliente_id, historial_ocupacion FROM units WHERE id = ?')
-    .get(req.params.id) as { numero: string; type: string; cliente_id: string | null; historial_ocupacion: string } | undefined;
+  const unitBeforeUnassign = await db.prepare('SELECT numero, type, cliente_id, project_id, historial_ocupacion FROM units WHERE id = ?')
+    .get(req.params.id) as { numero: string; type: string; cliente_id: string | null; project_id: string | null; historial_ocupacion: string } | undefined;
+  await auditProjectAccess(req, unitBeforeUnassign?.project_id, 'PATCH /api/units/:id/unassign');
   const clienteBeforeUnassign = unitBeforeUnassign?.cliente_id
     ? (await db.prepare('SELECT nombre FROM clients WHERE id = ?').get(unitBeforeUnassign.cliente_id) as { nombre: string } | undefined)?.nombre || ''
     : '';
@@ -2401,9 +2537,10 @@ app.post('/api/units/:id/liberar', requireAuth, requireRole('Admin', 'JefeSala',
   const userName = (await getUserById(userId))?.name || '';
   const now = new Date().toISOString();
 
-  const unit = await db.prepare('SELECT id, estado, numero, type, cliente_id, reserva_vendedor_id, historial_ocupacion FROM units WHERE id = ?')
-    .get(req.params.id) as { id: string; estado: string; numero: string; type: string; cliente_id: string | null; reserva_vendedor_id: string | null; historial_ocupacion: string } | undefined;
+  const unit = await db.prepare('SELECT id, estado, numero, type, cliente_id, project_id, reserva_vendedor_id, historial_ocupacion FROM units WHERE id = ?')
+    .get(req.params.id) as { id: string; estado: string; numero: string; type: string; cliente_id: string | null; project_id: string | null; reserva_vendedor_id: string | null; historial_ocupacion: string } | undefined;
   if (!unit) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
+  await auditProjectAccess(req, unit.project_id, 'POST /api/units/:id/liberar');
   if (unit.estado !== 'Reservado') { res.status(400).json({ error: 'La unidad no está en estado Reservado' }); return; }
 
   type HistEntry = { fechaFin?: string; [k: string]: unknown };
@@ -2461,6 +2598,13 @@ app.post('/api/sync', requireAuth, async (req, res) => {
   if (!key) { res.status(400).json({ error: 'Key requerida' }); return; }
   const userId = (req as AuthenticatedRequest).userId;
   const now = new Date().toISOString();
+
+  if (key === 'app_state') {
+    const projects = ((value as Record<string, unknown>)?.projects ?? []) as Array<Record<string, unknown>>;
+    await auditProjectAccessForProjectIds(req, projects.map(p => p.id as string | undefined), 'POST /api/sync app_state');
+  } else if (key.startsWith('project_config_')) {
+    await auditProjectAccess(req, key.replace('project_config_', ''), 'POST /api/sync project_config');
+  }
 
   await db.prepare(`INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
@@ -2545,6 +2689,12 @@ if (isMain) {
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS descuento_cliente NUMERIC(5,2)`).run();
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS ejecutivo_id TEXT`).run();
       await db.prepare(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS eliminada INTEGER DEFAULT 0`).run();
+      await db.prepare(`CREATE TABLE IF NOT EXISTS indicadores_cache (
+        clave TEXT PRIMARY KEY,
+        valor NUMERIC,
+        fecha TEXT,
+        actualizado_at TIMESTAMPTZ DEFAULT NOW()
+      )`).run();
       await db.prepare(`CREATE TABLE IF NOT EXISTS price_history (
         id TEXT PRIMARY KEY,
         unit_id TEXT NOT NULL,

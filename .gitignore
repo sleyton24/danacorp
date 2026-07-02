@@ -21,6 +21,7 @@ dist-server
 # Artefactos temporales de scripts / OneDrive
 _*.json
 .849*
+.codex-inspect/
 
 # Uploads de usuarios
 uploads/

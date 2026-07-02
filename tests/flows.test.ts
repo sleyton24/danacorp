@@ -10,6 +10,7 @@ import request from 'supertest';
 
 let app: import('express').Express;
 let pool: import('pg').Pool;
+let preparedTestDb: import('./test-db').PreparedTestDatabase | undefined;
 
 const ADMIN = { email: 'admin@danacorp.cl', password: 'admin123' };
 let adminToken = '';
@@ -21,9 +22,10 @@ async function login(email: string, password: string) {
 
 beforeAll(async () => {
   process.env.JWT_SECRET = 'test-secret-0123456789-abcdefghij-xyz';
-  process.env.PGDATABASE = 'danacorp_test';
+  const testDb = await import('./test-db');
+  preparedTestDb = await testDb.prepareIsolatedTestSchema();
 
-  // Importa db.ts primero (crea el pool sobre danacorp_test), aplica esquema y limpia.
+  // Importa db.ts primero (crea el pool sobre el schema temporal), aplica esquema y limpia.
   const dbMod = await import('../db');
   pool = dbMod.pool;
   await dbMod.ensureSchema();
@@ -44,6 +46,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (pool) await pool.end();
+  if (preparedTestDb) {
+    const { dropIsolatedTestSchema } = await import('./test-db');
+    await dropIsolatedTestSchema(preparedTestDb);
+  }
 });
 
 describe('Flujo 1 — Login', () => {
