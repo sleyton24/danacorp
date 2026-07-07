@@ -407,9 +407,9 @@ async function migrateReservas() {
 
   for (const unit of sinReserva) {
     const config = await db.prepare(
-      'SELECT duracion_cotizacion_dias FROM project_configs WHERE project_id = ?'
-    ).get(unit.project_id) as { duracion_cotizacion_dias?: number } | undefined;
-    const dias = config?.duracion_cotizacion_dias ?? 15;
+      'SELECT dias_duracion_reserva FROM project_configs WHERE project_id = ?'
+    ).get(unit.project_id) as { dias_duracion_reserva?: number } | undefined;
+    const dias = config?.dias_duracion_reserva ?? 10;
     const expira = new Date(Date.now() + dias * 24 * 60 * 60 * 1000).toISOString();
 
     const cliente = unit.cliente_id ? await db.prepare(
@@ -1161,7 +1161,7 @@ async function getProjectDiscountConfig(projectId: string): Promise<{
       supervisorMaxPct: (cfgRow.supervisor_max_pct as number | undefined) ?? 8,
       bonoPiePct: (cfgRow.bono_pie_pct as number | undefined) ?? 10,
       vigenciaCotizacionDias: (cfgRow.vigencia_cotizacion_dias as number | undefined) ?? 7,
-      duracionReservaDias: (cfgRow.duracion_cotizacion_dias as number | undefined) ?? 15,
+      duracionReservaDias: (cfgRow.dias_duracion_reserva as number | undefined) ?? 10,
     };
   }
   // Fall back to app_state blob
@@ -1752,7 +1752,7 @@ app.get('/api/projects/:id/config', requireAuth, async (req, res) => {
     ciudadProyecto: row.ciudad_proyecto,
     nombreInmobiliaria: row.nombre_inmobiliaria,
     cantidadCuotasPie: row.cantidad_cuotas_pie,
-    duracionReservaDias: row.duracion_cotizacion_dias,
+    duracionReservaDias: row.dias_duracion_reserva,
   });
 });
 
@@ -1762,7 +1762,7 @@ app.post('/api/projects/:id/config', requireAuth, requireRole('Admin', 'Supervis
   await auditProjectAccess(req, req.params.id, 'POST /api/projects/:id/config');
   syncProjectConfigToTable(req.params.id, body, now);
   if (body.duracionReservaDias != null) {
-    await db.prepare('UPDATE project_configs SET duracion_cotizacion_dias = ? WHERE project_id = ?')
+    await db.prepare('UPDATE project_configs SET dias_duracion_reserva = ? WHERE project_id = ?')
       .run(body.duracionReservaDias as number, req.params.id);
   }
   res.json({ ok: true });
@@ -2689,6 +2689,19 @@ if (isMain) {
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS descuento_cliente NUMERIC(5,2)`).run();
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS ejecutivo_id TEXT`).run();
       await db.prepare(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS eliminada INTEGER DEFAULT 0`).run();
+      // ── Checkpoint A: parámetros de cuotas y reserva ──────────────────────
+      await db.prepare(`ALTER TABLE project_configs ADD COLUMN IF NOT EXISTS max_cuotas INTEGER NOT NULL DEFAULT 36`).run();
+      await db.prepare(`ALTER TABLE project_configs ADD COLUMN IF NOT EXISTS dias_duracion_reserva INTEGER NOT NULL DEFAULT 10`).run();
+      await db.prepare(`ALTER TABLE project_configs ADD COLUMN IF NOT EXISTS horas_solicitud_aprobacion_reserva INTEGER NOT NULL DEFAULT 72`).run();
+      // Port ÚNICO del dato de reserva desde la columna mal nombrada duracion_cotizacion_dias.
+      // Guardado con flag para no re-machacar ediciones futuras (init() corre en cada arranque).
+      {
+        const done = await db.prepare("SELECT value FROM app_state WHERE key = 'migration_checkpoint_a_reserva'").get() as { value: string } | undefined;
+        if (!done) {
+          await db.prepare(`UPDATE project_configs SET dias_duracion_reserva = duracion_cotizacion_dias WHERE duracion_cotizacion_dias IS NOT NULL`).run();
+          await db.prepare("INSERT INTO app_state (key, value) VALUES ('migration_checkpoint_a_reserva', 'true') ON CONFLICT(key) DO UPDATE SET value = 'true'").run();
+        }
+      }
       await db.prepare(`CREATE TABLE IF NOT EXISTS indicadores_cache (
         clave TEXT PRIMARY KEY,
         valor NUMERIC,
