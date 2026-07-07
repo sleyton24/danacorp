@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS project_configs (
   jefe_max_pct DOUBLE PRECISION DEFAULT 3 NOT NULL,
   supervisor_max_pct DOUBLE PRECISION DEFAULT 8 NOT NULL,
   bono_pie_pct DOUBLE PRECISION DEFAULT 10 NOT NULL,
-  vigencia_cotizacion_dias INTEGER DEFAULT 7 NOT NULL,
+  vigencia_cotizacion_dias INTEGER DEFAULT 7 NOT NULL,          -- validez del PRECIO cotizado
   reserva_clp DOUBLE PRECISION,
   nombre_inmobiliaria TEXT,
   direccion_proyecto TEXT,
@@ -24,7 +24,10 @@ CREATE TABLE IF NOT EXISTS project_configs (
   cantidad_cuotas_pie INTEGER,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now(),
-  duracion_cotizacion_dias INTEGER DEFAULT 10
+  duracion_cotizacion_dias INTEGER DEFAULT 10,                  -- DEPRECADO: reemplazado por dias_duracion_reserva
+  max_cuotas INTEGER DEFAULT 36 NOT NULL,
+  dias_duracion_reserva INTEGER DEFAULT 10 NOT NULL,            -- duración de la RESERVA (unidad congelada)
+  horas_solicitud_aprobacion_reserva INTEGER DEFAULT 72 NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS clients (
