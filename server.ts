@@ -1753,6 +1753,7 @@ app.get('/api/projects/:id/config', requireAuth, async (req, res) => {
     nombreInmobiliaria: row.nombre_inmobiliaria,
     cantidadCuotasPie: row.cantidad_cuotas_pie,
     duracionReservaDias: row.dias_duracion_reserva,
+    maxCuotas: row.max_cuotas,
   });
 });
 

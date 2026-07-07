@@ -214,6 +214,7 @@ export interface ProjectConfig {
   nombreInmobiliaria?: string;
   cantidadCuotasPie?: number;
   duracionReservaDias?: number;
+  maxCuotas?: number;
 }
 
 export interface DiscountRequestRecord {
