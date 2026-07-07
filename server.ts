@@ -1761,7 +1761,7 @@ app.post('/api/projects/:id/config', requireAuth, requireRole('Admin', 'Supervis
   const body = req.body as Record<string, unknown>;
   const now = new Date().toISOString();
   await auditProjectAccess(req, req.params.id, 'POST /api/projects/:id/config');
-  syncProjectConfigToTable(req.params.id, body, now);
+  await syncProjectConfigToTable(req.params.id, body, now);
   if (body.duracionReservaDias != null) {
     await db.prepare('UPDATE project_configs SET dias_duracion_reserva = ? WHERE project_id = ?')
       .run(body.duracionReservaDias as number, req.params.id);
@@ -2205,7 +2205,7 @@ app.post('/api/units', requireAuth, requireRole('Admin'), async (req, res) => {
   const now = new Date().toISOString();
   const id = (body.id as string | undefined) || crypto.randomUUID();
   await auditProjectAccess(req, body.projectId as string | undefined, 'POST /api/units');
-  upsertUnit(body, id, now);
+  await upsertUnit(body, id, now);
   res.json({ id, ...body });
 });
 
