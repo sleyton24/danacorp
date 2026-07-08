@@ -1,10 +1,11 @@
 ﻿export interface PaymentItem {
-  id: string;
+  uid: string;          // identidad estable de la fila (Bloque C). NO es el label editable.
+  id: string;           // label editable por el usuario ("Cuota 1", "Promesa"…), decorativo.
   date: string;
   amount: string;
   status: 'Pagado' | 'Pendiente' | 'Atrasado';
   fechaPagoReal?: string;
-  observacion?: string; 
+  observacion?: string;
 }
 
 export interface ClientHistory {

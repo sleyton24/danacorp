@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { RealEstateUnit, Client, PaymentItem, User, PaymentPlan, OcupacionEntry, PriceHistoryEntry } from '../types';
+import { recalcularCronograma, insertarFilaOrdenada } from '../utils/cronogramaUtils';
 import {
   ArrowLeft, Save, Trash2, Building2,
   AlertTriangle, CreditCard, RefreshCw,
@@ -13,6 +14,16 @@ import {
 } from 'lucide-react';
 import { AssetTagInput } from './AssetTagInput';
 import { calcResumenUnidad, calcFormaPago } from '../utils/pricingUtils';
+
+// Bloque C: normaliza el cronograma al cargar — (1) asegura un uid estable en cada
+// fila (backfill en memoria de filas legacy; se persiste al próximo guardado, ya que
+// planPagos es un blob JSON) y (2) lo deja ordenado cronológicamente. Reordenar un
+// cronograma legacy desordenado es el comportamiento esperado.
+function normalizarPlanPagos(filas: PaymentItem[]): PaymentItem[] {
+  return filas
+    .map(p => (p.uid ? p : { ...p, uid: crypto.randomUUID() }))
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
 
 interface UnitDetailProps {
   unit: RealEstateUnit;
@@ -137,7 +148,11 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   clients = [], users = [], onAssignClient, onUnassignClient, showToast,
   onUnsavedChangesUpdate, saveRef,
 }) => {
-  const [formData, setFormData] = useState<RealEstateUnit>(unit);
+  // Backfill de uid + orden cronológico una sola vez al montar (Bloque C).
+  const [formData, setFormData] = useState<RealEstateUnit>(() => ({
+    ...unit,
+    planPagos: normalizarPlanPagos(unit.planPagos ?? []),
+  }));
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
   const [assignSearch, setAssignSearch] = useState('');
   const [clientMenuOpen, setClientMenuOpen] = useState(false);
@@ -417,12 +432,22 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
 
   // ── Fix 2: Cambios pendientes ──────────────────────────────────────────────
   const hasUnsavedChanges = useMemo(() => {
+    // El uid (identidad interna) y el reordenamiento cronológico NO son cambios del
+    // usuario: canonizamos planPagos sin uid y ordenado por fecha en ambos lados, para
+    // que abrir un cronograma legacy (backfill de uid + orden) no marque "sin guardar".
+    const canonPlan = (filas?: PaymentItem[]) =>
+      (filas ?? [])
+        .map(p => ({ id: p.id, date: p.date, amount: p.amount, status: p.status, fechaPagoReal: p.fechaPagoReal, observacion: p.observacion }))
+        .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
     const normalize = (obj: any) => {
       if (!obj) return obj;
-      return Object.keys(obj).sort().reduce((acc, key) => {
-        acc[key] = obj[key];
+      const { planPagos, ...rest } = obj;
+      const base = Object.keys(rest).sort().reduce((acc, key) => {
+        acc[key] = rest[key];
         return acc;
       }, {} as any);
+      base.planPagos = canonPlan(planPagos);
+      return base;
     };
     return JSON.stringify(normalize(formData)) !== JSON.stringify(normalize(unit));
   }, [formData, unit]);
@@ -679,9 +704,14 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasBono, bonoPct, totalPrecioVentaNuevo]);
 
-  // Sincronizar formData cuando cambian datos clave de la unidad (Fix A)
+  // Sincronizar formData cuando cambian datos clave de la unidad (Fix A).
+  // Bloque C: se salta el primer render (el init lazy ya normalizó el cronograma; volver
+  // a setear pisaría los uid y el orden, y el doble render con uid nuevos causaría flicker).
+  // En re-sincronizaciones (cambio de unidad/estado) se normaliza igual que en el init.
+  const didMountSync = useRef(false);
   useEffect(() => {
-    setFormData(unit);
+    if (!didMountSync.current) { didMountSync.current = true; return; }
+    setFormData({ ...unit, planPagos: normalizarPlanPagos(unit.planPagos ?? []) });
   }, [
     unit.id,
     unit.clienteId,
@@ -910,6 +940,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
           }
 
           const newItem: PaymentItem = {
+              uid: crypto.randomUUID(),
               id: nextId,
               date: nextDate,
               amount: '0',
@@ -917,7 +948,8 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
               fechaPagoReal: '',
               observacion: ''
           };
-          return { ...prev, planPagos: [...prev.planPagos, newItem] };
+          // C.1: se inserta en su posición cronológica, sin cascada.
+          return { ...prev, planPagos: insertarFilaOrdenada(prev.planPagos, newItem) };
       });
   };
 
@@ -949,7 +981,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
 
   const requestAgregarCuota = () => {
     const hoy = new Date().toISOString().split('T')[0];
-    const nuevo: PaymentItem = { id: `Cuota ${formData.planPagos.length + 1}`, date: hoy, amount: '0', status: 'Pendiente', fechaPagoReal: '', observacion: '' };
+    const nuevo: PaymentItem = { uid: crypto.randomUUID(), id: `Cuota ${formData.planPagos.length + 1}`, date: hoy, amount: '0', status: 'Pendiente', fechaPagoReal: '', observacion: '' };
     void requestCronogramaApproval('agregar', nuevo);
   };
 
@@ -982,7 +1014,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
       const dow = d.getDay();
       if (dow === 0) d.setDate(2);
       else if (dow === 6) d.setDate(3);
-      nuevasCuotas.push({ id: 'Promesa', date: d.toISOString().split('T')[0], amount: ufPromesa.toFixed(4), status: 'Pendiente' });
+      nuevasCuotas.push({ uid: crypto.randomUUID(), id: 'Promesa', date: d.toISOString().split('T')[0], amount: ufPromesa.toFixed(4), status: 'Pendiente' });
       monthCursor++;
     }
 
@@ -990,7 +1022,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     if (fpCuotasPct > 0 && cuotasN > 0 && ufCuotaUnit > 0) {
       for (let i = 1; i <= cuotasN; i++) {
         const d = new Date(today.getFullYear(), today.getMonth() + monthCursor, 1);
-        nuevasCuotas.push({ id: `Cuota ${i}`, date: d.toISOString().split('T')[0], amount: ufCuotaUnit.toFixed(4), status: 'Pendiente' });
+        nuevasCuotas.push({ uid: crypto.randomUUID(), id: `Cuota ${i}`, date: d.toISOString().split('T')[0], amount: ufCuotaUnit.toFixed(4), status: 'Pendiente' });
         monthCursor++;
       }
     }
@@ -999,10 +1031,10 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     const fechaFinal = new Date(today.getFullYear(), today.getMonth() + monthCursor, 1).toISOString().split('T')[0];
 
     if (fpEscrituraPct > 0 && ufEscritura > 0) {
-      nuevasCuotas.push({ id: 'Escritura', date: fechaFinal, amount: ufEscritura.toFixed(4), status: 'Pendiente' });
+      nuevasCuotas.push({ uid: crypto.randomUUID(), id: 'Escritura', date: fechaFinal, amount: ufEscritura.toFixed(4), status: 'Pendiente' });
     }
     if (fpCreditoPct > 0 && ufCredito > 0) {
-      nuevasCuotas.push({ id: 'Crédito Hipotecario', date: fechaFinal, amount: ufCredito.toFixed(4), status: 'Pendiente', observacion: 'Financiamiento bancario' });
+      nuevasCuotas.push({ uid: crypto.randomUUID(), id: 'Crédito Hipotecario', date: fechaFinal, amount: ufCredito.toFixed(4), status: 'Pendiente', observacion: 'Financiamiento bancario' });
     }
 
     if (nuevasCuotas.length === 0) return;
@@ -1015,7 +1047,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
       )) return;
     }
 
-    setFormData(prev => ({ ...prev, planPagos: nuevasCuotas }));
+    setFormData(prev => ({ ...prev, planPagos: normalizarPlanPagos(nuevasCuotas) }));
     showToast?.(`✓ ${nuevasCuotas.length} cuotas generadas en el cronograma`);
   };
 
@@ -1083,7 +1115,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                 Guardar y salir
               </button>
               <button
-                onClick={() => { setFormData(unit); setShowUnsavedModal(false); onBack(); }}
+                onClick={() => { setFormData({ ...unit, planPagos: normalizarPlanPagos(unit.planPagos ?? []) }); setShowUnsavedModal(false); onBack(); }}
                 className="w-full py-2.5 bg-red-50 text-red-600 rounded-xl font-bold text-sm hover:bg-red-100 transition-colors border border-red-200"
               >
                 Descartar cambios
@@ -1407,9 +1439,9 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                     ) : (showAllPayments ? formData.planPagos : formData.planPagos.slice(0, 5)).map((p, idx) => {
                     const delayed = isDelayed(p.date, p.fechaPagoReal);
                     return (
-                    <tr key={idx} className="hover:bg-gray-50 transition-colors group">
+                    <tr key={p.uid} className="hover:bg-gray-50 transition-colors group">
                         <td className="px-3 py-3"><input disabled={isReadOnly} type="text" value={p.id} onChange={(e) => { const next = [...formData.planPagos]; next[idx].id = e.target.value; setFormData({...formData, planPagos: next}); }} className="w-full bg-transparent border-none focus:ring-0 p-0 text-gray-900 font-bold text-xs truncate" /></td>
-                        <td className="px-2 py-3 text-center"><input disabled={isReadOnly} type="date" value={p.date} onChange={(e) => { const next = [...formData.planPagos]; next[idx].date = e.target.value; setFormData({...formData, planPagos: next}); }} className="w-full bg-transparent border-none focus:ring-0 p-0 text-gray-600 text-[11px] font-bold text-center" /></td>
+                        <td className="px-2 py-3 text-center"><input disabled={isReadOnly} type="date" value={p.date} onChange={(e) => setFormData(prev => ({ ...prev, planPagos: recalcularCronograma(prev.planPagos, p.uid, e.target.value) }))} className="w-full bg-transparent border-none focus:ring-0 p-0 text-gray-600 text-[11px] font-bold text-center" /></td>
                         <td className="px-2 py-3 text-center">
                             <input 
                                 disabled={isReadOnly} 
