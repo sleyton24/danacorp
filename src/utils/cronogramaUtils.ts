@@ -5,8 +5,11 @@
 // esos strings lexicográficamente equivale a compararlos cronológicamente, así que
 // no usamos Date (evita sorpresas de zona horaria) salvo para el cálculo de días.
 
+// La identidad de una fila es `uid` (estable, sintético). El label editable por el
+// usuario (`id` en PaymentItem) es decorativo y NUNCA se usa para identidad aquí,
+// porque puede duplicarse. `uid` es el único campo que esta lógica exige.
 export interface CronogramaRow {
-  id: string;
+  uid: string;
   date: string; // "YYYY-MM-DD"
 }
 
@@ -61,11 +64,11 @@ export function insertarFilaOrdenada<T extends CronogramaRow>(filas: T[], nuevaF
 //   ingresada. Ninguna otra fila cambia de fecha.
 export function recalcularCronograma<T extends CronogramaRow>(
   filas: T[],
-  filaEditadaId: string,
+  filaEditadaUid: string,
   nuevaFecha: string,
 ): T[] {
-  const i = filas.findIndex(f => f.id === filaEditadaId);
-  if (i === -1) return filas.slice(); // id inexistente: no-op defensivo
+  const i = filas.findIndex(f => f.uid === filaEditadaUid);
+  if (i === -1) return filas.slice(); // uid inexistente: no-op defensivo
 
   const prev = i > 0 ? filas[i - 1] : undefined;
   const next = i < filas.length - 1 ? filas[i + 1] : undefined;

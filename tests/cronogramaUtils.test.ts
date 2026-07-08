@@ -6,10 +6,11 @@ import {
   type CronogramaRow,
 } from '../src/utils/cronogramaUtils';
 
-// Helper: fila mínima. Algunos tests usan un tipo enriquecido (status/tipo) para
-// verificar que la cascada ignora esos campos y solo cambia `date`.
-const row = (id: string, date: string): CronogramaRow => ({ id, date });
-const fechas = (filas: CronogramaRow[]) => filas.map(f => `${f.id}:${f.date}`);
+// Helper: fila mínima identificada por uid. Algunos tests usan un tipo enriquecido
+// (id/label, status, tipo) para verificar que la cascada ignora esos campos y que la
+// identidad es por uid, no por el label editable.
+const row = (uid: string, date: string): CronogramaRow => ({ uid, date });
+const fechas = (filas: CronogramaRow[]) => filas.map(f => `${f.uid}:${f.date}`);
 
 describe('sumarUnMes — borde fin de mes / año bisiesto', () => {
   it('suma un mes normal', () => {
@@ -52,18 +53,18 @@ describe('C.2 Caso 1 — cascada simple', () => {
     expect(filas).toEqual(copia);
   });
 
-  it('la cascada ignora tipo de pago y estado "Pagado" (solo cambia date)', () => {
-    type Rica = CronogramaRow & { tipo: string; status: string };
+  it('la cascada ignora tipo de pago y estado "Pagado"; identifica por uid, no por label', () => {
+    type Rica = CronogramaRow & { id: string; tipo: string; status: string };
     const filas: Rica[] = [
-      { id: 'Promesa', date: '2024-01-15', tipo: 'Promesa', status: 'Pagado' },
-      { id: 'Cuota 1', date: '2024-02-15', tipo: 'Cuotas', status: 'Pagado' },
-      { id: 'Escritura', date: '2024-03-15', tipo: 'Escritura', status: 'Pendiente' },
+      { uid: 'u1', id: 'Promesa', date: '2024-01-15', tipo: 'Promesa', status: 'Pagado' },
+      { uid: 'u2', id: 'Cuota 1', date: '2024-02-15', tipo: 'Cuotas', status: 'Pagado' },
+      { uid: 'u3', id: 'Cuota 1', date: '2024-03-15', tipo: 'Escritura', status: 'Pendiente' }, // label duplicado a propósito
     ];
-    const out = recalcularCronograma(filas, 'Promesa', '2024-01-31');
-    expect(out.map(f => `${f.id}:${f.date}:${f.status}`)).toEqual([
-      'Promesa:2024-01-31:Pagado',
-      'Cuota 1:2024-02-29:Pagado',      // pagada igual se recalcula
-      'Escritura:2024-03-29:Pendiente',
+    const out = recalcularCronograma(filas, 'u1', '2024-01-31');
+    expect(out.map(f => `${f.uid}/${f.id}:${f.date}:${f.status}`)).toEqual([
+      'u1/Promesa:2024-01-31:Pagado',
+      'u2/Cuota 1:2024-02-29:Pagado',        // pagada igual se recalcula
+      'u3/Cuota 1:2024-03-29:Pendiente',     // label duplicado no confunde: se ubicó por uid
     ]);
   });
 });
@@ -127,6 +128,6 @@ describe('C.1 — inserción de fila nueva en su posición cronológica', () => 
 
   it('no dispara cascada: ninguna fila existente cambia de fecha', () => {
     const out = insertarFilaOrdenada(base, row('N', '2024-02-15'));
-    expect(out.filter(f => f.id !== 'N')).toEqual(base);
+    expect(out.filter(f => f.uid !== 'N')).toEqual(base);
   });
 });
