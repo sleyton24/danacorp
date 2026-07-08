@@ -426,6 +426,57 @@ async function migrateReservas() {
   }
 }
 
+// Libera una unidad a Disponible. Reusado por: vencimiento de reserva (10d),
+// vencimiento de aprobación de reserva (72h) y rechazo explícito de reserva.
+// Cierra la última entrada abierta del historial, deja al cliente como Prospecto y
+// devuelve datos de la unidad para notificar.
+async function liberarUnidad(unitId: string, motivo: string): Promise<{ numero: string; type: string; cliente_id: string | null; reserva_vendedor_id: string | null; cliente_nombre: string | null } | null> {
+  const u = await db.prepare(`SELECT u.numero, u.type, u.cliente_id, u.reserva_vendedor_id, u.historial_ocupacion, c.nombre AS cliente_nombre
+    FROM units u LEFT JOIN clients c ON c.id = u.cliente_id WHERE u.id = ?`).get(unitId) as
+    { numero: string; type: string; cliente_id: string | null; reserva_vendedor_id: string | null; historial_ocupacion: string; cliente_nombre: string | null } | undefined;
+  if (!u) return null;
+  const nowISO = new Date().toISOString();
+  type HistEntry = { fechaFin?: string; [k: string]: unknown };
+  const hist = (() => { try { return JSON.parse(u.historial_ocupacion || '[]') as HistEntry[]; } catch { return [] as HistEntry[]; } })();
+  const updHist = hist.map((h, idx) => idx === hist.length - 1 && !h.fechaFin ? { ...h, fechaFin: nowISO, motivo } : h);
+  await db.prepare(`UPDATE units SET estado='Disponible', cliente_id=NULL, asignado_por=NULL, fecha_asignacion=NULL, descuento_cliente=NULL, descuento_pct=0, descuento_pendiente=0, reserva_vendedor_id=NULL, reserva_expira=NULL, fecha_reserva=NULL, fecha_promesa=NULL, fecha_escritura=NULL, fecha_solicitud_credito=NULL, fecha_aprobacion_credito=NULL, fecha_termino_pago=NULL, fecha_alzamiento=NULL, fecha_entrega=NULL, fecha_pago=NULL, historial_ocupacion=?, updated_at=? WHERE id=?`)
+    .run(JSON.stringify(updHist), nowISO, unitId);
+  if (u.cliente_id) await db.prepare(`UPDATE clients SET estado='Prospecto' WHERE id=?`).run(u.cliente_id);
+  return u;
+}
+
+// Bloque D: libera unidades cuya solicitud de aprobación de reserva (tipo='reserva',
+// pendiente) superó horas_solicitud_aprobacion_reserva (72h por defecto) sin resolverse.
+// Deadline computado desde solicitado_at + config — no requiere columna nueva.
+export async function checkAprobacionesReservaVencidas() {
+  try {
+    const nowMs = Date.now();
+    const pend = await db.prepare(`
+      SELECT ar.id, ar.unit_id, ar.solicitado_por, ar.solicitado_at,
+             pc.horas_solicitud_aprobacion_reserva AS horas
+      FROM approval_requests ar
+      JOIN units u ON u.id = ar.unit_id
+      LEFT JOIN project_configs pc ON pc.project_id = ar.project_id
+      WHERE ar.tipo = 'reserva' AND ar.estado = 'pendiente' AND u.estado = 'Reservado'
+    `).all() as Array<{ id: string; unit_id: string; solicitado_por: string; solicitado_at: string; horas: number | null }>;
+
+    for (const ar of pend) {
+      const horas = ar.horas ?? 72;
+      const deadlineMs = new Date(ar.solicitado_at).getTime() + horas * 60 * 60 * 1000;
+      if (nowMs <= deadlineMs) continue;
+      const info = await liberarUnidad(ar.unit_id, 'Aprobación de reserva vencida');
+      await db.prepare(`UPDATE approval_requests SET estado='vencido', resuelto_at=? WHERE id=?`)
+        .run(new Date().toISOString(), ar.id);
+      const suf = info?.cliente_nombre ? ` (${info.cliente_nombre})` : '';
+      createNotification({ paraUserId: ar.solicitado_por, titulo: 'Reserva liberada', mensaje: `La solicitud de reserva de ${info?.type ?? 'unidad'} ${info?.numero ?? ''}${suf} venció sin aprobación (${horas}h) y la unidad fue liberada`, tipo: 'error', linkView: 'inventory', relatedId: ar.unit_id });
+      createNotification({ paraRol: 'Supervisor', titulo: 'Solicitud de reserva vencida', mensaje: `${info?.type ?? 'Unidad'} ${info?.numero ?? ''}${suf} se liberó por no resolverse en ${horas}h`, tipo: 'warning', linkView: 'inventory', relatedId: ar.unit_id });
+    }
+    if (pend.length) console.log(`[checkAprobacionesReservaVencidas] revisadas ${pend.length} solicitud(es) de reserva pendientes`);
+  } catch (err) {
+    console.error('[checkAprobacionesReservaVencidas]', err);
+  }
+}
+
 async function checkReservasVencidas() {
   try {
     const nowDate = new Date();
@@ -465,15 +516,7 @@ async function checkReservasVencidas() {
     `).all(nowISO) as Array<{ id: string; numero: string; type: string; cliente_id: string | null; reserva_vendedor_id: string | null; historial_ocupacion: string; cliente_nombre: string | null }>;
 
     for (const u of expired) {
-      type HistEntry = { fechaFin?: string; [k: string]: unknown };
-      const hist = (() => { try { return JSON.parse(u.historial_ocupacion || '[]') as HistEntry[]; } catch { return [] as HistEntry[]; } })();
-      const updHist = hist.map((h, idx) => idx === hist.length - 1 && !h.fechaFin ? { ...h, fechaFin: nowISO, motivo: 'Vencimiento' } : h);
-      // FIX P2-1: limpiar también descuento_pct y descuento_pendiente (igual que /liberar).
-      await db.prepare(`UPDATE units SET estado = 'Disponible', cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, descuento_cliente = NULL, descuento_pct = 0, descuento_pendiente = 0, reserva_vendedor_id = NULL, reserva_expira = NULL, fecha_reserva = NULL, fecha_promesa = NULL, fecha_escritura = NULL, fecha_solicitud_credito = NULL, fecha_aprobacion_credito = NULL, fecha_termino_pago = NULL, fecha_alzamiento = NULL, fecha_entrega = NULL, fecha_pago = NULL, historial_ocupacion = ?, updated_at = ? WHERE id = ?`)
-        .run(JSON.stringify(updHist), nowISO, u.id);
-      if (u.cliente_id) {
-        await db.prepare(`UPDATE clients SET estado = 'Prospecto' WHERE id = ?`).run(u.cliente_id);
-      }
+      await liberarUnidad(u.id, 'Vencimiento');
       const clienteSuffix = u.cliente_nombre ? ` (${u.cliente_nombre})` : '';
       if (u.reserva_vendedor_id) {
         createNotification({ paraUserId: u.reserva_vendedor_id, titulo: 'Reserva vencida', mensaje: `La reserva de ${u.type} ${u.numero}${clienteSuffix} ha vencido y fue liberada automáticamente`, tipo: 'error', linkView: 'inventory', relatedId: u.id });
@@ -1511,6 +1554,10 @@ app.post('/api/approval-requests/:id/rechazar', requireAuth, requireRole('Admin'
   if (ar.estado !== 'pendiente') { res.status(409).json({ error: 'La solicitud ya fue resuelta' }); return; }
   await db.prepare(`UPDATE approval_requests SET estado = 'rechazado', resuelto_por = ?, resuelto_at = ? WHERE id = ?`)
     .run(userId, now, req.params.id);
+  // Bloque D: rechazar una solicitud de reserva libera la unidad de inmediato (no espera el timeout).
+  if (ar.tipo === 'reserva' && ar.unit_id) {
+    await liberarUnidad(ar.unit_id as string, 'Reserva rechazada');
+  }
   createNotification({
     paraUserId: ar.solicitado_por as string, titulo: 'Solicitud rechazada',
     mensaje: `${(ar.descripcion as string) || ar.tipo} fue rechazada`, tipo: 'error', linkView: 'inventory', relatedId: (ar.unit_id as string) || undefined,
@@ -2365,7 +2412,38 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
 
   if (updates.length === 0) { res.json({ ok: true }); return; }
   updates.push('updated_at = ?'); params.push(now); params.push(req.params.id);
-  await db.prepare(`UPDATE units SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+  // Bloque D: transición Disponible → Reservado por Ventas/JefeSala crea una solicitud de
+  // aprobación EN LA MISMA TRANSACCIÓN que el UPDATE de la unidad. Si el INSERT falla, se
+  // revierte el UPDATE — la unidad nunca queda Reservada sin solicitud (lo que la dejaría
+  // bloqueada sin notificación ni liberación automática). Admin/Supervisor son la autoridad
+  // aprobadora: su transición aplica directo, sin solicitud.
+  const needsReservaApproval = 'estado' in body && body.estado === 'Reservado'
+    && existing.estado !== 'Reservado' && (userRole === 'Ventas' || userRole === 'JefeSala');
+  let reservaApprovalId: string | null = null;
+  if (needsReservaApproval) {
+    await ensureApprovalsTable(); // DDL idempotente, fuera de la transacción
+    reservaApprovalId = crypto.randomUUID();
+  }
+
+  await withTx(async (tx) => {
+    await tx.prepare(`UPDATE units SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+    if (needsReservaApproval && reservaApprovalId) {
+      const desc = `Reserva de ${existing.type as string} ${existing.numero as string} requiere aprobación`;
+      await tx.prepare(`INSERT INTO approval_requests (id, tipo, estado, solicitado_por, solicitado_nombre, unit_id, project_id, descripcion)
+        VALUES (?, 'reserva', 'pendiente', ?, ?, ?, ?, ?)`)
+        .run(reservaApprovalId, userId, userName, req.params.id, existing.project_id as string | null, desc);
+    }
+  });
+
+  if (needsReservaApproval && reservaApprovalId) {
+    for (const rol of ['Supervisor', 'Admin']) {
+      createNotification({
+        paraRol: rol, titulo: 'Solicitud de reserva pendiente',
+        mensaje: `${userName} reservó ${existing.type as string} ${existing.numero as string}${clienteNombreUnit ? ` — Cliente: ${clienteNombreUnit}` : ''} — requiere tu aprobación`,
+        tipo: 'warning', linkView: 'approvals', relatedId: reservaApprovalId,
+      });
+    }
+  }
 
   // Notify JefeSala when estado changes (Paso 11)
   if ('estado' in body && body.estado !== existing.estado) {
@@ -2740,7 +2818,9 @@ if (isMain) {
       await ensureProjectConfigs();
       await migrateReservas();
       await checkReservasVencidas();
+      await checkAprobacionesReservaVencidas();
       setInterval(() => { void checkReservasVencidas(); }, 60 * 60 * 1000);
+      setInterval(() => { void checkAprobacionesReservaVencidas(); }, 60 * 60 * 1000);
       const server = app.listen(PORT, () => {
         console.log(`\n[DanaWorks Server] ✓ Escuchando en http://localhost:${PORT}`);
         console.log(`[DanaWorks Server] ✓ BD: PostgreSQL/${process.env.PGDATABASE || 'danacorp'}`);

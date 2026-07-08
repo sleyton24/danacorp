@@ -116,9 +116,11 @@ export const ApprovalsView: React.FC<ApprovalsViewProps> = ({ currentUser }) => 
 
   // ── FIX 3: Solicitudes de cronograma de pagos (approval_requests) ──────────
   const isAdminOrSup = currentUser.role === 'Admin' || currentUser.role === 'Supervisor';
-  const [mainTab, setMainTab] = useState<'descuentos' | 'cronograma'>('descuentos');
+  const [mainTab, setMainTab] = useState<'descuentos' | 'cronograma' | 'reservas'>('descuentos');
   const [cronoReqs, setCronoReqs] = useState<ApprovalRow[]>([]);
   const [cronoLoading, setCronoLoading] = useState(false);
+  const [reservaReqs, setReservaReqs] = useState<ApprovalRow[]>([]);
+  const [reservaLoading, setReservaLoading] = useState(false);
 
   const fetchCrono = useCallback(async () => {
     const t = token();
@@ -133,7 +135,25 @@ export const ApprovalsView: React.FC<ApprovalsViewProps> = ({ currentUser }) => 
 
   useEffect(() => { fetchCrono(); }, [fetchCrono]);
 
-  const resolveCrono = async (id: string, accion: 'aprobar' | 'rechazar') => {
+  const fetchReservas = useCallback(async () => {
+    const t = token();
+    if (!t || !isAdminOrSup) return;
+    setReservaLoading(true);
+    try {
+      const res = await fetch('/api/approval-requests?tipo=reserva', { headers: { Authorization: `Bearer ${t}` } });
+      if (res.ok) setReservaReqs(await res.json() as ApprovalRow[]);
+    } catch { /* silencioso */ }
+    finally { setReservaLoading(false); }
+  }, [isAdminOrSup]);
+
+  useEffect(() => { fetchReservas(); }, [fetchReservas]);
+
+  // Resolver una solicitud genérica de approval_requests (cronograma o reserva).
+  // El backend aplica el efecto según tipo (p.ej. rechazar una reserva libera la unidad).
+  const resolveApproval = async (
+    id: string, accion: 'aprobar' | 'rechazar',
+    setList: React.Dispatch<React.SetStateAction<ApprovalRow[]>>,
+  ) => {
     const t = token();
     if (!t) return;
     setProcessing(id);
@@ -141,9 +161,16 @@ export const ApprovalsView: React.FC<ApprovalsViewProps> = ({ currentUser }) => 
       const res = await fetch(`/api/approval-requests/${id}/${accion}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` }, body: JSON.stringify({}),
       });
-      if (res.ok) setCronoReqs(prev => prev.map(r => r.id === id ? { ...r, estado: accion === 'aprobar' ? 'aprobado' : 'rechazado' } : r));
+      if (res.ok) setList(prev => prev.map(r => r.id === id ? { ...r, estado: accion === 'aprobar' ? 'aprobado' : 'rechazado' } : r));
     } catch { /* silencioso */ }
     finally { setProcessing(null); }
+  };
+
+  const approvalEstadoBadge = (estado: string) => {
+    if (estado === 'pendiente') return <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 text-xs font-bold rounded-full"><Clock className="w-3 h-3" /> Pendiente</span>;
+    if (estado === 'aprobado') return <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-700 text-xs font-bold rounded-full"><Check className="w-3 h-3" /> Aprobado</span>;
+    if (estado === 'vencido') return <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-gray-100 text-gray-500 text-xs font-bold rounded-full"><Clock className="w-3 h-3" /> Vencido</span>;
+    return <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-red-100 text-red-700 text-xs font-bold rounded-full"><X className="w-3 h-3" /> Rechazado</span>;
   };
 
   const filteredRequests = requests.filter(r => {
@@ -257,6 +284,13 @@ export const ApprovalsView: React.FC<ApprovalsViewProps> = ({ currentUser }) => 
             Cronograma de Pagos
             {cronoReqs.filter(r => r.estado === 'pendiente').length > 0 && (
               <span className={`ml-1 px-1.5 py-0.5 rounded-full text-[10px] ${mainTab === 'cronograma' ? 'bg-white/20' : 'bg-red-100 text-red-600'}`}>{cronoReqs.filter(r => r.estado === 'pendiente').length}</span>
+            )}
+          </button>
+          <button onClick={() => setMainTab('reservas')}
+            className={`px-4 py-2 text-sm font-bold rounded-xl transition-all ${mainTab === 'reservas' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+            Reservas
+            {reservaReqs.filter(r => r.estado === 'pendiente').length > 0 && (
+              <span className={`ml-1 px-1.5 py-0.5 rounded-full text-[10px] ${mainTab === 'reservas' ? 'bg-white/20' : 'bg-red-100 text-red-600'}`}>{reservaReqs.filter(r => r.estado === 'pendiente').length}</span>
             )}
           </button>
         </div>
@@ -411,11 +445,65 @@ export const ApprovalsView: React.FC<ApprovalsViewProps> = ({ currentUser }) => 
                       <td className="px-4 py-3">
                         {r.estado === 'pendiente' && (
                           <div className="flex gap-1.5">
-                            <button onClick={() => resolveCrono(r.id, 'aprobar')} disabled={processing === r.id}
+                            <button onClick={() => resolveApproval(r.id, 'aprobar', setCronoReqs)} disabled={processing === r.id}
                               className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white text-xs font-bold rounded-lg hover:bg-green-700 disabled:opacity-50 transition-all">
                               {processing === r.id ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />} Aprobar
                             </button>
-                            <button onClick={() => resolveCrono(r.id, 'rechazar')} disabled={processing === r.id}
+                            <button onClick={() => resolveApproval(r.id, 'rechazar', setCronoReqs)} disabled={processing === r.id}
+                              className="flex items-center gap-1 px-3 py-1.5 bg-red-50 border border-red-200 text-red-600 text-xs font-bold rounded-lg hover:bg-red-100 disabled:opacity-50 transition-all">
+                              <X className="w-3 h-3" /> Rechazar
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Bloque D: solicitudes de reserva (approval_requests tipo='reserva') */}
+      {mainTab === 'reservas' && isAdminOrSup && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gray-50">
+            <span className="text-sm font-bold text-gray-700">Solicitudes de reserva</span>
+            <button onClick={fetchReservas} className="p-2 border border-gray-200 rounded-xl hover:bg-white transition-all text-gray-500">
+              <RefreshCw className={`w-4 h-4 ${reservaLoading ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
+          {reservaReqs.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-40 text-gray-400 space-y-2">
+              <CheckSquare className="w-8 h-8 opacity-40" />
+              <p className="text-sm font-medium">No hay solicitudes de reserva</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="bg-gray-50 border-b border-gray-100">
+                  <tr>
+                    {['Solicitante', 'Descripción', 'Fecha', 'Estado', 'Acciones'].map(h => (
+                      <th key={h} className="px-4 py-3 text-left text-xs font-black text-gray-500 uppercase tracking-wide">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {reservaReqs.map(r => (
+                    <tr key={r.id} className="hover:bg-gray-50/50 transition-colors">
+                      <td className="px-4 py-3 text-xs font-medium text-gray-800">{r.solicitado_nombre || r.solicitado_por}</td>
+                      <td className="px-4 py-3 text-xs text-gray-600 max-w-[320px]">{r.descripcion}</td>
+                      <td className="px-4 py-3 text-xs text-gray-500">{formatDate(r.solicitado_at)}</td>
+                      <td className="px-4 py-3">{approvalEstadoBadge(r.estado)}</td>
+                      <td className="px-4 py-3">
+                        {r.estado === 'pendiente' && (
+                          <div className="flex gap-1.5">
+                            <button onClick={() => resolveApproval(r.id, 'aprobar', setReservaReqs)} disabled={processing === r.id}
+                              className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white text-xs font-bold rounded-lg hover:bg-green-700 disabled:opacity-50 transition-all">
+                              {processing === r.id ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />} Aprobar
+                            </button>
+                            <button onClick={() => resolveApproval(r.id, 'rechazar', setReservaReqs)} disabled={processing === r.id}
                               className="flex items-center gap-1 px-3 py-1.5 bg-red-50 border border-red-200 text-red-600 text-xs font-bold rounded-lg hover:bg-red-100 disabled:opacity-50 transition-all">
                               <X className="w-3 h-3" /> Rechazar
                             </button>
