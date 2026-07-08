@@ -10,6 +10,7 @@ interface PaymentTableProps {
 export const PaymentTable: React.FC<PaymentTableProps> = ({ payments, onAddPayment }) => {
   const [isAdding, setIsAdding] = useState(false);
   const [newPayment, setNewPayment] = useState<PaymentItem>({
+    uid: crypto.randomUUID(),
     id: `F.${payments.length + 1}`,
     date: '',
     amount: '',
@@ -25,6 +26,7 @@ export const PaymentTable: React.FC<PaymentTableProps> = ({ payments, onAddPayme
       onAddPayment(newPayment);
       setIsAdding(false);
       setNewPayment({
+        uid: crypto.randomUUID(),
         id: `F.${payments.length + 2}`, // Suggest next ID
         date: '',
         amount: '',
