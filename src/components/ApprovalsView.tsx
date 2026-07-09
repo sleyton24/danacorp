@@ -170,6 +170,7 @@ export const ApprovalsView: React.FC<ApprovalsViewProps> = ({ currentUser }) => 
     if (estado === 'pendiente') return <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 text-xs font-bold rounded-full"><Clock className="w-3 h-3" /> Pendiente</span>;
     if (estado === 'aprobado') return <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-700 text-xs font-bold rounded-full"><Check className="w-3 h-3" /> Aprobado</span>;
     if (estado === 'vencido') return <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-gray-100 text-gray-500 text-xs font-bold rounded-full"><Clock className="w-3 h-3" /> Vencido</span>;
+    if (estado === 'cancelado') return <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-gray-100 text-gray-500 text-xs font-bold rounded-full"><X className="w-3 h-3" /> Cancelado</span>;
     return <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-red-100 text-red-700 text-xs font-bold rounded-full"><X className="w-3 h-3" /> Rechazado</span>;
   };
 

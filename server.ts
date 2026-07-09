@@ -14,7 +14,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
 import 'dotenv/config';
-import { db, withTx, ping, pool } from './db';
+import { db, withTx, ping, pool, type Db } from './db';
 import { extractTransactionData } from './ai';
 import { canAccessProject, getProjectAccessDecision } from './projectAccess';
 
@@ -443,6 +443,40 @@ async function liberarUnidad(unitId: string, motivo: string): Promise<{ numero: 
     .run(JSON.stringify(updHist), nowISO, unitId);
   if (u.cliente_id) await db.prepare(`UPDATE clients SET estado='Prospecto' WHERE id=?`).run(u.cliente_id);
   return u;
+}
+
+// ── Bloque D: decisión ÚNICA de aprobación de reserva ──────────────────────────
+// Compartida por PATCH /api/units/:id y PATCH /api/units/:id/assign para que los dos
+// caminos que reservan una unidad no puedan divergir (Ventas/JefeSala siempre requieren
+// aprobación; Admin/Supervisor reservan directo).
+function requiereAprobacionReserva(estadoAnterior: string | undefined, estadoNuevo: string | undefined, userRole: string | undefined): boolean {
+  return estadoNuevo === 'Reservado' && estadoAnterior !== 'Reservado'
+    && (userRole === 'Ventas' || userRole === 'JefeSala');
+}
+// INSERT de la solicitud DENTRO de una transacción (atómico con el UPDATE de la unidad).
+async function insertarSolicitudReserva(tx: Db, o: { id: string; userId: string; userName: string; unitId: string; projectId: string | null; tipo: string; numero: string }) {
+  const desc = `Reserva de ${o.tipo} ${o.numero} requiere aprobación`;
+  await tx.prepare(`INSERT INTO approval_requests (id, tipo, estado, solicitado_por, solicitado_nombre, unit_id, project_id, descripcion)
+    VALUES (?, 'reserva', 'pendiente', ?, ?, ?, ?, ?)`).run(o.id, o.userId, o.userName, o.unitId, o.projectId, desc);
+}
+// Notifica a Supervisor y Admin (fuera de la tx) que hay una reserva pendiente de aprobación.
+function notificarReservaPendiente(o: { approvalId: string; userName: string; tipo: string; numero: string; clienteNombre?: string | null }) {
+  for (const rol of ['Supervisor', 'Admin']) {
+    createNotification({
+      paraRol: rol, titulo: 'Solicitud de reserva pendiente',
+      mensaje: `${o.userName} reservó ${o.tipo} ${o.numero}${o.clienteNombre ? ` — Cliente: ${o.clienteNombre}` : ''} — requiere tu aprobación`,
+      tipo: 'warning', linkView: 'approvals', relatedId: o.approvalId,
+    });
+  }
+}
+// Bloque D: al liberar una unidad por una vía distinta a rechazo/timeout (/liberar, /unassign,
+// PATCH estado→Disponible), cancela su solicitud de reserva pendiente para no dejarla huérfana
+// (quedaría 'pendiente' para siempre, ya que el checker de timeout solo mira unidades Reservado).
+// 'cancelado' ≠ 'vencido': vencido = expiró el plazo de 72h; cancelado = interrumpida por otra vía.
+async function cancelarSolicitudReservaPendiente(unitId: string): Promise<void> {
+  await ensureApprovalsTable();
+  await db.prepare(`UPDATE approval_requests SET estado='cancelado', resuelto_at=? WHERE unit_id=? AND tipo='reserva' AND estado='pendiente'`)
+    .run(new Date().toISOString(), unitId);
 }
 
 // Bloque D: libera unidades cuya solicitud de aprobación de reserva (tipo='reserva',
@@ -2417,8 +2451,7 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
   // revierte el UPDATE — la unidad nunca queda Reservada sin solicitud (lo que la dejaría
   // bloqueada sin notificación ni liberación automática). Admin/Supervisor son la autoridad
   // aprobadora: su transición aplica directo, sin solicitud.
-  const needsReservaApproval = 'estado' in body && body.estado === 'Reservado'
-    && existing.estado !== 'Reservado' && (userRole === 'Ventas' || userRole === 'JefeSala');
+  const needsReservaApproval = requiereAprobacionReserva(existing.estado as string, body.estado as string, userRole);
   let reservaApprovalId: string | null = null;
   if (needsReservaApproval) {
     await ensureApprovalsTable(); // DDL idempotente, fuera de la transacción
@@ -2428,21 +2461,12 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
   await withTx(async (tx) => {
     await tx.prepare(`UPDATE units SET ${updates.join(', ')} WHERE id = ?`).run(...params);
     if (needsReservaApproval && reservaApprovalId) {
-      const desc = `Reserva de ${existing.type as string} ${existing.numero as string} requiere aprobación`;
-      await tx.prepare(`INSERT INTO approval_requests (id, tipo, estado, solicitado_por, solicitado_nombre, unit_id, project_id, descripcion)
-        VALUES (?, 'reserva', 'pendiente', ?, ?, ?, ?, ?)`)
-        .run(reservaApprovalId, userId, userName, req.params.id, existing.project_id as string | null, desc);
+      await insertarSolicitudReserva(tx, { id: reservaApprovalId, userId, userName, unitId: req.params.id, projectId: existing.project_id as string | null, tipo: existing.type as string, numero: existing.numero as string });
     }
   });
 
   if (needsReservaApproval && reservaApprovalId) {
-    for (const rol of ['Supervisor', 'Admin']) {
-      createNotification({
-        paraRol: rol, titulo: 'Solicitud de reserva pendiente',
-        mensaje: `${userName} reservó ${existing.type as string} ${existing.numero as string}${clienteNombreUnit ? ` — Cliente: ${clienteNombreUnit}` : ''} — requiere tu aprobación`,
-        tipo: 'warning', linkView: 'approvals', relatedId: reservaApprovalId,
-      });
-    }
+    notificarReservaPendiente({ approvalId: reservaApprovalId, userName, tipo: existing.type as string, numero: existing.numero as string, clienteNombre: clienteNombreUnit });
   }
 
   // Notify JefeSala when estado changes (Paso 11)
@@ -2476,6 +2500,7 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
       .run(JSON.stringify(updHist), now, req.params.id);
     createAuditLog(userId, userName, userRole, 'Liberación', 'Unit', req.params.id, `Unidad ${existing.type as string} ${existing.numero as string} liberada por ${userName}${clienteNombreUnit ? ` — cliente: ${clienteNombreUnit}` : ''}`);
     createNotification({ paraRol: 'JefeSala', titulo: 'Liberación de reserva', mensaje: `${existing.type as string} ${existing.numero as string} fue liberada por ${userName}${clienteNombreUnit ? ` — Cliente: ${clienteNombreUnit}` : ''}`, tipo: 'warning', linkView: 'inventory', relatedId: req.params.id });
+    await cancelarSolicitudReservaPendiente(req.params.id); // no dejar la solicitud huérfana
   }
 
   // Notify JefeSala when a planPagos item is marked Pagado (Paso 11)
@@ -2499,9 +2524,10 @@ app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala',
   const userRole = (req as AuthenticatedRequest).userRole;
   const userName = (await getUserById(userId))?.name || '';
   const now = new Date().toISOString();
+  await ensureApprovalsTable(); // Bloque D: garantizar tabla antes de la transacción
 
   try {
-    const { numero, type, clienteNombre, clienteRut, projectId } = await withTx(async (tx) => {
+    const { numero, type, clienteNombre, clienteRut, projectId, reservaApprovalId } = await withTx(async (tx) => {
       const unit = await tx.prepare(
         'SELECT id, estado, cliente_id, project_id, numero, type, historial_ocupacion FROM units WHERE id = ?'
       ).get(id) as { id: string; estado: string; cliente_id: string | null; project_id: string; numero: string; type: string; historial_ocupacion: string } | undefined;
@@ -2564,11 +2590,20 @@ app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala',
         WHERE id = ?
       `).run(body.clienteId, body.asignadoPor ?? userId, body.fechaAsignacion ?? now, body.fechaReserva ?? now, userId, expira, JSON.stringify(hist), id);
 
-      return { numero: unit.numero, type: unit.type, clienteNombre, clienteRut, projectId: unit.project_id };
+      // Bloque D: si Ventas/JefeSala reserva por este camino, crea la solicitud de aprobación
+      // en la MISMA transacción (misma decisión que PATCH /api/units/:id — sin bypass).
+      let reservaApprovalId: string | null = null;
+      if (requiereAprobacionReserva(unit.estado, 'Reservado', userRole)) {
+        reservaApprovalId = crypto.randomUUID();
+        await insertarSolicitudReserva(tx, { id: reservaApprovalId, userId, userName, unitId: id, projectId: unit.project_id, tipo: unit.type, numero: unit.numero });
+      }
+
+      return { numero: unit.numero, type: unit.type, clienteNombre, clienteRut, projectId: unit.project_id, reservaApprovalId };
     });
     await auditProjectAccess(req, projectId, 'PATCH /api/units/:id/assign');
     createAuditLog(userId, userName, userRole, 'Asignación', 'Unit', id, `${type} ${numero} asignada a ${clienteNombre} (RUT: ${clienteRut}) por ${userName}`);
     createNotification({ paraRol: 'JefeSala', titulo: 'Unidad reservada', mensaje: `${userName} reservó ${type} ${numero} para ${clienteNombre}`, tipo: 'info', linkView: 'inventory', relatedId: id });
+    if (reservaApprovalId) notificarReservaPendiente({ approvalId: reservaApprovalId, userName, tipo: type, numero, clienteNombre });
     res.json({ ok: true });
   } catch (err: unknown) {
     const msg = (err as Error).message;
@@ -2607,6 +2642,7 @@ app.patch('/api/units/:id/unassign', requireAuth, requireRole('Admin', 'JefeSala
   const unitDesc = unitBeforeUnassign ? `${unitBeforeUnassign.type} ${unitBeforeUnassign.numero}` : req.params.id;
   createAuditLog(userId, userName, userRole, 'Desasignación', 'Unit', req.params.id, `${unitDesc} desasignada${clienteBeforeUnassign ? ` de ${clienteBeforeUnassign}` : ''} por ${userName}`);
   createNotification({ paraRol: 'JefeSala', titulo: 'Unidad desasignada', mensaje: `${userName} desasignó ${unitDesc}${clienteBeforeUnassign ? ` (cliente: ${clienteBeforeUnassign})` : ''}`, tipo: 'info', linkView: 'inventory', relatedId: req.params.id });
+  await cancelarSolicitudReservaPendiente(req.params.id); // no dejar la solicitud huérfana
   res.json({ ok: true });
 });
 
@@ -2666,6 +2702,7 @@ app.post('/api/units/:id/liberar', requireAuth, requireRole('Admin', 'JefeSala',
     createNotification({ paraUserId: unit.reserva_vendedor_id, titulo: 'Reserva liberada', mensaje: `${unit.type} ${unit.numero} fue liberada por ${userName}`, tipo: 'warning', linkView: 'inventory', relatedId: req.params.id });
   }
   createNotification({ paraRol: 'JefeSala', titulo: 'Reserva liberada manualmente', mensaje: `${unit.type} ${unit.numero} fue liberada por ${userName}`, tipo: 'info', linkView: 'inventory', relatedId: req.params.id });
+  await cancelarSolicitudReservaPendiente(req.params.id); // no dejar la solicitud huérfana
 
   res.json({ ok: true });
 });

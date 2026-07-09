@@ -162,4 +162,67 @@ describe('Bloque D — aprobación de reserva', () => {
       expect((await solicitudesReserva(unitId)).length).toBe(0);
     }
   });
+
+  // Prioridad 1: el segundo camino de reserva (PATCH /assign) NO debe saltarse la aprobación.
+  it('bypass /assign: Ventas reserva vía PATCH /api/units/:id/assign → también genera solicitud', async () => {
+    const unitId = await crearUnidad('RA-ASSIGN-V');
+    const clienteId = await crearCliente('Cliente Assign V');
+    const res = await request(app).patch(`/api/units/${unitId}/assign`).set(auth(ventasToken)).send({ clienteId });
+    expect(res.status).toBe(200);
+    expect((await getUnidad(unitId))?.estado).toBe('Reservado');
+    const sols = await solicitudesReserva(unitId);
+    expect(sols.length).toBe(1);
+    expect(sols[0].estado).toBe('pendiente');
+  });
+
+  it('/assign por Admin reserva directo, sin solicitud', async () => {
+    const unitId = await crearUnidad('RA-ASSIGN-A');
+    const clienteId = await crearCliente('Cliente Assign A');
+    const res = await request(app).patch(`/api/units/${unitId}/assign`).set(auth(adminToken)).send({ clienteId });
+    expect(res.status).toBe(200);
+    expect((await getUnidad(unitId))?.estado).toBe('Reservado');
+    expect((await solicitudesReserva(unitId)).length).toBe(0);
+  });
+});
+
+describe('Bloque D — liberación cancela la solicitud pendiente (no huérfana)', () => {
+  async function reservarPendiente(numero: string): Promise<string> {
+    const unitId = await crearUnidad(numero);
+    const clienteId = await crearCliente(`Cli ${numero}`);
+    await request(app).patch(`/api/units/${unitId}`).set(auth(ventasToken)).send({ estado: 'Reservado', clienteId });
+    const [sol] = await solicitudesReserva(unitId);
+    expect(sol?.estado).toBe('pendiente');
+    return unitId;
+  }
+  const estadoSolicitud = async (unitId: string) => (await solicitudesReserva(unitId))[0]?.estado;
+
+  it('PATCH /:id → Disponible cancela la solicitud (no la deja pendiente)', async () => {
+    const unitId = await reservarPendiente('LIB-PATCH');
+    const r = await request(app).patch(`/api/units/${unitId}`).set(auth(adminToken)).send({ estado: 'Disponible' });
+    expect(r.status).toBe(200);
+    expect((await getUnidad(unitId))?.estado).toBe('Disponible');
+    expect(await estadoSolicitud(unitId)).toBe('cancelado');
+    await srv.checkAprobacionesReservaVencidas();
+    expect(await estadoSolicitud(unitId)).toBe('cancelado'); // el checker de timeout ya no la ve pendiente
+  });
+
+  it('/unassign cancela la solicitud', async () => {
+    const unitId = await reservarPendiente('LIB-UNASSIGN');
+    const r = await request(app).patch(`/api/units/${unitId}/unassign`).set(auth(adminToken)).send({});
+    expect(r.status).toBe(200);
+    expect((await getUnidad(unitId))?.estado).toBe('Disponible');
+    expect(await estadoSolicitud(unitId)).toBe('cancelado');
+    await srv.checkAprobacionesReservaVencidas();
+    expect(await estadoSolicitud(unitId)).toBe('cancelado');
+  });
+
+  it('/liberar cancela la solicitud', async () => {
+    const unitId = await reservarPendiente('LIB-LIBERAR');
+    const r = await request(app).post(`/api/units/${unitId}/liberar`).set(auth(adminToken)).send({});
+    expect(r.status).toBe(200);
+    expect((await getUnidad(unitId))?.estado).toBe('Disponible');
+    expect(await estadoSolicitud(unitId)).toBe('cancelado');
+    await srv.checkAprobacionesReservaVencidas();
+    expect(await estadoSolicitud(unitId)).toBe('cancelado');
+  });
 });
