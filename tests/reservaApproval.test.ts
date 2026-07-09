@@ -185,44 +185,85 @@ describe('Bloque D — aprobación de reserva', () => {
   });
 });
 
-describe('Bloque D — liberación cancela la solicitud pendiente (no huérfana)', () => {
+describe('P2.1 — liberar vacía plan_pagos (los 3 caminos que pasan por liberarUnidad)', () => {
+  const PLAN = [{ uid: 'pp1', id: 'Cuota 1', date: '2024-06-01', amount: '100', status: 'Pendiente' }];
+  async function reservarConPlan(numero: string, token = ventasToken): Promise<string> {
+    const unitId = await crearUnidad(numero);
+    const clienteId = await crearCliente(`Cli ${numero}`);
+    await request(app).patch(`/api/units/${unitId}`).set(auth(token)).send({ estado: 'Reservado', clienteId });
+    await request(app).patch(`/api/units/${unitId}`).set(auth(token)).send({ planPagos: PLAN });
+    expect((await getUnidad(unitId))?.planPagos?.length).toBe(1);
+    return unitId;
+  }
+  const planLen = async (unitId: string) => (await getUnidad(unitId))?.planPagos?.length ?? 0;
+
+  it('rechazo explícito vacía plan_pagos', async () => {
+    const unitId = await reservarConPlan('P21-REJECT');
+    const [sol] = await solicitudesReserva(unitId);
+    await request(app).post(`/api/approval-requests/${sol.id}/rechazar`).set(auth(adminToken)).send({});
+    expect((await getUnidad(unitId))?.estado).toBe('Disponible');
+    expect(await planLen(unitId)).toBe(0);
+  });
+
+  it('timeout de aprobación vacía plan_pagos', async () => {
+    const unitId = await reservarConPlan('P21-TIMEOUT');
+    const [sol] = await solicitudesReserva(unitId);
+    await pool.query("UPDATE approval_requests SET solicitado_at = now() - interval '73 hours' WHERE id = $1", [sol.id]);
+    await srv.checkAprobacionesReservaVencidas();
+    expect((await getUnidad(unitId))?.estado).toBe('Disponible');
+    expect(await planLen(unitId)).toBe(0);
+  });
+
+  it('vencimiento normal de reserva vacía plan_pagos', async () => {
+    const unitId = await reservarConPlan('P21-EXPIRE', adminToken); // admin reserva directo (sin approval)
+    await pool.query("UPDATE units SET reserva_expira = now() - interval '1 hour' WHERE id = $1", [unitId]);
+    await srv.checkReservasVencidas();
+    expect((await getUnidad(unitId))?.estado).toBe('Disponible');
+    expect(await planLen(unitId)).toBe(0);
+  });
+});
+
+describe('Bloque D — liberación manual: cancela solicitud pendiente + vacía plan_pagos', () => {
   async function reservarPendiente(numero: string): Promise<string> {
     const unitId = await crearUnidad(numero);
     const clienteId = await crearCliente(`Cli ${numero}`);
     await request(app).patch(`/api/units/${unitId}`).set(auth(ventasToken)).send({ estado: 'Reservado', clienteId });
+    await request(app).patch(`/api/units/${unitId}`).set(auth(ventasToken))
+      .send({ planPagos: [{ uid: 'm1', id: 'Cuota 1', date: '2024-06-01', amount: '100', status: 'Pendiente' }] });
     const [sol] = await solicitudesReserva(unitId);
     expect(sol?.estado).toBe('pendiente');
+    expect((await getUnidad(unitId))?.planPagos?.length).toBe(1);
     return unitId;
   }
   const estadoSolicitud = async (unitId: string) => (await solicitudesReserva(unitId))[0]?.estado;
+  const planLen = async (unitId: string) => (await getUnidad(unitId))?.planPagos?.length ?? 0;
 
-  it('PATCH /:id → Disponible cancela la solicitud (no la deja pendiente)', async () => {
+  it('PATCH /:id → Disponible cancela la solicitud y vacía plan_pagos', async () => {
     const unitId = await reservarPendiente('LIB-PATCH');
     const r = await request(app).patch(`/api/units/${unitId}`).set(auth(adminToken)).send({ estado: 'Disponible' });
     expect(r.status).toBe(200);
     expect((await getUnidad(unitId))?.estado).toBe('Disponible');
     expect(await estadoSolicitud(unitId)).toBe('cancelado');
+    expect(await planLen(unitId)).toBe(0);
     await srv.checkAprobacionesReservaVencidas();
     expect(await estadoSolicitud(unitId)).toBe('cancelado'); // el checker de timeout ya no la ve pendiente
   });
 
-  it('/unassign cancela la solicitud', async () => {
+  it('/unassign cancela la solicitud y vacía plan_pagos', async () => {
     const unitId = await reservarPendiente('LIB-UNASSIGN');
     const r = await request(app).patch(`/api/units/${unitId}/unassign`).set(auth(adminToken)).send({});
     expect(r.status).toBe(200);
     expect((await getUnidad(unitId))?.estado).toBe('Disponible');
     expect(await estadoSolicitud(unitId)).toBe('cancelado');
-    await srv.checkAprobacionesReservaVencidas();
-    expect(await estadoSolicitud(unitId)).toBe('cancelado');
+    expect(await planLen(unitId)).toBe(0);
   });
 
-  it('/liberar cancela la solicitud', async () => {
+  it('/liberar cancela la solicitud y vacía plan_pagos', async () => {
     const unitId = await reservarPendiente('LIB-LIBERAR');
     const r = await request(app).post(`/api/units/${unitId}/liberar`).set(auth(adminToken)).send({});
     expect(r.status).toBe(200);
     expect((await getUnidad(unitId))?.estado).toBe('Disponible');
     expect(await estadoSolicitud(unitId)).toBe('cancelado');
-    await srv.checkAprobacionesReservaVencidas();
-    expect(await estadoSolicitud(unitId)).toBe('cancelado');
+    expect(await planLen(unitId)).toBe(0);
   });
 });
