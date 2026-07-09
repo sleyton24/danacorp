@@ -439,7 +439,9 @@ async function liberarUnidad(unitId: string, motivo: string): Promise<{ numero: 
   type HistEntry = { fechaFin?: string; [k: string]: unknown };
   const hist = (() => { try { return JSON.parse(u.historial_ocupacion || '[]') as HistEntry[]; } catch { return [] as HistEntry[]; } })();
   const updHist = hist.map((h, idx) => idx === hist.length - 1 && !h.fechaFin ? { ...h, fechaFin: nowISO, motivo } : h);
-  await db.prepare(`UPDATE units SET estado='Disponible', cliente_id=NULL, asignado_por=NULL, fecha_asignacion=NULL, descuento_cliente=NULL, descuento_pct=0, descuento_pendiente=0, reserva_vendedor_id=NULL, reserva_expira=NULL, fecha_reserva=NULL, fecha_promesa=NULL, fecha_escritura=NULL, fecha_solicitud_credito=NULL, fecha_aprobacion_credito=NULL, fecha_termino_pago=NULL, fecha_alzamiento=NULL, fecha_entrega=NULL, fecha_pago=NULL, historial_ocupacion=?, updated_at=? WHERE id=?`)
+  // P2.1: vaciar plan_pagos al liberar (mismo criterio que el reset de descuentos): el
+  // cronograma pertenecía a la ocupación que se está cerrando; no debe quedar pegado a la unidad.
+  await db.prepare(`UPDATE units SET estado='Disponible', cliente_id=NULL, asignado_por=NULL, fecha_asignacion=NULL, descuento_cliente=NULL, descuento_pct=0, descuento_pendiente=0, reserva_vendedor_id=NULL, reserva_expira=NULL, fecha_reserva=NULL, fecha_promesa=NULL, fecha_escritura=NULL, fecha_solicitud_credito=NULL, fecha_aprobacion_credito=NULL, fecha_termino_pago=NULL, fecha_alzamiento=NULL, fecha_entrega=NULL, fecha_pago=NULL, plan_pagos='[]', historial_ocupacion=?, updated_at=? WHERE id=?`)
     .run(JSON.stringify(updHist), nowISO, unitId);
   if (u.cliente_id) await db.prepare(`UPDATE clients SET estado='Prospecto' WHERE id=?`).run(u.cliente_id);
   return u;
@@ -511,7 +513,7 @@ export async function checkAprobacionesReservaVencidas() {
   }
 }
 
-async function checkReservasVencidas() {
+export async function checkReservasVencidas() {
   try {
     const nowDate = new Date();
     const nowISO = nowDate.toISOString();
@@ -2485,7 +2487,7 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
     type HistEntry = { fechaFin?: string; [k: string]: unknown };
     const hist = (() => { try { return JSON.parse((existing.historial_ocupacion as string) || '[]') as HistEntry[]; } catch { return [] as HistEntry[]; } })();
     const updHist = hist.map((h, idx) => idx === hist.length - 1 && !h.fechaFin ? { ...h, fechaFin: now, motivo: 'Resciliación' } : h);
-    await db.prepare(`UPDATE units SET historial_ocupacion = ?, cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, descuento_cliente = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, fecha_promesa = NULL, fecha_escritura = NULL, fecha_solicitud_credito = NULL, fecha_aprobacion_credito = NULL, fecha_termino_pago = NULL, fecha_alzamiento = NULL, fecha_entrega = NULL, fecha_pago = NULL, updated_at = ? WHERE id = ?`)
+    await db.prepare(`UPDATE units SET historial_ocupacion = ?, cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, descuento_cliente = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, fecha_promesa = NULL, fecha_escritura = NULL, fecha_solicitud_credito = NULL, fecha_aprobacion_credito = NULL, fecha_termino_pago = NULL, fecha_alzamiento = NULL, fecha_entrega = NULL, fecha_pago = NULL, plan_pagos = '[]', updated_at = ? WHERE id = ?`)
       .run(JSON.stringify(updHist), now, req.params.id);
     createAuditLog(userId, userName, userRole, 'Resciliación', 'Unit', req.params.id, `Unidad ${existing.type as string} ${existing.numero as string} resciliada por ${userName}${clienteNombreUnit ? ` — cliente: ${clienteNombreUnit}` : ''}`);
     createNotification({ paraRol: 'JefeSala', titulo: 'Resciliación registrada', mensaje: `${existing.type as string} ${existing.numero as string} fue resciliada por ${userName}${clienteNombreUnit ? ` — Cliente: ${clienteNombreUnit}` : ''}`, tipo: 'warning', linkView: 'inventory', relatedId: req.params.id });
@@ -2496,7 +2498,7 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
     type HistEntry = { fechaFin?: string; [k: string]: unknown };
     const hist = (() => { try { return JSON.parse((existing.historial_ocupacion as string) || '[]') as HistEntry[]; } catch { return [] as HistEntry[]; } })();
     const updHist = hist.map((h, idx) => idx === hist.length - 1 && !h.fechaFin ? { ...h, fechaFin: now, motivo: 'Liberación' } : h);
-    await db.prepare(`UPDATE units SET historial_ocupacion = ?, cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, descuento_cliente = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, fecha_promesa = NULL, fecha_escritura = NULL, fecha_solicitud_credito = NULL, fecha_aprobacion_credito = NULL, fecha_termino_pago = NULL, fecha_alzamiento = NULL, fecha_entrega = NULL, fecha_pago = NULL, updated_at = ? WHERE id = ?`)
+    await db.prepare(`UPDATE units SET historial_ocupacion = ?, cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, descuento_cliente = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, fecha_promesa = NULL, fecha_escritura = NULL, fecha_solicitud_credito = NULL, fecha_aprobacion_credito = NULL, fecha_termino_pago = NULL, fecha_alzamiento = NULL, fecha_entrega = NULL, fecha_pago = NULL, plan_pagos = '[]', updated_at = ? WHERE id = ?`)
       .run(JSON.stringify(updHist), now, req.params.id);
     createAuditLog(userId, userName, userRole, 'Liberación', 'Unit', req.params.id, `Unidad ${existing.type as string} ${existing.numero as string} liberada por ${userName}${clienteNombreUnit ? ` — cliente: ${clienteNombreUnit}` : ''}`);
     createNotification({ paraRol: 'JefeSala', titulo: 'Liberación de reserva', mensaje: `${existing.type as string} ${existing.numero as string} fue liberada por ${userName}${clienteNombreUnit ? ` — Cliente: ${clienteNombreUnit}` : ''}`, tipo: 'warning', linkView: 'inventory', relatedId: req.params.id });
@@ -2636,7 +2638,7 @@ app.patch('/api/units/:id/unassign', requireAuth, requireRole('Admin', 'JefeSala
   // Al desistir/desasignar también se limpian los datos de reserva (fecha, vendedor, expiración),
   // si no la fecha de reserva quedaba pegada (bug reportado).
   // FIX P2-1: limpiar también descuento_pct y descuento_pendiente (igual que /liberar).
-  const result = await db.prepare(`UPDATE units SET cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, fecha_reserva = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, descuento_cliente = NULL, descuento_pct = 0, descuento_pendiente = 0, estado = 'Disponible', fecha_promesa = NULL, fecha_escritura = NULL, fecha_solicitud_credito = NULL, fecha_aprobacion_credito = NULL, fecha_termino_pago = NULL, fecha_alzamiento = NULL, fecha_entrega = NULL, fecha_pago = NULL, historial_ocupacion = ?, updated_at = ? WHERE id = ?`)
+  const result = await db.prepare(`UPDATE units SET cliente_id = NULL, asignado_por = NULL, fecha_asignacion = NULL, fecha_reserva = NULL, reserva_vendedor_id = NULL, reserva_expira = NULL, descuento_cliente = NULL, descuento_pct = 0, descuento_pendiente = 0, estado = 'Disponible', fecha_promesa = NULL, fecha_escritura = NULL, fecha_solicitud_credito = NULL, fecha_aprobacion_credito = NULL, fecha_termino_pago = NULL, fecha_alzamiento = NULL, fecha_entrega = NULL, fecha_pago = NULL, plan_pagos = '[]', historial_ocupacion = ?, updated_at = ? WHERE id = ?`)
     .run(JSON.stringify(updHistU), now, req.params.id);
   if (result.changes === 0) { res.status(404).json({ error: 'Unidad no encontrada' }); return; }
   const unitDesc = unitBeforeUnassign ? `${unitBeforeUnassign.type} ${unitBeforeUnassign.numero}` : req.params.id;
@@ -2682,6 +2684,7 @@ app.post('/api/units/:id/liberar', requireAuth, requireRole('Admin', 'JefeSala',
       descuento_cliente = NULL,
       reserva_vendedor_id = NULL,
       reserva_expira = NULL,
+      plan_pagos = '[]',
       historial_ocupacion = ?,
       updated_at = ?
     WHERE id = ?
