@@ -97,6 +97,42 @@ const DEFAULT_DISCOUNT_CONFIG: DiscountConfig = {
 
 // ── Dividend helper ───────────────────────────────────────────────────────────
 
+// Visual reference for quote preview/PDF tables.
+// The dividend table stays independent; these slots mirror its central columns.
+const DIVIDEND_REFERENCE_GRID = {
+  leading: 45,
+  dividendUf: 45,
+  dividendClp: 45,
+  trailing: 45,
+} as const;
+
+const QUOTE_TABLE_GRID = {
+  label: 52,
+  reference: 30,
+  detail: 38,
+  valueUf: 24,
+  valueClp: 36,
+} as const;
+
+const QUOTE_TABLE_TOTAL_WIDTH =
+  QUOTE_TABLE_GRID.label +
+  QUOTE_TABLE_GRID.reference +
+  QUOTE_TABLE_GRID.detail +
+  QUOTE_TABLE_GRID.valueUf +
+  QUOTE_TABLE_GRID.valueClp;
+
+const quoteTableWidthPct = (width: number) =>
+  `${((width / QUOTE_TABLE_TOTAL_WIDTH) * 100).toFixed(2)}%`;
+
+const QUOTE_TABLE_WIDTHS = {
+  label: quoteTableWidthPct(QUOTE_TABLE_GRID.label),
+  reference: quoteTableWidthPct(QUOTE_TABLE_GRID.reference),
+  detail: quoteTableWidthPct(QUOTE_TABLE_GRID.detail),
+  valueUf: quoteTableWidthPct(QUOTE_TABLE_GRID.valueUf),
+  valueClp: quoteTableWidthPct(QUOTE_TABLE_GRID.valueClp),
+  valueTotal: quoteTableWidthPct(QUOTE_TABLE_GRID.valueUf + QUOTE_TABLE_GRID.valueClp),
+} as const;
+
 function calcDividendo(principal: number, tasaAnual: number, years: number): number {
   if (principal <= 0 || tasaAnual <= 0) return 0;
   const r = tasaAnual / 100 / 12;
@@ -1045,8 +1081,8 @@ export const Quoter: React.FC<QuoterProps> = ({
         { content: 'Tipo', styles: { halign: 'center' as const } },
         { content: 'Número', styles: { halign: 'center' as const } },
         { content: 'Características', styles: { halign: 'center' as const } },
-        { content: 'Valor UF', styles: { halign: 'center' as const } },
-        { content: 'Valor $', styles: { halign: 'center' as const } },
+        { content: 'Valor UF', styles: { halign: 'right' as const } },
+        { content: 'Valor $', styles: { halign: 'right' as const } },
       ]],
       body: [...unitRowsPDF, ...summaryPDF],
       headStyles: {
@@ -1060,15 +1096,14 @@ export const Quoter: React.FC<QuoterProps> = ({
       },
       bodyStyles: { fontSize: 9, cellPadding: { top: 1.6, bottom: 1.6, left: 3, right: 3 } },
       theme: 'plain',
-      // Grilla compartida con FORMA DE PAGO (mismas posiciones de columna).
-      // Tipo 59 · Número 20 · Características 31 · UF 28 · $ 42 = 180mm.
-      // % (col1) cae bajo Número; UF arranca en x=110 y $ en x=138 en ambas tablas.
+      // Grilla fija de cotizacion: Numero y Caracteristicas ocupan los slots visuales
+      // equivalentes a Dividendo UF y Dividendo $, sin subordinar la tabla de dividendo.
       columnStyles: {
-        0: { cellWidth: 59 },
-        1: { cellWidth: 20 },
-        2: { cellWidth: 31 },
-        3: { halign: 'right' as const, cellWidth: 28 },
-        4: { halign: 'right' as const, cellWidth: 42 },
+        0: { cellWidth: QUOTE_TABLE_GRID.label, halign: 'left' as const },
+        1: { cellWidth: QUOTE_TABLE_GRID.reference, halign: 'center' as const },
+        2: { cellWidth: QUOTE_TABLE_GRID.detail, halign: 'center' as const },
+        3: { halign: 'right' as const, cellWidth: QUOTE_TABLE_GRID.valueUf },
+        4: { halign: 'right' as const, cellWidth: QUOTE_TABLE_GRID.valueClp },
       },
       didDrawCell: (data: { section: string; row: { index: number }; cell: { x: number; y: number; height: number }; column: { index: number } }) => {
         // Línea bajo encabezado
@@ -1130,8 +1165,8 @@ export const Quoter: React.FC<QuoterProps> = ({
           { content: 'Concepto', styles: { halign: 'center' as const } },
           { content: '%', styles: { halign: 'center' as const } },
           '',
-          { content: 'Valor UF', styles: { halign: 'center' as const } },
-          { content: 'Valor $', styles: { halign: 'center' as const } },
+          { content: 'Valor UF', styles: { halign: 'right' as const } },
+          { content: 'Valor $', styles: { halign: 'right' as const } },
         ]],
         body: pagoRows,
         headStyles: {
@@ -1145,9 +1180,15 @@ export const Quoter: React.FC<QuoterProps> = ({
         },
         bodyStyles: { fontSize: 9, cellPadding: { top: 1.6, bottom: 1.6, left: 3, right: 3 } },
         theme: 'plain',
-        // Grilla idéntica a INMUEBLES: Concepto 59 · % 20 · (espaciador) 31 · UF 28 · $ 42 = 180mm.
-        // "%" cae bajo "Número"; UF arranca en x=110 y $ en x=138 (mismas posiciones que INMUEBLES).
-        columnStyles: { 0: { cellWidth: 59 }, 1: { cellWidth: 20, halign: 'right' as const }, 2: { cellWidth: 31 }, 3: { halign: 'right' as const, cellWidth: 28 }, 4: { halign: 'right' as const, cellWidth: 42 } },
+        // Misma grilla fija: % ocupa el slot visual de Dividendo UF y el espaciador
+        // ocupa el slot visual de Dividendo $, sin depender de que la simulacion aparezca.
+        columnStyles: {
+          0: { cellWidth: QUOTE_TABLE_GRID.label, halign: 'left' as const },
+          1: { cellWidth: QUOTE_TABLE_GRID.reference, halign: 'center' as const },
+          2: { cellWidth: QUOTE_TABLE_GRID.detail },
+          3: { halign: 'right' as const, cellWidth: QUOTE_TABLE_GRID.valueUf },
+          4: { halign: 'right' as const, cellWidth: QUOTE_TABLE_GRID.valueClp },
+        },
         didDrawCell: (data: { section: string; row: { index: number }; cell: { x: number; y: number; height: number }; column: { index: number } }) => {
           // Línea bajo encabezado
           if (data.section === 'head' && data.column.index === 0) {
@@ -2430,19 +2471,19 @@ export const Quoter: React.FC<QuoterProps> = ({
                 <p className="font-black text-gray-700 text-sm mb-2">{sectionNumbers.inmuebles}.&nbsp; INMUEBLES</p>
                 <table className="w-full text-xs table-fixed">
                   <colgroup>
-                    <col style={{ width: '33%' }} />
-                    <col style={{ width: '11%' }} />
-                    <col style={{ width: '17%' }} />
-                    <col style={{ width: ufHoy ? '16%' : '39%' }} />
-                    {ufHoy && <col style={{ width: '23%' }} />}
+                    <col style={{ width: QUOTE_TABLE_WIDTHS.label }} />
+                    <col style={{ width: QUOTE_TABLE_WIDTHS.reference }} />
+                    <col style={{ width: QUOTE_TABLE_WIDTHS.detail }} />
+                    <col style={{ width: ufHoy ? QUOTE_TABLE_WIDTHS.valueUf : QUOTE_TABLE_WIDTHS.valueTotal }} />
+                    {ufHoy && <col style={{ width: QUOTE_TABLE_WIDTHS.valueClp }} />}
                   </colgroup>
                   <thead>
                     <tr className="border-b border-gray-300">
                       <th className="py-1 text-center font-semibold text-gray-500">Tipo</th>
                       <th className="py-1 text-center font-semibold text-gray-500">Número</th>
                       <th className="py-1 text-center font-semibold text-gray-500">Características</th>
-                      <th className="py-1 text-center font-semibold text-gray-500 whitespace-nowrap">Valor UF</th>
-                      {ufHoy && <th className="py-1 text-center font-semibold text-gray-500 whitespace-nowrap">Valor $</th>}
+                      <th className="py-1 text-right font-semibold text-gray-500 whitespace-nowrap">Valor UF</th>
+                      {ufHoy && <th className="py-1 text-right font-semibold text-gray-500 whitespace-nowrap">Valor $</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -2461,9 +2502,9 @@ export const Quoter: React.FC<QuoterProps> = ({
                       return (
                         <React.Fragment key={u.id}>
                           <tr className="border-b border-gray-50">
-                            <td className="py-1.5 pr-2 text-gray-700">{tipoDesc}</td>
-                            <td className="py-1.5 pr-2 font-bold text-gray-800 whitespace-nowrap">{unitNumeroLabel(u)}</td>
-                            <td className="py-1.5 pr-2 text-left text-gray-600">{unitCaracteristicas(u)}</td>
+                            <td className="py-1.5 pr-2 text-left text-gray-700">{tipoDesc}</td>
+                            <td className="py-1.5 px-1 text-center font-bold text-gray-800 whitespace-nowrap">{unitNumeroLabel(u)}</td>
+                            <td className="py-1.5 px-1 text-center text-gray-600">{unitCaracteristicas(u)}</td>
                             <td className="py-1.5 text-right font-mono font-bold text-gray-800 whitespace-nowrap">{formatUF(valorTotal)} UF</td>
                             {ufHoy && <td className="py-1.5 pl-3 text-right font-mono text-gray-500 whitespace-nowrap">{formatCLP(valorTotal * ufHoy)}</td>}
                           </tr>
@@ -2509,19 +2550,19 @@ export const Quoter: React.FC<QuoterProps> = ({
                     <p className="font-black text-gray-700 text-sm mb-2">{sectionNumbers.formaPago}.&nbsp; FORMA DE PAGO</p>
                     <table className="w-full text-xs table-fixed">
                       <colgroup>
-                        <col style={{ width: '33%' }} />
-                        <col style={{ width: '11%' }} />
-                        <col style={{ width: '17%' }} />
-                        <col style={{ width: ufHoy ? '16%' : '39%' }} />
-                        {ufHoy && <col style={{ width: '23%' }} />}
+                        <col style={{ width: QUOTE_TABLE_WIDTHS.label }} />
+                        <col style={{ width: QUOTE_TABLE_WIDTHS.reference }} />
+                        <col style={{ width: QUOTE_TABLE_WIDTHS.detail }} />
+                        <col style={{ width: ufHoy ? QUOTE_TABLE_WIDTHS.valueUf : QUOTE_TABLE_WIDTHS.valueTotal }} />
+                        {ufHoy && <col style={{ width: QUOTE_TABLE_WIDTHS.valueClp }} />}
                       </colgroup>
                       <thead>
                         <tr className="border-b border-gray-300">
                           <th className="py-1 text-center font-semibold text-gray-500">Concepto</th>
                           <th className="py-1 text-center font-semibold text-gray-500">%</th>
                           <th />
-                          <th className="py-1 text-center font-semibold text-gray-500 whitespace-nowrap">Valor UF</th>
-                          {ufHoy && <th className="py-1 text-center font-semibold text-gray-500 whitespace-nowrap">Valor $</th>}
+                          <th className="py-1 text-right font-semibold text-gray-500 whitespace-nowrap">Valor UF</th>
+                          {ufHoy && <th className="py-1 text-right font-semibold text-gray-500 whitespace-nowrap">Valor $</th>}
                         </tr>
                       </thead>
                       <tbody>
@@ -2534,8 +2575,8 @@ export const Quoter: React.FC<QuoterProps> = ({
                           { label: 'Crédito Inst. Financiera', pct: formaPctDisplay.credito, uf: creditoUF, isBold: true },
                         ].map(r => (
                           <tr key={r.label} className="border-b border-gray-50">
-                            <td className={`py-1.5 pr-2 truncate ${r.isBold ? 'font-bold text-blue-700' : 'text-gray-700'}`}>{r.label}{r.isBold ? ' (*)' : ''}</td>
-                            <td className={`py-1.5 pr-2 text-right font-mono whitespace-nowrap ${r.isBold ? 'font-bold text-blue-700' : 'text-gray-500'}`}>{formatPct(r.pct)}%</td>
+                            <td className={`py-1.5 pr-2 text-left truncate ${r.isBold ? 'font-bold text-blue-700' : 'text-gray-700'}`}>{r.label}{r.isBold ? ' (*)' : ''}</td>
+                            <td className={`py-1.5 px-1 text-center font-mono whitespace-nowrap ${r.isBold ? 'font-bold text-blue-700' : 'text-gray-500'}`}>{formatPct(r.pct)}%</td>
                             <td />
                             <td className={`py-1.5 text-right font-mono whitespace-nowrap ${r.isBold ? 'font-bold text-blue-700' : 'font-bold text-gray-800'}`}>{formatUF(r.uf)} UF</td>
                             {ufHoy && <td className={`py-1.5 pl-3 text-right font-mono whitespace-nowrap ${r.isBold ? 'text-blue-500' : 'text-gray-500'}`}>{formatCLP(r.uf * ufHoy)}{r.isBold?' (*)':''}</td>}
@@ -2546,7 +2587,7 @@ export const Quoter: React.FC<QuoterProps> = ({
                         </tr>
                         <tr>
                           <td className="py-1.5 font-black text-gray-800"></td>
-                          <td className="py-1.5 text-right font-black font-mono text-gray-800">100,0%</td>
+                          <td className="py-1.5 px-1 text-center font-black font-mono text-gray-800">100,0%</td>
                           <td />
                           <td className="py-1.5 text-right font-black font-mono text-gray-900 whitespace-nowrap">{formatUF(precioVentaFinal)} UF</td>
                           {ufHoy && <td className="py-1.5 pl-3 text-right font-black font-mono text-gray-700 whitespace-nowrap">{formatCLP(precioVentaFinal * ufHoy)}</td>}
