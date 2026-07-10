@@ -532,6 +532,7 @@ export const Quoter: React.FC<QuoterProps> = ({
   ]);
 
   const saveImmediately = useCallback(async (): Promise<void> => {
+    if (currentUser.role === 'Lectura') return; // 3.1: Lectura no persiste borradores
     const token = localStorage.getItem('dw_token');
     if (!token || !currentProjectId) return;
     if (!selectedClient.nombre?.trim() && !selectedClient.rut?.trim()) return;
@@ -1373,6 +1374,7 @@ export const Quoter: React.FC<QuoterProps> = ({
   const [toastMsg, setToastMsg] = useState('');
 
   const promoteDraft = async () => {
+    if (currentUser.role === 'Lectura') return; // 3.1: Lectura no genera cotizaciones
     if (!draftId || isDraftGenerated) return;
     const token = localStorage.getItem('dw_token');
     try {
@@ -1457,6 +1459,7 @@ export const Quoter: React.FC<QuoterProps> = ({
   };
 
   const handleSendEmail = async () => {
+    if (currentUser.role === 'Lectura') return; // 3.1
     // Mismo patrón que handleDownloadPDF: cancelar autosave y forzar guardado
     if (autoSaveTimerRef.current) {
       clearTimeout(autoSaveTimerRef.current);
@@ -1496,6 +1499,7 @@ export const Quoter: React.FC<QuoterProps> = ({
 
   // ── Finalize ─────────────────────────────────────────────────────────────
   const handleFinalizeAndSave = async () => {
+    if (currentUser.role === 'Lectura') return; // 3.1
     let wasJustGenerated = false;
 
     if (!isDraftGenerated) {
