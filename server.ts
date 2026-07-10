@@ -1619,13 +1619,23 @@ app.get('/api/notifications', requireAuth, async (req, res) => {
 });
 
 app.post('/api/notifications/:id/read', requireAuth, async (req, res) => {
-  await db.prepare('UPDATE notifications SET leida = 1 WHERE id = ?').run(req.params.id);
+  const userId = (req as AuthenticatedRequest).userId;
+  const userRole = (req as AuthenticatedRequest).userRole;
+  // 3.2: solo el destinatario (por usuario, por rol, o 'All') puede marcarla leída — evita IDOR.
+  const r = await db.prepare(`UPDATE notifications SET leida = 1 WHERE id = ? AND (para_user_id = ? OR para_rol = ? OR para_rol = 'All')`)
+    .run(req.params.id, userId, userRole);
+  if (r.changes === 0) { res.status(404).json({ error: 'Notificación no encontrada' }); return; }
   res.json({ ok: true });
 });
 
 // Soft-delete: la notificación desaparece de la bandeja y no reaparece al re-fetch
 app.delete('/api/notifications/:id', requireAuth, async (req, res) => {
-  await db.prepare('UPDATE notifications SET eliminada = 1 WHERE id = ?').run(req.params.id);
+  const userId = (req as AuthenticatedRequest).userId;
+  const userRole = (req as AuthenticatedRequest).userRole;
+  // 3.2: solo el destinatario puede eliminarla — evita IDOR.
+  const r = await db.prepare(`UPDATE notifications SET eliminada = 1 WHERE id = ? AND (para_user_id = ? OR para_rol = ? OR para_rol = 'All')`)
+    .run(req.params.id, userId, userRole);
+  if (r.changes === 0) { res.status(404).json({ error: 'Notificación no encontrada' }); return; }
   res.json({ ok: true });
 });
 
