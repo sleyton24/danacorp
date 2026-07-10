@@ -353,7 +353,9 @@ export const Quoter: React.FC<QuoterProps> = ({
           setProjectConfig(d);
           if (d.bonoPiePct != null) setBonoPct(d.bonoPiePct);
           if (d.reservaCLP != null) setReservaCLP(d.reservaCLP);
-          if (d.cantidadCuotasPie != null) setNCuotasNew(d.cantidadCuotasPie);
+          // P2.2 (Opción A): el cotizador arranca en el tope de cuotas del proyecto (maxCuotas),
+          // no en cantidadCuotasPie (que sigue siendo el default del pie usado en UnitDetail/admin).
+          if (d.maxCuotas != null) setNCuotasNew(d.maxCuotas);
         }
       })
       .catch(() => {});
