@@ -296,12 +296,30 @@ export const Quoter: React.FC<QuoterProps> = ({
 
   // ── Project Config (C6) ──────────────────────────────────────────────────
   const [projectConfig, setProjectConfig] = useState<Partial<ProjectConfig>>({});
+  // Bloque B: error inline al intentar más cuotas que el máximo del proyecto
+  const [cuotasError, setCuotasError] = useState<string | null>(null);
 
   // ── Email ────────────────────────────────────────────────────────────────
   const [isEmailSending, setIsEmailSending] = useState(false);
   const [emailSent, setEmailSent] = useState(false);
 
   const currentProject = projects.find(p => p.id === currentProjectId);
+  // Bloque B: tope de cuotas del proyecto activo (Checkpoint A). Fallback al default de BD.
+  const maxCuotas = projectConfig.maxCuotas ?? 36;
+  // Rechaza valores > maxCuotas (no hace clamp): no actualiza nCuotasNew y muestra error.
+  const handleCuotasChange = (raw: string) => {
+    const v = Math.floor(Number(raw));
+    if (!Number.isFinite(v) || v < 1) {
+      setCuotasError('Ingresa un número de cuotas válido (mínimo 1).');
+      return;
+    }
+    if (v > maxCuotas) {
+      setCuotasError(`Máximo ${maxCuotas} cuotas para este proyecto.`);
+      return;
+    }
+    setCuotasError(null);
+    setNCuotasNew(v);
+  };
   const nCuotas = pieCuotasDropdown === 'Otro' ? pieCuotasManual : pieCuotasDropdown;
   const effectiveDiscountConfig: DiscountConfig = {
     ...DEFAULT_DISCOUNT_CONFIG,
@@ -2231,11 +2249,20 @@ export const Quoter: React.FC<QuoterProps> = ({
                         {ufHoy && <span className="font-mono text-gray-400 ml-2">{formatCLP(cuotasUF * ufHoy)}</span>}
                       </div>
                       <div className="flex items-center gap-2 pl-4">
-                        <span className="w-40 shrink-0 text-gray-400">En {nCuotasNew} cuota(s)</span>
+                        <span className="shrink-0 text-gray-400">En</span>
+                        <input type="number" min={1} max={maxCuotas} step={1} value={nCuotasNew}
+                          onChange={e => handleCuotasChange(e.target.value)}
+                          className={`w-16 p-1.5 border rounded text-sm font-mono text-right outline-none ${cuotasError ? 'border-red-300 bg-red-50' : 'border-gray-200'}`} />
+                        <span className="shrink-0 text-gray-400">cuota(s)</span>
                         <span className="text-[10px] text-gray-400 bg-gray-50 border border-gray-100 rounded px-2 py-1">
-                          c/u {formatUF(cuotaIndividualUF)} UF — fijado por proyecto
+                          c/u {formatUF(cuotaIndividualUF)} UF — máx. {maxCuotas}
                         </span>
                       </div>
+                      {cuotasError && (
+                        <div className="pl-4">
+                          <span className="text-[11px] text-red-600 font-medium">{cuotasError}</span>
+                        </div>
+                      )}
                       {/* Escritura */}
                       <div className="flex items-center gap-2">
                         <span className="w-44 shrink-0 text-gray-600">A la firma de Escritura</span>
@@ -2356,6 +2383,18 @@ export const Quoter: React.FC<QuoterProps> = ({
                 )}
               </div>
 
+              {/* Comentarios / Notas del vendedor (Cambio 8) — movido a etapa 2, tras la simulación */}
+              <div className="print:hidden mt-6">
+                <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5 block">Comentarios / Notas (opcional)</label>
+                <textarea
+                  value={comentarioVendedor}
+                  onChange={e => setComentarioVendedor(e.target.value)}
+                  rows={3}
+                  placeholder="Texto libre que aparecerá en el PDF antes del Monto de la Reserva…"
+                  className="w-full p-3 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-100 resize-y"
+                />
+              </div>
+
               <div className="mt-6 pt-4 border-t border-gray-100 flex justify-between items-center">
                 <div className="text-lg font-bold text-gray-900">
                   Total: {formatUF(totalFinal)} UF{ufHoy ? ` / ${formatCLP(totalFinal * ufHoy)}` : ''}
@@ -2387,18 +2426,6 @@ export const Quoter: React.FC<QuoterProps> = ({
               </p>
             </div>
           )}
-
-          {/* Comentarios / Notas del vendedor (Cambio 8) */}
-          <div className="print:hidden">
-            <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5 block">Comentarios / Notas (opcional)</label>
-            <textarea
-              value={comentarioVendedor}
-              onChange={e => setComentarioVendedor(e.target.value)}
-              rows={3}
-              placeholder="Texto libre que aparecerá en el PDF antes del Monto de la Reserva…"
-              className="w-full p-3 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-100 resize-y"
-            />
-          </div>
 
           <div className="flex gap-3 justify-end print:hidden flex-wrap">
             {toastMsg && (
