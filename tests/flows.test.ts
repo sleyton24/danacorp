@@ -207,6 +207,22 @@ describe('Seguridad — IDOR y roles', () => {
       .send({ nombre: 'Hackeado' });
     expect(res.status).toBe(403);
   });
+
+  // P4.3: POST /api/sync ahora awaitea el sync a tablas → la escritura está persistida
+  // cuando vuelve el 200 (regresión del await faltante, mismo patrón que Checkpoint B).
+  it('POST /api/sync persiste la config antes de responder (await)', async () => {
+    const projectId = 'p-sync-await';
+    const post = await request(app).post('/api/sync').set(auth(adminToken)).send({
+      key: `project_config_${projectId}`,
+      value: { reservaCLP: 7777, nombreInmobiliaria: 'Sync Test SA', discountConfig: { jefeMaxPct: 5, supervisorMaxPct: 9, vigenciaCotizacionDias: 7 } },
+    });
+    expect(post.status).toBe(200);
+    // Lectura inmediata tras el 200: con await ya está en la tabla.
+    const cfg = await request(app).get(`/api/projects/${projectId}/config`).set(auth(adminToken));
+    expect(cfg.status).toBe(200);
+    expect(cfg.body.reservaCLP).toBe(7777);
+    expect(cfg.body.nombreInmobiliaria).toBe('Sync Test SA');
+  });
 });
 
 describe('Manejo de errores', () => {

@@ -2740,10 +2740,12 @@ app.post('/api/sync', requireAuth, async (req, res) => {
     .run(`${userId}:${key}`, JSON.stringify(value), now);
 
   if (key === 'app_state') {
-    syncAppStateToTables(value as Record<string, unknown>, now);
+    // 4.3: await — el sync a tablas debe completarse ANTES de responder (mismo bug que Checkpoint B:
+    // sin await, la respuesta vuelve antes de persistir y una lectura inmediata puede no ver los datos).
+    await syncAppStateToTables(value as Record<string, unknown>, now);
   } else if (key.startsWith('project_config_')) {
     const projectId = key.replace('project_config_', '');
-    syncProjectConfigToTable(projectId, value as Record<string, unknown>, now);
+    await syncProjectConfigToTable(projectId, value as Record<string, unknown>, now);
   }
 
   res.json({ ok: true });
