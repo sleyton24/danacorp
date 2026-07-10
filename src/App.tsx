@@ -44,6 +44,18 @@ const defaultUsers: User[] = [
 ];
 
 
+// 3.3: guard central de rol para vistas. Refleja el gating del Sidebar, pero se valida en
+// el RENDER (no solo ocultando el ítem del sidebar), para que ninguna vista privilegiada se
+// renderice si se llega por otra vía — p.ej. link de notificación que hace setCurrentView directo.
+const ADMIN_ONLY_VIEWS = ['audit', 'downloads', 'profile_admin', 'create_project'];
+function canViewView(role: string, view: string): boolean {
+  if (role === 'Admin') return true;
+  if (ADMIN_ONLY_VIEWS.includes(view)) return false;
+  if (view === 'approvals') return ['Supervisor', 'JefeSala'].includes(role);
+  if (view === 'performance') return role !== 'Lectura';
+  return true; // summary, quoter, clients, inventory, prices, settings, notifications
+}
+
 const App: React.FC = () => {
   // ── Auth ──────────────────────────────────────────────────────────────────
   const [authLoading, setAuthLoading] = useState(true);
@@ -183,6 +195,17 @@ const App: React.FC = () => {
     setCurrentView('summary');
     setSelectedUnit(null);
   };
+
+  // 3.3: si la vista actual no está permitida para el rol (llegada por cualquier vía),
+  // reponer a 'summary' — mantiene el estado/sidebar coherente con el guard de render.
+  useEffect(() => {
+    if (currentUser && !canViewView(currentUser.role, currentView)) {
+      setCurrentView('summary');
+    }
+  }, [currentUser, currentView]);
+  // Vista efectiva a renderizar: si el rol no puede verla, cae a 'summary' (guard de render,
+  // sin flash de contenido privilegiado aunque el efecto de arriba aún no haya corrido).
+  const renderView = currentUser && canViewView(currentUser.role, currentView) ? currentView : 'summary';
 
   // ── P6: Poll backend notifications every 15 s ─────────────────────────────
   useEffect(() => {
@@ -744,7 +767,7 @@ const App: React.FC = () => {
       />
       
       <main className="flex-1 ml-64 p-8 bg-gray-50 dark:bg-gray-900 min-h-screen overflow-auto">
-        {selectedUnit && currentView === 'inventory' ? (
+        {selectedUnit && renderView === 'inventory' ? (
           <UnitDetail
             unit={selectedUnit}
             client={clients.find(c => c.id === selectedUnit.clienteId)}
@@ -763,8 +786,8 @@ const App: React.FC = () => {
           />
         ) : (
           <>
-            {currentView === 'summary' && <SummaryDashboard units={currentProjectUnits} />}
-            {currentView === 'clients' && (
+            {renderView === 'summary' && <SummaryDashboard units={currentProjectUnits} />}
+            {renderView === 'clients' && (
               <ClientList
                 clients={currentProjectClients}
                 units={currentProjectUnits}
@@ -785,7 +808,7 @@ const App: React.FC = () => {
                 }}
               />
             )}
-            {currentView === 'inventory' && <UnitList
+            {renderView === 'inventory' && <UnitList
               units={currentProjectUnits}
               clients={currentProjectClients}
               currentUser={currentUser}
@@ -805,20 +828,20 @@ const App: React.FC = () => {
               } : u))}
               showToast={showToast}
             />}
-            {currentView === 'prices' && <PriceManager units={currentProjectUnits} onUpdateUnit={handleUpdateUnit} currentUser={currentUser} onRefreshUnits={refreshUnits} />}
-            {currentView === 'create_project' && <ProjectCreationWizard onSave={handleCreateProject} onCancel={() => setCurrentView('summary')} />}
-            {currentView === 'audit' && (
+            {renderView === 'prices' && <PriceManager units={currentProjectUnits} onUpdateUnit={handleUpdateUnit} currentUser={currentUser} onRefreshUnits={refreshUnits} />}
+            {renderView === 'create_project' && <ProjectCreationWizard onSave={handleCreateProject} onCancel={() => setCurrentView('summary')} />}
+            {renderView === 'audit' && (
               <React.Suspense fallback={<LazyFallback />}>
                 <AuditLogView logs={auditLogs} />
               </React.Suspense>
             )}
-            {currentView === 'settings' && <SettingsPanel currentUser={currentUser} users={users} onAddUser={u => setUsers(p => [...p, u])} onDeleteUser={id => setUsers(p => p.filter(u => u.id !== id))} onUpdateUser={u => setUsers(p => p.map(x => x.id === u.id ? u : x))} darkMode={darkMode} toggleDarkMode={() => setDarkMode(!darkMode)} />}
-            {currentView === 'profile_admin' && (
+            {renderView === 'settings' && <SettingsPanel currentUser={currentUser} users={users} onAddUser={u => setUsers(p => [...p, u])} onDeleteUser={id => setUsers(p => p.filter(u => u.id !== id))} onUpdateUser={u => setUsers(p => p.map(x => x.id === u.id ? u : x))} darkMode={darkMode} toggleDarkMode={() => setDarkMode(!darkMode)} />}
+            {renderView === 'profile_admin' && (
               <React.Suspense fallback={<LazyFallback />}>
                 <ProfileAdministration users={users} projects={projects} onAddUser={u => setUsers(p => [...p, u])} onUpdateUser={u => setUsers(p => p.map(x => x.id === u.id ? u : x))} onDeleteUser={id => setUsers(p => p.filter(u => u.id !== id))} currentUser={currentUser} showToast={showToast} />
               </React.Suspense>
             )}
-            {currentView === 'notifications' && <NotificationsView
+            {renderView === 'notifications' && <NotificationsView
                 notifications={notifications}
                 onMarkAsRead={id => {
                   setNotifications(p => p.map(n => n.id === id ? { ...n, read: true } : n));
@@ -835,12 +858,12 @@ const App: React.FC = () => {
                   setNotifications(p => p.map(n => ({ ...n, read: true })));
                 }}
               />}
-            {currentView === 'downloads' && (
+            {renderView === 'downloads' && (
               <React.Suspense fallback={<LazyFallback />}>
                 <DownloadsView units={currentProjectUnits} clients={clients} project={projects.find(p => p.id === currentProjectId)} />
               </React.Suspense>
             )}
-            {currentView === 'quoter' && (
+            {renderView === 'quoter' && (
               <React.Suspense fallback={
                 <div className="flex items-center justify-center h-64 gap-3 text-gray-400">
                   <RefreshCw className="w-5 h-5 animate-spin" />
@@ -863,12 +886,12 @@ const App: React.FC = () => {
                 />
               </React.Suspense>
             )}
-            {currentView === 'approvals' && (
+            {renderView === 'approvals' && (
               <React.Suspense fallback={<LazyFallback />}>
                 <ApprovalsView currentUser={currentUser} />
               </React.Suspense>
             )}
-            {currentView === 'performance' && (
+            {renderView === 'performance' && (
               <React.Suspense fallback={<LazyFallback />}>
                 <SalesPerformanceView
                   currentUser={currentUser}
