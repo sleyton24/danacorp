@@ -316,6 +316,7 @@ export const ClientList: React.FC<ClientListProps> = ({
   const handleTriggerUpload = () => { if (fileInputRef.current) fileInputRef.current.click(); };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (currentUser.role === 'Lectura') return; // 3.1
     const file = e.target.files?.[0];
     if (file && expandedClientId) {
         const client = clients.find(c => c.id === expandedClientId);
@@ -363,8 +364,10 @@ export const ClientList: React.FC<ClientListProps> = ({
     setDeleteConfirmation(null);
   };
 
+  const isReadOnly = currentUser.role === 'Lectura'; // 3.1: rol Lectura no muta nada (mismo patrón que UnitDetail)
   const handleSaveClient = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isReadOnly) return;
     if (editingClient) {
       try {
         if (editingClient.id) {
@@ -448,7 +451,8 @@ export const ClientList: React.FC<ClientListProps> = ({
           <p className="text-gray-500 text-sm mt-1">Gestión de prospectos y clientes activos.</p>
         </div>
         <div className="flex gap-2">
-            <button 
+            {!isReadOnly && (<>
+            <button
                 onClick={() => {
                     setBulkParsedClients([]);
                     setIsBulkModalOpen(true);
@@ -466,6 +470,7 @@ export const ClientList: React.FC<ClientListProps> = ({
             >
                 <Plus className="w-4 h-4" /> Nuevo Prospecto
             </button>
+            </>)}
         </div>
       </div>
 
@@ -554,8 +559,9 @@ export const ClientList: React.FC<ClientListProps> = ({
                       </td>
                       <td className="px-6 py-4 text-right">
                         <div className="flex justify-end items-center gap-2 overflow-visible">
+                          {!isReadOnly && (
                           <div className="relative" ref={isMenuOpen ? menuRef : null}>
-                            <button 
+                            <button
                               onClick={() => handleToggleMenu(client.id)}
                               className={`p-2 rounded-lg transition-all ${isMenuOpen ? 'bg-blue-100 text-blue-600 shadow-sm' : 'text-gray-400 hover:bg-gray-100'}`}
                             >
@@ -596,8 +602,9 @@ export const ClientList: React.FC<ClientListProps> = ({
                               </div>
                             )}
                           </div>
+                          )}
 
-                          <button 
+                          <button
                             onClick={() => setExpandedClientId(isExpanded ? null : client.id)}
                             className={`p-2 rounded-lg transition-all ${isExpanded ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:bg-gray-100'}`}
                           >
@@ -634,16 +641,18 @@ export const ClientList: React.FC<ClientListProps> = ({
                                       </div>
                                       <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                         <button onClick={() => handleDownloadDoc(doc)} className="p-1.5 text-gray-400 hover:text-blue-600 transition-colors"><Download className="w-4 h-4" /></button>
-                                        <button onClick={() => openDeleteModal(doc.id, doc.name, 'client', client.id)} className="p-1.5 text-gray-400 hover:text-red-500 transition-colors"><Trash2 className="w-4 h-4" /></button>
+                                        {!isReadOnly && <button onClick={() => openDeleteModal(doc.id, doc.name, 'client', client.id)} className="p-1.5 text-gray-400 hover:text-red-500 transition-colors"><Trash2 className="w-4 h-4" /></button>}
                                       </div>
                                     </div>
                                   ))}
                                   {(client.documents || []).length === 0 && <p className="text-center py-4 text-gray-300 italic text-[11px] font-medium">Sin documentos cargados</p>}
                                 </div>
+                                {!isReadOnly && (<>
                                 <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileChange} />
                                 <button onClick={handleTriggerUpload} className="w-full mt-3 py-2.5 border-2 border-dashed border-gray-200 text-gray-500 text-[11px] font-black uppercase tracking-widest rounded-xl flex items-center justify-center gap-2 hover:bg-gray-50 hover:border-blue-300 transition-all">
                                   <CloudUpload className="w-4 h-4" /> Cargar Documento
                                 </button>
+                                </>)}
                               </div>
                             </div>
 
