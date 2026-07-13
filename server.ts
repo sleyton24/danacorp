@@ -1656,8 +1656,18 @@ app.post('/api/notifications/read-all', requireAuth, async (req, res) => {
 
 // ── 5c. Audit Logs ───────────────────────────────────────────────────────────
 
+// 4.2: allowlist cerrada de tipos de evento que el frontend puede registrar (formato "seccion:accion").
+// Sin texto libre arbitrario en el tipo. entityId/description sí son datos (nombre de unidad, detalle).
+const ALLOWED_AUDIT_ACTIONS = new Set([
+  'Inventario:Cambio Estado', 'Inventario:Actualización', 'Inventario:Desasignación',
+  'Clientes:Actualización', 'Clientes:Creación', 'Clientes:Asignación',
+  'Ventas:Desistimiento', 'Ventas:Cotización', 'Administración:Crear Proyecto',
+]);
+
 app.post('/api/audit-logs', requireAuth, async (req, res) => {
   const { action, entityType, entityId, description } = req.body as Record<string, string>;
+  // 4.2: el tipo de evento debe estar en la allowlist; identidad SIEMPRE de la sesión (no del payload).
+  if (!ALLOWED_AUDIT_ACTIONS.has(action)) { res.status(400).json({ error: 'Tipo de evento no permitido' }); return; }
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
   const user = await getUserById(userId);
