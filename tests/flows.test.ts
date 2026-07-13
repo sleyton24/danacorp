@@ -224,6 +224,16 @@ describe('Seguridad — IDOR y roles', () => {
     expect(cfg.body.nombreInmobiliaria).toBe('Sync Test SA');
   });
 
+  // P4.2: /api/audit-logs valida el tipo de evento contra una allowlist cerrada.
+  it('/api/audit-logs acepta tipos en allowlist y rechaza el resto (400)', async () => {
+    const ok = await request(app).post('/api/audit-logs').set(auth(adminToken))
+      .send({ action: 'Clientes:Creación', entityType: 'Clientes', entityId: 'X', description: 'ok' });
+    expect(ok.status).toBe(200);
+    const bad = await request(app).post('/api/audit-logs').set(auth(adminToken))
+      .send({ action: 'Hackeo:Inyección', entityType: 'x', entityId: 'y', description: 'z' });
+    expect(bad.status).toBe(400);
+  });
+
   // P4.1: cuenta desactivada (activo=false) no puede autenticarse; error genérico.
   it('login rechazado si activo=false, con error genérico (no revela la cuenta)', async () => {
     await pool.query("UPDATE users SET activo = false WHERE email = 'lectura@danacorp.cl'");
