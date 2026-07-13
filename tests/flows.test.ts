@@ -224,6 +224,13 @@ describe('Seguridad — IDOR y roles', () => {
     expect(cfg.body.nombreInmobiliaria).toBe('Sync Test SA');
   });
 
+  // P4.3: POST /api/sync ahora es Admin-only.
+  it('POST /api/sync es Admin-only (un Ventas recibe 403)', async () => {
+    const ventas = await login('vendedor@danacorp.cl', 'vendedor123');
+    const res = await request(app).post('/api/sync').set(auth(ventas.body.token)).send({ key: 'app_state', value: {} });
+    expect(res.status).toBe(403);
+  });
+
   // P4.2: /api/audit-logs valida el tipo de evento contra una allowlist cerrada.
   it('/api/audit-logs acepta tipos en allowlist y rechaza el resto (400)', async () => {
     const ok = await request(app).post('/api/audit-logs').set(auth(adminToken))

@@ -2737,7 +2737,7 @@ app.post('/api/units/:id/liberar', requireAuth, requireRole('Admin', 'JefeSala',
 
 // ── 11. Sincronización de Estado ─────────────────────────────────────────────
 
-app.post('/api/sync', requireAuth, async (req, res) => {
+app.post('/api/sync', requireAuth, requireRole('Admin'), async (req, res) => {
   const { key, value } = req.body as { key: string; value: unknown };
   if (!key) { res.status(400).json({ error: 'Key requerida' }); return; }
   const userId = (req as AuthenticatedRequest).userId;
