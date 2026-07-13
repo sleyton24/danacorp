@@ -840,9 +840,14 @@ app.post('/api/ai/extract-transaction', requireAuth, async (req, res) => {
 app.post('/api/auth/login', loginLimiter, async (req, res) => {
   const { email, password } = req.body as { email: string; password: string };
   const row = await db.prepare(
-    'SELECT id, name, email, role, company, assigned_project_ids, password_hash FROM users WHERE email = ?'
+    'SELECT id, name, email, role, company, assigned_project_ids, password_hash, activo FROM users WHERE email = ?'
   ).get(email) as Record<string, unknown> | undefined;
   if (!row || !(await bcrypt.compare(password || '', row.password_hash as string))) {
+    res.status(401).json({ error: 'Credenciales incorrectas' });
+    return;
+  }
+  // 4.1: cuenta desactivada → mismo error genérico (no revelar que la cuenta existe).
+  if (row.activo === false) {
     res.status(401).json({ error: 'Credenciales incorrectas' });
     return;
   }
@@ -2820,6 +2825,16 @@ if (isMain) {
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS descuento_cliente NUMERIC(5,2)`).run();
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS ejecutivo_id TEXT`).run();
       await db.prepare(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS eliminada INTEGER DEFAULT 0`).run();
+      // ── 4.1: flag `activo` en users + desactivar la cuenta muerta lectura@danacorp.cl ──
+      await db.prepare(`ALTER TABLE users ADD COLUMN IF NOT EXISTS activo BOOLEAN NOT NULL DEFAULT true`).run();
+      {
+        // Una sola vez (flag): permite que un Admin reactive la cuenta luego sin que el arranque la vuelva a apagar.
+        const done = await db.prepare("SELECT value FROM app_state WHERE key = 'migration_lectura_desactivada'").get() as { value: string } | undefined;
+        if (!done) {
+          await db.prepare("UPDATE users SET activo = false WHERE email = 'lectura@danacorp.cl'").run();
+          await db.prepare("INSERT INTO app_state (key, value) VALUES ('migration_lectura_desactivada', 'true') ON CONFLICT(key) DO UPDATE SET value = 'true'").run();
+        }
+      }
       // ── Checkpoint A: parámetros de cuotas y reserva ──────────────────────
       await db.prepare(`ALTER TABLE project_configs ADD COLUMN IF NOT EXISTS max_cuotas INTEGER NOT NULL DEFAULT 36`).run();
       await db.prepare(`ALTER TABLE project_configs ADD COLUMN IF NOT EXISTS dias_duracion_reserva INTEGER NOT NULL DEFAULT 10`).run();

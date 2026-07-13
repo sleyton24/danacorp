@@ -223,6 +223,20 @@ describe('Seguridad — IDOR y roles', () => {
     expect(cfg.body.reservaCLP).toBe(7777);
     expect(cfg.body.nombreInmobiliaria).toBe('Sync Test SA');
   });
+
+  // P4.1: cuenta desactivada (activo=false) no puede autenticarse; error genérico.
+  it('login rechazado si activo=false, con error genérico (no revela la cuenta)', async () => {
+    await pool.query("UPDATE users SET activo = false WHERE email = 'lectura@danacorp.cl'");
+    const res = await login('lectura@danacorp.cl', 'lectura123');
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe('Credenciales incorrectas');
+  });
+
+  it('login OK si activo=true / campo con default (usuario nunca desactivado)', async () => {
+    const res = await login('jefe@danacorp.cl', 'jefe123');
+    expect(res.status).toBe(200);
+    expect(typeof res.body.token).toBe('string');
+  });
 });
 
 describe('Manejo de errores', () => {
