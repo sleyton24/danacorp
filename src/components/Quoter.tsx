@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { RealEstateUnit, Client, User, Project, ClientDocument, DiscountConfig, ProjectConfig } from '../types';
-import { calcValorTotal, calcBonificacion, calcFormaPago } from '../utils/pricingUtils';
+import { calcValorTotal, calcBonificacion, calcFormaPagoFija, PROMESA_PCT_MIN } from '../utils/pricingUtils';
 import {
   Search, Trash2, CheckCircle, FileText, Calendar,
   Building, Car, Package, Calculator, Save, AlertTriangle,
@@ -266,6 +266,10 @@ export const Quoter: React.FC<QuoterProps> = ({
   const [cuotasPct, setCuotasPct] = useState(7);
   const [escrituraPct, setEscrituraPct] = useState(10);
   const [nCuotasNew, setNCuotasNew] = useState(36);
+  // Bloque E: Crédito Banco es un input fijo del usuario (ya no el complemento derivado).
+  const [creditoPct, setCreditoPct] = useState(80);
+  // Bloque E: error inline al intentar bajar Promesa del piso 3% (patrón Bloque B).
+  const [promesaError, setPromesaError] = useState<string | null>(null);
 
   // ── Comentarios / Notas del vendedor (Cambio 8) ──────────────────────────
   const [comentarioVendedor, setComentarioVendedor] = useState('');
@@ -320,6 +324,20 @@ export const Quoter: React.FC<QuoterProps> = ({
     setCuotasError(null);
     setNCuotasNew(v);
   };
+  // Bloque E: Promesa tiene piso 3% — se rechaza (no se clampea) cualquier intento de bajarlo.
+  const handlePromesaChange = (raw: string) => {
+    const v = Number(raw);
+    if (!Number.isFinite(v)) {
+      setPromesaError('Ingresa un porcentaje válido.');
+      return;
+    }
+    if (v < PROMESA_PCT_MIN) {
+      setPromesaError(`La Promesa no puede ser menor a ${PROMESA_PCT_MIN}% (piso mínimo).`);
+      return;
+    }
+    setPromesaError(null);
+    setPromesaPct(v);
+  };
   const nCuotas = pieCuotasDropdown === 'Otro' ? pieCuotasManual : pieCuotasDropdown;
   const effectiveDiscountConfig: DiscountConfig = {
     ...DEFAULT_DISCOUNT_CONFIG,
@@ -367,10 +385,9 @@ export const Quoter: React.FC<QuoterProps> = ({
     [selectedUnits, adjustDrafts],
   );
 
-  // creditoPct = bank credit %, fixed as complement of pie components (NOT subtracting compra segura).
-  // Compra segura compresses the remanente, making promesa/cuotas/escritura smaller in absolute terms.
-  const creditoPctEarly = Math.max(0, 100 - promesaPct - cuotasPct - escrituraPct);
-  const finPct = creditoPctEarly;
+  // Bloque E: Crédito Banco es un input fijo del usuario (ya no el complemento derivado).
+  // finPct (base del desglose de bono pie) = el % de crédito ingresado.
+  const finPct = creditoPct;
 
   // ── Bono pie breakdown por unidad (Paso 6) ───────────────────────────────
   const bonoPieBreakdown = useMemo(() => {
@@ -411,11 +428,8 @@ export const Quoter: React.FC<QuoterProps> = ({
     return dep ? unitFinalPrice(dep, adjustDrafts) : 0;
   }, [selectedUnits, adjustDrafts]);
 
-  // creditoPct derivado arriba (antes de bonoPieBreakdown)
-  const creditoPct = creditoPctEarly;
-
-  // Forma de Pago usa PRECIO DE VENTA como base
-  const formaCalc = calcFormaPago({
+  // Forma de Pago usa PRECIO DE VENTA como base (Bloque E: cálculo fijo, sin redistribución)
+  const formaCalc = calcFormaPagoFija({
     precioVenta: precioVentaFinal,
     precioConDescuentoDepto,
     aplicaBono: includeBonoPie,
@@ -431,26 +445,26 @@ export const Quoter: React.FC<QuoterProps> = ({
   const escrituraUF       = formaCalc.escrituraUF;
   const creditoUF         = formaCalc.creditoUF;
   const cuotaIndividualUF = formaCalc.cuotaIndividualUF;
-  const compraSeguraUF    = formaCalc.compraSeguaUF;
-  const compraSeguaPct    = formaCalc.compraSeguaPct;
-  const promesaPctM       = formaCalc.promesaPctMostrado;
-  const cuotasPctM        = formaCalc.cuotasPctMostrado;
-  const escrituraPctM     = formaCalc.escrituraPctMostrado;
-  const compraSeguaPctM   = formaCalc.compraSeguaPctMostrado;
-  const creditoPctM       = formaCalc.creditoPctMostrado;
+  const compraSeguraUF    = formaCalc.compraSeguraUF;
+  const compraSeguaPct    = formaCalc.compraSeguraPct;
+  const promesaPctM       = formaCalc.promesaPct;
+  const cuotasPctM        = formaCalc.cuotasPct;
+  const escrituraPctM     = formaCalc.escrituraPct;
+  const compraSeguaPctM   = formaCalc.compraSeguraPct;
+  const creditoPctM       = formaCalc.creditoPct;
 
   // ── Cambio 1: % mostrados a 1 decimal con ajuste de drift (suman exacto 100,0) ──
-  // Solo para mostrar — no afecta cálculos internos. El drift se carga al Crédito.
+  // Solo para mostrar — no afecta cálculos internos. Bloque E: el drift se carga a Escritura (el plug).
   const formaPctDisplay = useMemo(() => {
     const r1 = (v: number) => Math.round(v * 10) / 10;
     const promesa = r1(promesaPctM);
     const cuotas = r1(cuotasPctM);
-    const escritura = r1(escrituraPctM);
+    let escritura = r1(escrituraPctM);
     const compraSegura = r1(compraSeguaPctM);
-    let credito = r1(creditoPctM);
+    const credito = r1(creditoPctM);
     const suma = promesa + cuotas + escritura + compraSegura + credito;
     const drift = Math.round((100 - suma) * 10) / 10;
-    credito = r1(credito + drift);
+    escritura = r1(escritura + drift);
     return { promesa, cuotas, escritura, compraSegura, credito };
   }, [promesaPctM, cuotasPctM, escrituraPctM, compraSeguaPctM, creditoPctM]);
 
@@ -515,7 +529,7 @@ export const Quoter: React.FC<QuoterProps> = ({
           reservaCLP, pieCuotasDropdown, pieCuotasManual,
           bonoPieUnits: Array.from(bonoPieUnits),
           bonoPct, mortgageFinPct,
-          promesaPct, cuotasPct, escrituraPct, nCuotasNew,
+          promesaPct, cuotasPct, escrituraPct, creditoPct, nCuotasNew,
           includePaymentPlan, includeMortgageSimulation,
           comentarioVendedor,
         },
@@ -528,7 +542,7 @@ export const Quoter: React.FC<QuoterProps> = ({
     detachedAccessories, mortgageInputs, includePaymentPlan, includeMortgageSimulation,
     reservaCLP, pieCuotasDropdown, pieCuotasManual,
     bonoPieUnits, bonoPct, mortgageFinPct,
-    promesaPct, cuotasPct, escrituraPct, nCuotasNew, comentarioVendedor,
+    promesaPct, cuotasPct, escrituraPct, creditoPct, nCuotasNew, comentarioVendedor,
   ]);
 
   const saveImmediately = useCallback(async (): Promise<void> => {
@@ -649,10 +663,13 @@ export const Quoter: React.FC<QuoterProps> = ({
         if (pc.bonoPieUnits != null) setBonoPieUnits(new Set(pc.bonoPieUnits as string[]));
         if (pc.bonoPct != null) setBonoPct(pc.bonoPct as number);
         if (pc.mortgageFinPct != null) setMortgageFinPct(pc.mortgageFinPct as number);
-        // finPct ya no se guarda — se deriva de creditoPct
         if (pc.promesaPct != null) setPromesaPct(pc.promesaPct as number);
         if (pc.cuotasPct != null) setCuotasPct(pc.cuotasPct as number);
         if (pc.escrituraPct != null) setEscrituraPct(pc.escrituraPct as number);
+        // Bloque E: Crédito Banco fijo. Drafts nuevos lo guardan; para drafts viejos (sin
+        // creditoPct) se reconstruye su valor derivado original → no se recalculan.
+        if (pc.creditoPct != null) setCreditoPct(pc.creditoPct as number);
+        else if (pc.promesaPct != null) setCreditoPct(Math.max(0, 100 - (pc.promesaPct as number) - ((pc.cuotasPct as number) ?? 0) - ((pc.escrituraPct as number) ?? 0)));
         if (pc.nCuotasNew != null) setNCuotasNew(pc.nCuotasNew as number);
         if (pc.includePaymentPlan != null) setIncludePaymentPlan(pc.includePaymentPlan as boolean);
         if (pc.includeMortgageSimulation != null) setIncludeMortgageSimulation(pc.includeMortgageSimulation as boolean);
@@ -888,7 +905,7 @@ export const Quoter: React.FC<QuoterProps> = ({
   // Base = creditoPct% del PRECIO DE VENTA (precioVentaFinal = totalFinal)
   // ufCredito = precioVentaFinal × finPct / 100
   const dividendTable = useMemo(() => {
-    const effectiveFinPct = includePaymentPlan ? creditoPctEarly : mortgageFinPct;
+    const effectiveFinPct = includePaymentPlan ? creditoPct : mortgageFinPct;
     const base = includeMortgageSimulation && totalFinal > 0
       ? Math.max(0, totalFinal * effectiveFinPct / 100)
       : bonoPieBreakdown.totalPorFinanciar;
@@ -1586,7 +1603,7 @@ export const Quoter: React.FC<QuoterProps> = ({
     setMortgageInputs({ tasaAnual: 4.5 });
     setMortgageFinPct(80);
     setReservaCLP(0); setPieCuotasDropdown(12); setPieCuotasManual(12);
-    setPromesaPct(3); setCuotasPct(7); setEscrituraPct(10); setNCuotasNew(36);
+    setPromesaPct(3); setCuotasPct(7); setEscrituraPct(10); setCreditoPct(80); setNCuotasNew(36); setPromesaError(null);
     setComentarioVendedor('');
     setInlineTerm(''); setShowInlineDropdown(false);
     setEmailSent(false); setDraftId(null); setPdfSavedPath(null);
@@ -2226,23 +2243,27 @@ export const Quoter: React.FC<QuoterProps> = ({
                   <div className="bg-white rounded-xl border border-gray-200 overflow-hidden ml-8">
                     <div className="px-4 py-3 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
                       <span className="text-xs font-black text-gray-500 uppercase tracking-widest">Distribución del Pago</span>
-                      {creditoPct >= 0
+                      {!formaCalc.error
                         ? <span className="text-[10px] font-bold text-green-600 bg-green-50 px-2 py-0.5 rounded-full">100% ✓</span>
-                        : <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full">Suma supera 100% ⚠️</span>
+                        : <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full">Sin remanente ⚠️</span>
                       }
                     </div>
                     <div className="p-4 space-y-1.5 text-xs">
                       {/* Promesa */}
                       <div className="flex items-center gap-2">
                         <span className="w-44 shrink-0 text-gray-600">A la firma de Promesa</span>
-                        <input type="number" step="0.1" min="0" max="100" value={promesaPct}
-                          onChange={e => setPromesaPct(Number(e.target.value))}
-                          className="w-16 p-1.5 border border-gray-200 rounded text-sm font-mono text-right outline-none" />
+                        <input type="number" step="0.1" min={PROMESA_PCT_MIN} max="100" value={promesaPct}
+                          onChange={e => handlePromesaChange(e.target.value)}
+                          className={`w-16 p-1.5 border rounded text-sm font-mono text-right outline-none ${promesaError ? 'border-red-300 bg-red-50' : 'border-gray-200'}`} />
                         <span className="text-gray-400">%</span>
-                        {includeBonoPie && <span className="text-sm font-mono text-amber-800 bg-amber-200 border border-amber-400 px-2 py-0.5 rounded whitespace-nowrap">→ {promesaPctM.toFixed(2)}%</span>}
                         <span className="ml-auto font-mono font-bold text-gray-700">{formatUF(promesaUF)} UF</span>
                         {ufHoy && <span className="font-mono text-gray-400 ml-2">{formatCLP(promesaUF * ufHoy)}</span>}
                       </div>
+                      {promesaError && (
+                        <div>
+                          <span className="text-[11px] text-red-600 font-medium">{promesaError}</span>
+                        </div>
+                      )}
                       {/* Cuotas */}
                       <div className="flex items-center gap-2">
                         <span className="w-44 shrink-0 text-gray-600">En cuotas</span>
@@ -2250,7 +2271,8 @@ export const Quoter: React.FC<QuoterProps> = ({
                           onChange={e => setCuotasPct(Number(e.target.value))}
                           className="w-16 p-1.5 border border-gray-200 rounded text-sm font-mono text-right outline-none" />
                         <span className="text-gray-400">%</span>
-                        {includeBonoPie && <span className="text-sm font-mono text-amber-800 bg-amber-200 border border-amber-400 px-2 py-0.5 rounded whitespace-nowrap">→ {cuotasPctM.toFixed(2)}%</span>}
+                        {/* Bloque E: Cuotas es remanente calculado siempre → badge visible siempre */}
+                        <span className="text-sm font-mono text-amber-800 bg-amber-200 border border-amber-400 px-2 py-0.5 rounded whitespace-nowrap">→ {cuotasPctM.toFixed(2)}%</span>
                         <span className="ml-auto font-mono font-bold text-gray-700">{formatUF(cuotasUF)} UF</span>
                         {ufHoy && <span className="font-mono text-gray-400 ml-2">{formatCLP(cuotasUF * ufHoy)}</span>}
                       </div>
@@ -2276,7 +2298,8 @@ export const Quoter: React.FC<QuoterProps> = ({
                           onChange={e => setEscrituraPct(Number(e.target.value))}
                           className="w-16 p-1.5 border border-gray-200 rounded text-sm font-mono text-right outline-none" />
                         <span className="text-gray-400">%</span>
-                        {includeBonoPie && <span className="text-sm font-mono text-amber-800 bg-amber-200 border border-amber-400 px-2 py-0.5 rounded whitespace-nowrap">→ {escrituraPctM.toFixed(2)}%</span>}
+                        {/* Bloque E: Escritura es remanente calculado siempre → badge visible siempre */}
+                        <span className="text-sm font-mono text-amber-800 bg-amber-200 border border-amber-400 px-2 py-0.5 rounded whitespace-nowrap">→ {escrituraPctM.toFixed(2)}%</span>
                         <span className="ml-auto font-mono font-bold text-gray-700">{formatUF(escrituraUF)} UF</span>
                         {ufHoy && <span className="font-mono text-gray-400 ml-2">{formatCLP(escrituraUF * ufHoy)}</span>}
                       </div>
@@ -2294,15 +2317,15 @@ export const Quoter: React.FC<QuoterProps> = ({
                       )}
                       {/* Separador */}
                       <div className="border-t border-gray-100 my-1" />
-                      {/* Crédito Banco (auto) */}
+                      {/* Crédito Banco (input fijo del usuario — Bloque E: ya no es complemento derivado) */}
                       <div className="flex items-center gap-2">
-                        <span className={`w-44 shrink-0 font-bold ${creditoPct < 0 ? 'text-red-600' : 'text-blue-700'}`}>Crédito Banco</span>
-                        <div className={`w-16 p-1.5 border rounded text-sm font-mono text-right font-bold ${creditoPct < 0 ? 'bg-red-50 border-red-200 text-red-700' : 'bg-gray-50 border-gray-200 text-blue-700'}`}>
-                          {creditoPct.toFixed(1)}
-                        </div>
+                        <span className="w-44 shrink-0 font-bold text-blue-700">Crédito Banco</span>
+                        <input type="number" step="0.1" min="0" max="100" value={creditoPct}
+                          onChange={e => setCreditoPct(Number(e.target.value))}
+                          className={`w-16 p-1.5 border rounded text-sm font-mono text-right font-bold outline-none ${formaCalc.error ? 'bg-red-50 border-red-200 text-red-700' : 'bg-blue-50 border-blue-200 text-blue-700'}`} />
                         <span className="text-gray-400">%</span>
-                        <span className={`ml-auto font-mono font-bold ${creditoPct < 0 ? 'text-red-600' : 'text-blue-700'}`}>{formatUF(creditoUF)} UF</span>
-                        {ufHoy && <span className={`font-mono ml-2 ${creditoPct < 0 ? 'text-red-400' : 'text-blue-400'}`}>{formatCLP(creditoUF * ufHoy)}</span>}
+                        <span className="ml-auto font-mono font-bold text-blue-700">{formatUF(creditoUF)} UF</span>
+                        {ufHoy && <span className="font-mono ml-2 text-blue-400">{formatCLP(creditoUF * ufHoy)}</span>}
                       </div>
                       {/* Separador + Total */}
                       <div className="border-t border-gray-200 mt-1 pt-1.5">
@@ -2314,9 +2337,9 @@ export const Quoter: React.FC<QuoterProps> = ({
                           {ufHoy && <span className="font-mono text-gray-500 ml-2">{formatCLP(precioVentaFinal * ufHoy)}</span>}
                         </div>
                       </div>
-                      {creditoPct < 0 && (
+                      {formaCalc.error && (
                         <p className="text-xs text-red-600 font-bold flex items-center gap-1 pt-1">
-                          <AlertCircle className="w-3 h-3 shrink-0" /> La suma supera 100%. Reduce los porcentajes.
+                          <AlertCircle className="w-3 h-3 shrink-0" /> Promesa + Crédito + Compra Segura superan el 100%. Reduce el Crédito Banco.
                         </p>
                       )}
                     </div>

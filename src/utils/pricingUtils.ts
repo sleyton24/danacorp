@@ -107,6 +107,78 @@ export function calcFormaPago(params: {
   return { compraSeguaUF, compraSeguaPct, creditoUF, promesaUF, cuotasUF, escrituraUF, cuotaIndividualUF, totalUF, error, promesaPctMostrado, cuotasPctMostrado, escrituraPctMostrado, compraSeguaPctMostrado, creditoPctMostrado };
 }
 
+// ── Bloque E: Forma de pago FIJA (reemplaza la redistribución dinámica) ──────────
+// Promesa = piso mínimo 3% (default), editable manualmente hacia arriba, sin tope.
+// Crédito Banco y Compra Segura quedan fijos (usuario / config de bono). Solo Cuotas y
+// Escritura absorben, entre ambos y en proporción a los % ingresados, el remanente para
+// cuadrar el 100%. NO reemplaza a calcFormaPago: esa se conserva para cotizaciones/planes
+// ya generados.
+// El piso de 3% se valida en la UI con "rechazar + error inline" (patrón max_cuotas de
+// Bloque B): la función es pura y calcula con el % que reciba. PROMESA_PCT_MIN es el
+// default del parámetro y el valor que la UI usa como mínimo aceptable.
+export const PROMESA_PCT_MIN = 3;
+
+export interface FormaPagoFija {
+  promesaUF: number;
+  creditoUF: number;
+  compraSeguraUF: number;
+  cuotasUF: number;
+  escrituraUF: number;
+  cuotaIndividualUF: number;
+  totalUF: number;
+  // % reales sobre precioVenta (para mostrar en la UI; ya no hay % "recalculado dinámico")
+  promesaPct: number;
+  creditoPct: number;
+  compraSeguraPct: number;
+  cuotasPct: number;
+  escrituraPct: number;
+  // true si Promesa(3%) + Crédito + Compra Segura consumen el 100% o más: no hay
+  // remanente para Cuotas/Escritura → se devuelven en 0 y el usuario debe bajar el Crédito.
+  error: boolean;
+}
+
+export function calcFormaPagoFija(params: {
+  precioVenta: number;              // Precio de Venta final (con descuento y bono ya aplicados)
+  precioConDescuentoDepto: number;  // base de Compra Segura
+  aplicaBono: boolean;
+  bonoPct: number;
+  creditoPct: number;               // fijo, ingresado por el usuario
+  cuotasPct: number;                // proporción para repartir el remanente
+  escrituraPct: number;             // proporción para repartir el remanente
+  numCuotas: number;
+  promesaPct?: number;              // piso 3% (default); editable hacia arriba en la UI
+}): FormaPagoFija {
+  const { precioVenta, precioConDescuentoDepto, aplicaBono, bonoPct, creditoPct, cuotasPct, escrituraPct, numCuotas } = params;
+  const promesaPct = params.promesaPct ?? PROMESA_PCT_MIN;
+
+  const promesaUF      = r2(precioVenta * promesaPct / 100);
+  const compraSeguraUF = aplicaBono ? r2(precioConDescuentoDepto * bonoPct / 100) : 0;
+  const creditoUF      = r2(precioVenta * creditoPct / 100);
+
+  // Lo que queda para repartir entre Cuotas y Escritura.
+  const remanente = r2(precioVenta - promesaUF - creditoUF - compraSeguraUF);
+  const error = remanente < 0;
+
+  const sumCE = cuotasPct + escrituraPct;
+  const cuotasUF = (!error && sumCE > 0) ? r2(remanente * cuotasPct / sumCE) : 0;
+  // Escritura toma el residuo exacto → el total cuadra al centésimo con precioVenta.
+  const escrituraUF = error ? 0 : r2(remanente - cuotasUF);
+  const cuotaIndividualUF = numCuotas > 0 ? r2(cuotasUF / numCuotas) : 0;
+
+  const totalUF = r2(promesaUF + cuotasUF + escrituraUF + creditoUF + compraSeguraUF);
+
+  const pct = (uf: number) => (precioVenta > 0 ? r2(uf / precioVenta * 100) : 0);
+  return {
+    promesaUF, creditoUF, compraSeguraUF, cuotasUF, escrituraUF, cuotaIndividualUF, totalUF,
+    promesaPct: pct(promesaUF),
+    creditoPct: pct(creditoUF),
+    compraSeguraPct: pct(compraSeguraUF),
+    cuotasPct: pct(cuotasUF),
+    escrituraPct: pct(escrituraUF),
+    error,
+  };
+}
+
 export function calcDescuentosInmuebles(unidades: Array<{
   nombre: string;
   valorTotal: number;

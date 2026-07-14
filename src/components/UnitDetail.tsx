@@ -13,7 +13,7 @@ import {
   Search, X, UserPlus, MoreVertical
 } from 'lucide-react';
 import { AssetTagInput } from './AssetTagInput';
-import { calcResumenUnidad, calcFormaPago } from '../utils/pricingUtils';
+import { calcResumenUnidad, calcFormaPagoFija, PROMESA_PCT_MIN } from '../utils/pricingUtils';
 
 // Bloque C: normaliza el cronograma al cargar — (1) asegura un uid estable en cada
 // fila (backfill en memoria de filas legacy; se persiste al próximo guardado, ya que
@@ -162,10 +162,19 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   const [paymentPlans, setPaymentPlans] = useState<PaymentPlan[]>([]);
   const [selectedPlanId, setSelectedPlanId] = useState<string>('');
   const [cantidadCuotasPie, setCantidadCuotasPie] = useState(unit.pieCuotas ?? 36);
-  const [fpPromesaPct, setFpPromesaPct] = useState(10);
+  const [fpPromesaPct, setFpPromesaPct] = useState(PROMESA_PCT_MIN); // Bloque E: piso 3% por defecto
   const [fpCuotasPct, setFpCuotasPct] = useState(20);
   const [fpEscrituraPct, setFpEscrituraPct] = useState(10);
   const [fpCreditoPct, setFpCreditoPct] = useState(80);
+  // Bloque E: error inline al intentar bajar Promesa del piso 3% (patrón Bloque B).
+  const [promesaError, setPromesaError] = useState<string | null>(null);
+  // Bloque E: Promesa tiene piso 3% — se rechaza (no se clampea) cualquier intento de bajarlo.
+  const handlePromesaChange = (n: number) => {
+    if (!Number.isFinite(n)) { setPromesaError('Ingresa un porcentaje válido.'); return; }
+    if (n < PROMESA_PCT_MIN) { setPromesaError(`La Promesa no puede ser menor a ${PROMESA_PCT_MIN}% (piso mínimo).`); return; }
+    setPromesaError(null);
+    setFpPromesaPct(n);
+  };
   const [pendingEstado, setPendingEstado] = useState<string | null>(null);
 
   // ── Panel de descuento ─────────────────────────────────────────────────────
@@ -638,10 +647,6 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
 
   const canEditBono = ['Admin', 'Supervisor'].includes(currentUser.role);
 
-  // Marca que el usuario acaba de activar/desactivar el bono (para que el useEffect
-  // redistribuya SOLO en el toggle y no en cada render ni al cargar un plan guardado)
-  const bonoJustToggled = useRef(false);
-
   // Compra Segura como % del total de venta (0 si no hay bono)
   const compraSeguraPctOnTotal = () => {
     const r2l = (v: number) => Math.round(v * 100) / 100;
@@ -651,58 +656,9 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     return total > 0 ? r2l(csUF / total * 100) : 0;
   };
 
-  const handleCreditoPivot = (newCreditoPct: number) => {
-    const r2l = (v: number) => Math.round(v * 100) / 100;
-    const csPct = compraSeguraPctOnTotal();
-    const maxCredito = 100 - csPct - 0.01;
-    const safeCreditoPct = Math.min(newCreditoPct, maxCredito);
-    // Si el valor ingresado supera el máximo disponible, avisar (igual se setea el capeado)
-    if (newCreditoPct > maxCredito) {
-      showToast?.(`El financiamiento no puede superar el ${maxCredito.toFixed(1).replace('.', ',')}% disponible`, 'error');
-    }
-    const remanente = 100 - safeCreditoPct - csPct;
-    // Guard: si no queda remanente para Promesa/Cuotas/Escritura, no actualizar nada
-    if (remanente <= 0) {
-      return;
-    }
-    const oldSum = fpPromesaPct + fpCuotasPct + fpEscrituraPct;
-    if (oldSum <= 0) { setFpPromesaPct(remanente); setFpCreditoPct(safeCreditoPct); return; }
-    const newP = r2l(remanente * fpPromesaPct / oldSum);
-    const newC = r2l(remanente * fpCuotasPct / oldSum);
-    const newE = r2l(remanente - newP - newC);
-    setFpPromesaPct(newP);
-    setFpCuotasPct(newC);
-    setFpEscrituraPct(newE);
-    setFpCreditoPct(safeCreditoPct);
-  };
-
-  // Al activar/desactivar el bono: redistribuir Promesa/Cuotas/Escritura sobre el remanente.
-  // Sólo se dispara cuando el usuario togglea el bono (bonoJustToggled), no al cargar planes.
-  useEffect(() => {
-    if (!bonoJustToggled.current) return;
-    bonoJustToggled.current = false;
-    const r2 = (v: number) => Math.round(v * 100) / 100;
-    const totalPie = fpPromesaPct + fpCuotasPct + fpEscrituraPct;
-    if (totalPie <= 0) return;
-    const csPct = compraSeguraPctOnTotal(); // 0 si bono desactivado
-    const remanente = 100 - fpCreditoPct - csPct;
-    // Guard: si activar el bono deja sin remanente, revertir el bono y avisar
-    if (remanente <= 0) {
-      if (hasBono) {
-        showToast?.('El financiamiento no puede superar el remanente disponible', 'error');
-        setHasBono(false);
-        setFormData(prev => ({ ...prev, aplicaBonoPie: false }));
-      }
-      return;
-    }
-    const newP = r2(remanente * fpPromesaPct / totalPie);
-    const newC = r2(remanente * fpCuotasPct / totalPie);
-    const newE = r2(remanente - newP - newC);
-    setFpPromesaPct(newP);
-    setFpCuotasPct(newC);
-    setFpEscrituraPct(newE);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasBono, bonoPct, totalPrecioVentaNuevo]);
+  // Bloque E: Crédito Banco es un input fijo del usuario — ya no es pivote de redistribución.
+  // Al togglear el bono ya NO se redistribuye: Compra Segura entra fija por config y
+  // Cuotas+Escritura absorben el remanente automáticamente vía calcFormaPagoFija.
 
   // Sincronizar formData cuando cambian datos clave de la unidad (Fix A).
   // Bloque C: se salta el primer render (el init lazy ya normalizó el cronograma; volver
@@ -797,10 +753,11 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
             setLinkedDiscounts(prev => Object.fromEntries(Object.keys(prev).map(k => [k, 0])));
             setLinkedDiscountInputs(prev => Object.fromEntries(Object.keys(prev).map(k => [k, '0'])));
             setDiscountInput('0');
-            setFpPromesaPct(10);
+            setFpPromesaPct(PROMESA_PCT_MIN);
             setFpCuotasPct(20);
             setFpEscrituraPct(10);
             setFpCreditoPct(80);
+            setPromesaError(null);
         } else {
             setFormData(prev => ({ ...prev, ...extraUpdates, estado: value }));
         }
@@ -996,12 +953,23 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     const planCuotasN = paymentPlans.find(p => p.id === selectedPlanId)?.cuotasN ?? 0;
     const cuotasN = planCuotasN > 0 ? planCuotasN : cantidadCuotasPie;
 
-    // Calcular montos en UF (4 decimales para precisión)
+    // Bloque E: montos vía la MISMA función que el display (calcFormaPagoFija), sin duplicar lógica.
     const round4 = (n: number) => Math.round(n * 10000) / 10000;
-    const ufPromesa     = round4(precioVentaFinal * fpPromesaPct / 100);
-    const ufCuotaUnit   = cuotasN > 0 ? round4(round4(precioVentaFinal * fpCuotasPct / 100) / cuotasN) : 0;
-    const ufEscritura   = round4(precioVentaFinal * fpEscrituraPct / 100);
-    const ufCredito     = round4(precioVentaFinal * fpCreditoPct / 100);
+    const formaPlan = calcFormaPagoFija({
+      precioVenta: precioVentaFinal,
+      precioConDescuentoDepto: bonoCalcDepto.precioConDescuento,
+      aplicaBono: hasBono,
+      bonoPct,
+      creditoPct: fpCreditoPct,
+      cuotasPct: fpCuotasPct,
+      escrituraPct: fpEscrituraPct,
+      numCuotas: cuotasN,
+      promesaPct: fpPromesaPct,
+    });
+    const ufPromesa     = round4(formaPlan.promesaUF);
+    const ufCuotaUnit   = cuotasN > 0 ? round4(formaPlan.cuotasUF / cuotasN) : 0;
+    const ufEscritura   = round4(formaPlan.escrituraUF);
+    const ufCredito     = round4(formaPlan.creditoUF);
 
 
     const today = new Date();
@@ -1030,7 +998,9 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     // 3. Escritura y Crédito — día 1 del mes siguiente a la última cuota
     const fechaFinal = new Date(today.getFullYear(), today.getMonth() + monthCursor, 1).toISOString().split('T')[0];
 
-    if (fpEscrituraPct > 0 && ufEscritura > 0) {
+    // Bloque E: Escritura es el plug. Se guarda según el MONTO calculado (no el peso), para que
+    // el remanente nunca se pierda del plan aunque el peso de Escritura sea 0 (p.ej. ambos pesos 0).
+    if (ufEscritura > 0) {
       nuevasCuotas.push({ uid: crypto.randomUUID(), id: 'Escritura', date: fechaFinal, amount: ufEscritura.toFixed(4), status: 'Pendiente' });
     }
     if (fpCreditoPct > 0 && ufCredito > 0) {
@@ -1059,7 +1029,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
 
   const precioBaseForma = totalPrecioVentaNuevo > 0 ? totalPrecioVentaNuevo : (unit.precioLista || 0);
 
-  const formaDisplay = useMemo(() => calcFormaPago({
+  const formaDisplay = useMemo(() => calcFormaPagoFija({
     precioVenta: precioBaseForma,
     precioConDescuentoDepto: bonoCalcDepto.precioConDescuento,
     aplicaBono: hasBono,
@@ -1075,21 +1045,18 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   const ufCuotaUnitDisplay    = formaDisplay.cuotaIndividualUF;
   const ufEscrituraDisplay    = formaDisplay.escrituraUF;
   const ufCreditoDisplay      = formaDisplay.creditoUF;
-  const ufCompraSeguraDisplay = formaDisplay.compraSeguaUF;
-  const compraSeguaPctDisplay = formaDisplay.compraSeguaPct;
+  const ufCompraSeguraDisplay = formaDisplay.compraSeguraUF;
+  const compraSeguaPctDisplay = formaDisplay.compraSeguraPct;
   const totalFormaDisplay     = formaDisplay.totalUF;
-  const promesaPctDisplay     = formaDisplay.promesaPctMostrado;
-  const cuotasPctDisplay      = formaDisplay.cuotasPctMostrado;
-  const escrituraPctDisplay   = formaDisplay.escrituraPctMostrado;
-  const creditoPctDisplay     = formaDisplay.creditoPctMostrado;
+  const promesaPctDisplay     = formaDisplay.promesaPct;
+  const cuotasPctDisplay      = formaDisplay.cuotasPct;
+  const escrituraPctDisplay   = formaDisplay.escrituraPct;
+  const creditoPctDisplay     = formaDisplay.creditoPct;
 
   const r2pct = (v: number) => Math.round(v * 100) / 100;
-  // Totalizador:
-  //  - Con bono: suma de los % mostrados (reales sobre el total, incluida Compra Segura)
-  //  - Sin bono: suma de los % raw ingresados
-  const totalPctRaw = hasBono
-    ? r2pct(promesaPctDisplay + cuotasPctDisplay + escrituraPctDisplay + formaDisplay.compraSeguaPctMostrado + creditoPctDisplay)
-    : r2pct(fpPromesaPct + fpCuotasPct + fpEscrituraPct + fpCreditoPct);
+  // Bloque E: los % reales (sobre el precio de venta) siempre suman 100 cuando hay remanente.
+  // Los fp*Pct crudos son ahora pesos (no suman 100), así que el totalizador usa los % reales.
+  const totalPctRaw = r2pct(promesaPctDisplay + cuotasPctDisplay + escrituraPctDisplay + compraSeguaPctDisplay + creditoPctDisplay);
 
   const isDelayed = (dueStr: string, realStr?: string) => {
       if (!dueStr || !realStr) return false;
@@ -2064,7 +2031,6 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                     <div className="flex gap-1">
                       <button
                         onClick={() => {
-                          bonoJustToggled.current = true;
                           setHasBono(true);
                           setFormData(prev => ({ ...prev, aplicaBonoPie: true }));
                           const allTrue: Record<string, boolean> = {};
@@ -2075,7 +2041,6 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                       >Todos</button>
                       <button
                         onClick={() => {
-                          bonoJustToggled.current = true;
                           setHasBono(false);
                           setFormData(prev => ({ ...prev, aplicaBonoPie: false }));
                           const allFalse: Record<string, boolean> = {};
@@ -2093,7 +2058,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                   <div className="flex items-center gap-2">
                     <input type="checkbox" checked={hasBono}
                       disabled={!canEditFinanciero || currentUser.role === 'Ventas' || !hasClient}
-                      onChange={e => { bonoJustToggled.current = true; setHasBono(e.target.checked); setFormData(prev => ({ ...prev, aplicaBonoPie: e.target.checked })); }}
+                      onChange={e => { setHasBono(e.target.checked); setFormData(prev => ({ ...prev, aplicaBonoPie: e.target.checked })); }}
                       className="w-3.5 h-3.5 accent-blue-600 disabled:opacity-50 shrink-0"
                     />
                     <span className="text-xs text-gray-700 font-medium">
@@ -2164,13 +2129,15 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                       <div className="flex items-center gap-2">
                         <span className="w-32 shrink-0 text-gray-600">Promesa</span>
                         <PercentInput value={fpPromesaPct}
-                          onChange={setFpPromesaPct}
-                          disabled={!canEditFinanciero || hasBono}
-                          className="w-14 p-1.5 border border-gray-200 rounded text-xs font-mono text-right outline-none disabled:opacity-50 disabled:bg-gray-100 disabled:cursor-not-allowed" />
+                          onChange={handlePromesaChange}
+                          disabled={!canEditFinanciero}
+                          className={`w-14 p-1.5 border rounded text-xs font-mono text-right outline-none disabled:opacity-50 disabled:bg-gray-100 disabled:cursor-not-allowed ${promesaError ? 'border-red-300 bg-red-50' : 'border-gray-200'}`} />
                         <span className="text-gray-400">%</span>
-                        {hasBono && <span className="text-sm font-mono text-amber-800 bg-amber-200 border border-amber-400 px-2 py-0.5 rounded whitespace-nowrap">→ {promesaPctDisplay.toFixed(2)}%</span>}
                         <span className="ml-auto font-mono font-bold text-gray-700 shrink-0">{formatValueStandard(ufPromesaDisplay)} UF</span>
                       </div>
+                      {promesaError && (
+                        <div><span className="text-[11px] text-red-600 font-medium">{promesaError}</span></div>
+                      )}
                       {ufHoy && ufPromesaDisplay > 0 && (
                         <div className="text-right text-[10px] text-gray-400 font-mono -mt-1">
                           {(ufPromesaDisplay * ufHoy).toLocaleString('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 })}
@@ -2180,10 +2147,11 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                         <span className="w-32 shrink-0 text-gray-600">Cuotas ({cantidadCuotasPie}x)</span>
                         <PercentInput value={fpCuotasPct}
                           onChange={setFpCuotasPct}
-                          disabled={!canEditFinanciero || hasBono}
+                          disabled={!canEditFinanciero}
                           className="w-14 p-1.5 border border-gray-200 rounded text-xs font-mono text-right outline-none disabled:opacity-50 disabled:bg-gray-100 disabled:cursor-not-allowed" />
                         <span className="text-gray-400">%</span>
-                        {hasBono && <span className="text-sm font-mono text-amber-800 bg-amber-200 border border-amber-400 px-2 py-0.5 rounded whitespace-nowrap">→ {cuotasPctDisplay.toFixed(2)}%</span>}
+                        {/* Bloque E: Cuotas es remanente calculado siempre → badge visible siempre */}
+                        <span className="text-sm font-mono text-amber-800 bg-amber-200 border border-amber-400 px-2 py-0.5 rounded whitespace-nowrap">→ {cuotasPctDisplay.toFixed(2)}%</span>
                         <span className="ml-auto font-mono font-bold text-gray-700 shrink-0">{formatValueStandard(ufCuotasDisplay)} UF</span>
                       </div>
                       {cantidadCuotasPie > 0 && ufCuotaUnitDisplay > 0 && (
@@ -2196,10 +2164,11 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                         <span className="w-32 shrink-0 text-gray-600">Escritura</span>
                         <PercentInput value={fpEscrituraPct}
                           onChange={setFpEscrituraPct}
-                          disabled={!canEditFinanciero || hasBono}
+                          disabled={!canEditFinanciero}
                           className="w-14 p-1.5 border border-gray-200 rounded text-xs font-mono text-right outline-none disabled:opacity-50 disabled:bg-gray-100 disabled:cursor-not-allowed" />
                         <span className="text-gray-400">%</span>
-                        {hasBono && <span className="text-sm font-mono text-amber-800 bg-amber-200 border border-amber-400 px-2 py-0.5 rounded whitespace-nowrap">→ {escrituraPctDisplay.toFixed(2)}%</span>}
+                        {/* Bloque E: Escritura es remanente calculado siempre → badge visible siempre */}
+                        <span className="text-sm font-mono text-amber-800 bg-amber-200 border border-amber-400 px-2 py-0.5 rounded whitespace-nowrap">→ {escrituraPctDisplay.toFixed(2)}%</span>
                         <span className="ml-auto font-mono font-bold text-gray-700 shrink-0">{formatValueStandard(ufEscrituraDisplay)} UF</span>
                       </div>
                       {hasBono && (
@@ -2217,7 +2186,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                         <span className={`w-32 shrink-0 font-bold ${fpCreditoPct <= 0 ? 'text-gray-500' : 'text-blue-700'}`}>Crédito Banco</span>
                         <PercentInput
                           value={fpCreditoPct}
-                          onChange={handleCreditoPivot}
+                          onChange={setFpCreditoPct}
                           disabled={!canEditFinanciero}
                           max={hasBono ? r2pct(100 - compraSeguraPctOnTotal() - 0.01) : 99.99}
                           className={`w-14 p-1.5 border rounded text-xs font-mono text-right font-bold outline-none disabled:opacity-60 ${fpCreditoPct <= 0 ? 'bg-gray-50 border-gray-200 text-gray-500' : 'bg-blue-50 border-blue-200 text-blue-700'}`}
