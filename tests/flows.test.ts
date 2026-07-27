@@ -224,6 +224,23 @@ describe('Seguridad — IDOR y roles', () => {
     expect(cfg.body.nombreInmobiliaria).toBe('Sync Test SA');
   });
 
+  // Config: horas para aprobar la reserva — default 72, editable por Admin desde la config del proyecto.
+  it('config horasSolicitudAprobacionReserva: default 72 y editable vía POST /api/projects/:id/config', async () => {
+    const projectId = 'p-horas-cfg';
+    await request(app).post('/api/sync').set(auth(adminToken)).send({
+      key: `project_config_${projectId}`,
+      value: { reservaCLP: 0, discountConfig: { jefeMaxPct: 3, supervisorMaxPct: 8, vigenciaCotizacionDias: 7 } },
+    });
+    const cfg1 = await request(app).get(`/api/projects/${projectId}/config`).set(auth(adminToken));
+    expect(cfg1.status).toBe(200);
+    expect(cfg1.body.horasSolicitudAprobacionReserva).toBe(72); // default
+    const upd = await request(app).post(`/api/projects/${projectId}/config`).set(auth(adminToken))
+      .send({ horasSolicitudAprobacionReserva: 48 });
+    expect(upd.status).toBe(200);
+    const cfg2 = await request(app).get(`/api/projects/${projectId}/config`).set(auth(adminToken));
+    expect(cfg2.body.horasSolicitudAprobacionReserva).toBe(48);
+  });
+
   // P4.3: POST /api/sync ahora es Admin-only.
   it('POST /api/sync es Admin-only (un Ventas recibe 403)', async () => {
     const ventas = await login('vendedor@danacorp.cl', 'vendedor123');
