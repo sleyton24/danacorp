@@ -70,6 +70,7 @@ export interface User {
   role: 'Admin' | 'Supervisor' | 'Ventas' | 'Lectura' | 'JefeSala';
   avatar?: string;
   assignedProjectIds?: string[];
+  passwordTemporal?: boolean;
 }
 
 export interface AuditLogEntry {
@@ -216,6 +217,7 @@ export interface ProjectConfig {
   cantidadCuotasPie?: number;
   duracionReservaDias?: number;
   maxCuotas?: number;
+  horasSolicitudAprobacionReserva?: number; // plazo (h) para aprobar la solicitud de reserva; default 72
 }
 
 export interface DiscountRequestRecord {
