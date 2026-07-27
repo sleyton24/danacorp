@@ -122,6 +122,10 @@ export const UnitList: React.FC<UnitListProps> = ({ units, clients, currentUser,
                   <span className="font-bold">{unit.banos || 0}B</span>
                   <span className="text-gray-300">|</span>
                   <span>{unit.superficie || 0} m²</span>
+                  {unit.terraza ? (<>
+                    <span className="text-gray-300">|</span>
+                    <span>{unit.terraza} m² terraza</span>
+                  </>) : null}
               </div>
           );
       }
@@ -307,6 +311,7 @@ export const UnitList: React.FC<UnitListProps> = ({ units, clients, currentUser,
                                 <div className="flex gap-2">
                                     <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${getStatusColor(effectiveStatus)}`}>{effectiveStatus}</span>
                                     {unit.type !== 'Estacionamiento' && unit.superficie && <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-gray-50 dark:bg-gray-700 text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-600"><Ruler className="w-3 h-3" /> {unit.superficie} m²</span>}
+                                    {unit.terraza ? <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-gray-50 dark:bg-gray-700 text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-600"><Ruler className="w-3 h-3" /> {unit.terraza} m² terraza</span> : null}
                                 </div>
                             </div>
                         </div>

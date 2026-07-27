@@ -45,6 +45,7 @@ export const DownloadsView: React.FC<DownloadsViewProps> = ({ units, clients, pr
         'Dormitorios': unit.dormitorios || '-',
         'Baños': unit.banos || '-',
         'Superficie (m2)': unit.superficie || '-',
+        'Terraza (m2)': unit.terraza || '-',
         'Atributos / Atributo': unit.observaciones || '-',
         
         'Precio de Lista (UF)': unit.precioLista,

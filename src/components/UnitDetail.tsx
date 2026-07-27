@@ -1343,10 +1343,14 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
           {/* Ficha Técnica */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
             <h3 className="text-xs font-bold text-gray-400 mb-6 flex items-center gap-2 uppercase tracking-widest"><Info className="w-4 h-4" /> Especificaciones Técnicas</h3>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-6">
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-6">
                 <div className="bg-gray-50 p-3 rounded-xl border border-gray-100">
                     <label className="text-[10px] text-gray-400 font-black block mb-1">SUPERFICIE</label>
                     <div className="flex items-center gap-2 font-bold text-gray-800"><Ruler className="w-4 h-4 text-blue-500"/> {formData.superficie || '-'} m²</div>
+                </div>
+                <div className="bg-gray-50 p-3 rounded-xl border border-gray-100">
+                    <label className="text-[10px] text-gray-400 font-black block mb-1">TERRAZA</label>
+                    <div className="flex items-center gap-2 font-bold text-gray-800"><Ruler className="w-4 h-4 text-blue-500"/> {formData.terraza || '-'} m²</div>
                 </div>
                 <div className="bg-gray-50 p-3 rounded-xl border border-gray-100">
                     <label className="text-[10px] text-gray-400 font-black block mb-1">ORIENTACIÓN</label>

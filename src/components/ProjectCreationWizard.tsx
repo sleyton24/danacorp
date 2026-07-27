@@ -16,7 +16,7 @@ interface ValidationError {
 }
 
 const REQUIRED_HEADERS = [
-  'Numero de Unidad', 'Tipo', 'Precio Lista (UF)', 'Superficie (m2)', 'Piso', 'Orientación', 'Dormitorios', 'Baños', 
+  'Numero de Unidad', 'Tipo', 'Precio Lista (UF)', 'Superficie (m2)', 'Terraza (m2)', 'Piso', 'Orientación', 'Dormitorios', 'Baños',
   'Est. 1', 'Est. 2', 'Est. 3', 'Est. 4', 'Bodega 1', 'Bodega 2', 'Atributo'
 ];
 
@@ -38,10 +38,10 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ on
   const handleDownloadTemplate = () => {
     const ws = XLSX.utils.aoa_to_sheet([
       REQUIRED_HEADERS,
-      ['204', 'Departamento', 4565, 65.5, 2, 'Norte', 2, 2, 'E-12', 'E-13', '', '', 'B-233', '', 'Vista despejada'], 
-      ['E-12', 'Estacionamiento', 350, '', -1, '', '', '', '', '', '', '', '', '', 'Single'],
-      ['E-13', 'Estacionamiento', 350, '', -1, '', '', '', '', '', '', '', '', '', 'Tandem'],
-      ['B-233', 'Bodega', 80, 5.2, -1, '', '', '', '', '', '', '', '', '', 'Cerca de ascensor'],
+      ['204', 'Departamento', 4565, 65.5, 12.3, 2, 'Norte', 2, 2, 'E-12', 'E-13', '', '', 'B-233', '', 'Vista despejada'],
+      ['E-12', 'Estacionamiento', 350, '', '', -1, '', '', '', '', '', '', '', '', '', 'Single'],
+      ['E-13', 'Estacionamiento', 350, '', '', -1, '', '', '', '', '', '', '', '', '', 'Tandem'],
+      ['B-233', 'Bodega', 80, 5.2, '', -1, '', '', '', '', '', '', '', '', '', 'Cerca de ascensor'],
     ]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Plantilla Carga");
@@ -114,6 +114,18 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ on
          }
       }
 
+      let terraza = row['Terraza (m2)'] || row['Terraza'];
+      if (terraza) {
+         if (typeof terraza === 'string') {
+            const cleanTerr = terraza.replace(',', '.');
+            if(!isNaN(parseFloat(cleanTerr))) {
+                terraza = parseFloat(cleanTerr);
+            } else {
+                errors.push({ row: rowIndex, col: 'Terraza', message: 'Debe ser numérico' });
+            }
+         }
+      }
+
       ['Piso', 'Dormitorios', 'Baños'].forEach(field => {
         if (row[field] && isNaN(parseInt(row[field]))) {
             errors.push({ row: rowIndex, col: field, message: 'Debe ser número entero' });
@@ -138,6 +150,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ on
         precioVenta: typeof precio === 'number' ? precio : 0,
         
         superficie: typeof superficie === 'number' ? superficie : undefined,
+        terraza: typeof terraza === 'number' ? terraza : undefined,
         piso: row['Piso'] ? parseInt(row['Piso']) : undefined,
         orientacion: row['Orientación'] || undefined,
         dormitorios: row['Dormitorios'] ? parseInt(row['Dormitorios']) : undefined,
@@ -365,7 +378,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ on
                             <thead className="bg-gray-50 border-b border-gray-100 sticky top-0 z-10">
                                 <tr>
                                     <th className="px-4 py-3 w-16 text-gray-600 font-semibold">#</th>
-                                    {['Unidad', 'Tipo', 'Precio (UF)', 'Superficie', 'Atributo'].map((h, i) => (
+                                    {['Unidad', 'Tipo', 'Precio (UF)', 'Superficie', 'Terraza', 'Atributo'].map((h, i) => (
                                         <th key={i} className="px-4 py-3 text-gray-600 font-semibold">{h}</th>
                                     ))}
                                 </tr>
@@ -378,6 +391,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ on
                                         <td className="px-4 py-2 text-gray-600">{row.type}</td>
                                         <td className="px-4 py-2 font-mono text-blue-600">{row.precioLista}</td>
                                         <td className="px-4 py-2 text-gray-600 font-medium">{row.superficie ? `${row.superficie} m²` : '-'}</td>
+                                        <td className="px-4 py-2 text-gray-600 font-medium">{row.terraza ? `${row.terraza} m²` : '-'}</td>
                                         <td className="px-4 py-2">
                                             <span className="text-[10px] bg-blue-50 text-blue-700 px-2 py-0.5 rounded font-black uppercase tracking-tight">
                                                 {row.observaciones || '-'}
