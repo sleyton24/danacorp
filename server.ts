@@ -61,6 +61,17 @@ const loginLimiter = rateLimit({
   message: { error: 'Demasiados intentos de login. Intenta más tarde.' },
 });
 
+// Rate limit propio para el cambio de clave: NO reusar loginLimiter — comparten IP y los
+// intentos fallidos de cambio consumirían la cuota de login, dejando al usuario afuera
+// justo cuando está bloqueado en la pantalla forzada. Cuota más holgada, mensaje propio.
+const passwordChangeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiados intentos de cambio de clave. Intenta más tarde.' },
+});
+
 // ── Base de datos ─────────────────────────────────────────────────────────────
 // El esquema vive en scripts/schema.sql y se aplica con `npm run migrate` (o ensureSchema).
 // db, withTx, ping y pool se importan desde ./db (adaptador PostgreSQL).
@@ -674,13 +685,37 @@ async function fetchUFExterno(): Promise<{ valor: number; fecha: string } | null
 }
 
 // ── Usuarios (en tabla `users`, con hash bcrypt; seed en scripts/seed-users.ts) ─
-type AppUser = { id: string; name: string; email: string; role: string; company: string; assignedProjectIds: string[] };
+type AppUser = { id: string; name: string; email: string; role: string; company: string; assignedProjectIds: string[]; passwordTemporal: boolean };
+
+// Roles válidos del sistema (fuente autoritativa para validar la creación de usuarios).
+const ROLES_VALIDOS = ['Admin', 'Supervisor', 'Ventas', 'Lectura', 'JefeSala'] as const;
+
+// Genera la clave provisoria sugerida a partir del nombre: primer nombre normalizado
+// (sin diacríticos ni caracteres no alfabéticos) + '12345'. Pura y exportada para testear.
+// Si el primer nombre queda con menos de 2 letras, cae al prefijo del email.
+export function sugerirPasswordProvisoria(nombreCompleto: string, email: string): string {
+  const primerNombre = (nombreCompleto || '')
+    .trim()
+    .split(/\s+/)[0]
+    .normalize('NFD')
+    .replace(/\p{Mn}/gu, '')           // quita diacríticos (U+0300–U+036F); ñ → n, á → a
+    .replace(/[^a-zA-Z]/g, '')         // quita guiones, puntos, dígitos
+    .toLowerCase();
+  const base = primerNombre.length >= 2
+    ? primerNombre
+    : (email.split('@')[0] || 'usuario')
+        .normalize('NFD')
+        .replace(/\p{Mn}/gu, '')
+        .replace(/[^a-zA-Z0-9]/g, '')
+        .toLowerCase();
+  return `${base}12345`;
+}
 
 // Busca un usuario por id en la BD (reemplaza el viejo USERS.find). assigned_project_ids
 // es JSONB y pg lo devuelve ya parseado como array.
 async function getUserById(id: string): Promise<AppUser | undefined> {
   const r = await db.prepare(
-    'SELECT id, name, email, role, company, assigned_project_ids FROM users WHERE id = ?'
+    'SELECT id, name, email, role, company, assigned_project_ids, password_temporal FROM users WHERE id = ?'
   ).get(id) as Record<string, unknown> | undefined;
   if (!r) return undefined;
   return {
@@ -690,6 +725,7 @@ async function getUserById(id: string): Promise<AppUser | undefined> {
     role: r.role as string,
     company: (r.company as string) ?? '',
     assignedProjectIds: (r.assigned_project_ids as string[]) ?? [],
+    passwordTemporal: r.password_temporal === true,
   };
 }
 
@@ -840,13 +876,15 @@ app.post('/api/ai/extract-transaction', requireAuth, async (req, res) => {
 app.post('/api/auth/login', loginLimiter, async (req, res) => {
   const { email, password } = req.body as { email: string; password: string };
   const row = await db.prepare(
-    'SELECT id, name, email, role, company, assigned_project_ids, password_hash, activo FROM users WHERE email = ?'
+    'SELECT id, name, email, role, company, assigned_project_ids, password_hash, activo, password_temporal FROM users WHERE email = ?'
   ).get(email) as Record<string, unknown> | undefined;
   if (!row || !(await bcrypt.compare(password || '', row.password_hash as string))) {
     res.status(401).json({ error: 'Credenciales incorrectas' });
     return;
   }
   // 4.1: cuenta desactivada → mismo error genérico (no revelar que la cuenta existe).
+  // Orden intacto: bcrypt primero, luego activo. La clave temporal SÍ permite login exitoso;
+  // el bloqueo (pantalla de cambio forzado) es posterior, en el frontend.
   if (row.activo === false) {
     res.status(401).json({ error: 'Credenciales incorrectas' });
     return;
@@ -858,6 +896,7 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
     role: row.role as string,
     company: (row.company as string) ?? '',
     assignedProjectIds: (row.assigned_project_ids as string[]) ?? [],
+    passwordTemporal: row.password_temporal === true,
   };
   const token = jwt.sign({ userId: user.id, role: user.role }, JWT_SECRET, { expiresIn: '8h', algorithm: 'HS256' });
   createAuditLog(user.id, user.name, user.role, 'Login', 'Auth', user.id, `Login exitoso desde ${req.ip || 'IP desconocida'}`);
@@ -879,7 +918,7 @@ app.get('/api/me', requireAuth, async (req, res) => {
 // Lista de usuarios reales (para selectores como el de Ejecutivo). Requiere JWT.
 app.get('/api/users', requireAuth, async (_req, res) => {
   const rows = await db.prepare(
-    'SELECT id, name, email, role, company, assigned_project_ids FROM users ORDER BY name'
+    'SELECT id, name, email, role, company, assigned_project_ids, password_temporal FROM users ORDER BY name'
   ).all() as Record<string, unknown>[];
   res.json(rows.map(r => ({
     id: r.id as string,
@@ -888,7 +927,139 @@ app.get('/api/users', requireAuth, async (_req, res) => {
     role: r.role as string,
     company: (r.company as string) ?? '',
     assignedProjectIds: (r.assigned_project_ids as string[]) ?? [],
+    passwordTemporal: r.password_temporal === true,
   })));
+});
+
+// ── 3c. POST /api/users — crear usuario (Admin) con clave provisoria ──────────
+// El servidor determina la clave (sugerirPasswordProvisoria) y nace con
+// password_temporal=true. Nunca acepta password/password_hash/password_temporal del cliente.
+app.post('/api/users', requireAuth, requireRole('Admin'), async (req, res) => {
+  const body = req.body as Record<string, unknown>;
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+  const company = typeof body.company === 'string' ? body.company.trim() : '';
+  const role = typeof body.role === 'string' ? body.role : '';
+
+  if (!name) { res.status(400).json({ error: 'El nombre es obligatorio' }); return; }
+  if (!email) { res.status(400).json({ error: 'El correo es obligatorio' }); return; }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    res.status(400).json({ error: 'El correo no tiene un formato válido' }); return;
+  }
+  if (!(ROLES_VALIDOS as readonly string[]).includes(role)) {
+    res.status(400).json({ error: 'Rol inválido' }); return;
+  }
+
+  // assignedProjectIds: arreglo de strings, default [].
+  let assigned: string[] = [];
+  if (body.assignedProjectIds !== undefined) {
+    if (!Array.isArray(body.assignedProjectIds) || !body.assignedProjectIds.every(x => typeof x === 'string')) {
+      res.status(400).json({ error: 'assignedProjectIds debe ser un arreglo de strings' }); return;
+    }
+    assigned = body.assignedProjectIds as string[];
+  }
+  // Regla autoritativa: Admin y Supervisor ven/operan TODOS los proyectos → nunca se
+  // restringen por assigned_project_ids. Para JefeSala/Ventas/Lectura, [] es "sin acceso".
+  if (role === 'Admin' || role === 'Supervisor') assigned = [];
+
+  // Email duplicado → 409. Verificación explícita (la columna es UNIQUE de todos modos).
+  const dup = await db.prepare('SELECT id FROM users WHERE email = ?').get(email) as { id: string } | undefined;
+  if (dup) { res.status(409).json({ error: 'Ya existe un usuario con ese correo' }); return; }
+
+  const plain = sugerirPasswordProvisoria(name, email);
+  const hash = await bcrypt.hash(plain, 10);
+  const id = crypto.randomUUID();
+  await db.prepare(`
+    INSERT INTO users (id, name, email, password_hash, role, company, assigned_project_ids, activo, password_temporal)
+    VALUES (?, ?, ?, ?, ?, ?, ?, true, true)
+  `).run(id, name, email, hash, role, company, JSON.stringify(assigned));
+
+  const actorId = (req as AuthenticatedRequest).userId;
+  const actor = await getUserById(actorId);
+  // Fire-and-forget; jamás la clave en claro en el description.
+  createAuditLog(actorId, actor?.name ?? 'Admin', (req as AuthenticatedRequest).userRole,
+    'Crear usuario', 'User', id, `Creó al usuario ${name} <${email}> con rol ${role}`, req.ip);
+
+  const user: AppUser = { id, name, email, role, company, assignedProjectIds: assigned, passwordTemporal: true };
+  res.status(201).json({ user, passwordProvisoria: plain }); // única vez que la clave en claro sale del servidor
+});
+
+// ── 3d. POST /api/users/:id/reset-password — regenerar clave provisoria (Admin) ─
+// Recalcula la clave sugerida a partir del name/email actuales y vuelve a marcar
+// password_temporal=true. Un Admin puede resetear su propia clave (caerá en la pantalla forzada).
+app.post('/api/users/:id/reset-password', requireAuth, requireRole('Admin'), async (req, res) => {
+  const targetId = req.params.id;
+  const target = await db.prepare('SELECT id, name, email, role FROM users WHERE id = ?').get(targetId) as Record<string, unknown> | undefined;
+  if (!target) { res.status(404).json({ error: 'Usuario no encontrado' }); return; }
+
+  const plain = sugerirPasswordProvisoria(target.name as string, target.email as string);
+  const hash = await bcrypt.hash(plain, 10);
+  await db.prepare('UPDATE users SET password_hash = ?, password_temporal = true, updated_at = now() WHERE id = ?').run(hash, targetId);
+
+  const actorId = (req as AuthenticatedRequest).userId;
+  const actor = await getUserById(actorId);
+  createAuditLog(actorId, actor?.name ?? 'Admin', (req as AuthenticatedRequest).userRole,
+    'Reset de contraseña', 'User', targetId, `Regeneró la clave provisoria de ${target.name as string} <${target.email as string}>`, req.ip);
+
+  res.json({ passwordProvisoria: plain });
+});
+
+// ── 3d-bis. GET /api/users/:id/provisional-password — ver la clave vigente (Admin) ─
+// Solo posible mientras el usuario no cambió su clave (en BD solo hay hash bcrypt, irreversible).
+// Recalcula la clave desde el name/email vigentes reusando sugerirPasswordProvisoria — no se
+// duplica la normalización en el frontend para que patrón y hash no se desincronicen.
+app.get('/api/users/:id/provisional-password', requireAuth, requireRole('Admin'), async (req, res) => {
+  const targetId = req.params.id;
+  const target = await db.prepare('SELECT id, name, email, password_temporal FROM users WHERE id = ?').get(targetId) as Record<string, unknown> | undefined;
+  if (!target) { res.status(404).json({ error: 'Usuario no encontrado' }); return; }
+
+  // 409 (estado del recurso, no permisos): el usuario ya definió su propia clave.
+  if (target.password_temporal !== true) {
+    res.status(409).json({ error: 'El usuario ya definió su propia clave; no es recuperable' });
+    return;
+  }
+
+  // NOTA: se recalcula desde el `name` ACTUAL. Hoy es seguro porque no existe PATCH /api/users/:id
+  // (el nombre no cambia tras el reset). Cuando se implemente la edición persistente del nombre,
+  // el hash guardado quedaría atado al nombre viejo y esta clave dejaría de servir: en ese momento
+  // hay que derivar la clave del nombre vigente al reset (o versionar), no del nombre editado.
+  const actorId = (req as AuthenticatedRequest).userId;
+  const actor = await getUserById(actorId);
+  createAuditLog(actorId, actor?.name ?? 'Admin', (req as AuthenticatedRequest).userRole,
+    'Consulta de clave provisoria', 'User', targetId, `Consultó la clave provisoria de ${target.name as string} <${target.email as string}>`, req.ip);
+
+  res.json({ passwordProvisoria: sugerirPasswordProvisoria(target.name as string, target.email as string) });
+});
+
+// ── 3e. POST /api/auth/change-password — el usuario cambia su propia clave ─────
+// requireAuth solamente: cualquier rol cambia SU propia clave. Limiter propio (no login).
+app.post('/api/auth/change-password', passwordChangeLimiter, requireAuth, async (req, res) => {
+  const { passwordActual, passwordNueva } = req.body as { passwordActual?: string; passwordNueva?: string };
+  const userId = (req as AuthenticatedRequest).userId;
+  const row = await db.prepare('SELECT id, name, email, role, password_hash FROM users WHERE id = ?').get(userId) as Record<string, unknown> | undefined;
+  if (!row) { res.status(404).json({ error: 'Usuario no encontrado' }); return; }
+
+  if (!passwordActual || !(await bcrypt.compare(passwordActual, row.password_hash as string))) {
+    res.status(401).json({ error: 'La contraseña actual es incorrecta' }); return;
+  }
+  const nueva = passwordNueva || '';
+  if (nueva.length < 8) {
+    res.status(400).json({ error: 'La nueva contraseña debe tener al menos 8 caracteres' }); return;
+  }
+  if (nueva === passwordActual) {
+    res.status(400).json({ error: 'La nueva contraseña debe ser distinta de la actual' }); return;
+  }
+  // No permitir dejar la clave provisoria sugerida como definitiva.
+  if (nueva === sugerirPasswordProvisoria(row.name as string, row.email as string)) {
+    res.status(400).json({ error: 'La nueva contraseña no puede ser la clave provisoria sugerida' }); return;
+  }
+
+  const hash = await bcrypt.hash(nueva, 10);
+  await db.prepare('UPDATE users SET password_hash = ?, password_temporal = false, updated_at = now() WHERE id = ?').run(hash, userId);
+  createAuditLog(userId, row.name as string, row.role as string,
+    'Cambio de contraseña', 'Auth', userId, 'El usuario cambió su contraseña', req.ip);
+
+  res.json({ ok: true });
 });
 
 // ── 4. Borradores de Cotización ──────────────────────────────────────────────
@@ -1862,6 +2033,7 @@ app.get('/api/projects/:id/config', requireAuth, async (req, res) => {
     cantidadCuotasPie: row.cantidad_cuotas_pie,
     duracionReservaDias: row.dias_duracion_reserva,
     maxCuotas: row.max_cuotas,
+    horasSolicitudAprobacionReserva: row.horas_solicitud_aprobacion_reserva,
   });
 });
 
@@ -1873,6 +2045,10 @@ app.post('/api/projects/:id/config', requireAuth, requireRole('Admin', 'Supervis
   if (body.duracionReservaDias != null) {
     await db.prepare('UPDATE project_configs SET dias_duracion_reserva = ? WHERE project_id = ?')
       .run(body.duracionReservaDias as number, req.params.id);
+  }
+  if (body.horasSolicitudAprobacionReserva != null) {
+    await db.prepare('UPDATE project_configs SET horas_solicitud_aprobacion_reserva = ? WHERE project_id = ?')
+      .run(body.horasSolicitudAprobacionReserva as number, req.params.id);
   }
   res.json({ ok: true });
 });
@@ -2837,6 +3013,10 @@ if (isMain) {
       await db.prepare(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS eliminada INTEGER DEFAULT 0`).run();
       // ── 4.1: flag `activo` en users + desactivar la cuenta muerta lectura@danacorp.cl ──
       await db.prepare(`ALTER TABLE users ADD COLUMN IF NOT EXISTS activo BOOLEAN NOT NULL DEFAULT true`).run();
+      // ── Clave provisoria: flag de cambio forzado en el primer ingreso ──
+      // DEFAULT false cubre las filas existentes (seed incluido): sus claves ya son conocidas
+      // y no deben rotarse. Solo los usuarios creados vía POST /api/users nacen con true.
+      await db.prepare(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_temporal BOOLEAN NOT NULL DEFAULT false`).run();
       {
         // Una sola vez (flag): permite que un Admin reactive la cuenta luego sin que el arranque la vuelva a apagar.
         const done = await db.prepare("SELECT value FROM app_state WHERE key = 'migration_lectura_desactivada'").get() as { value: string } | undefined;

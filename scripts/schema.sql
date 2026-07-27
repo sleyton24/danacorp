@@ -262,6 +262,7 @@ CREATE TABLE IF NOT EXISTS users (
   company TEXT,
   assigned_project_ids JSONB NOT NULL DEFAULT '[]',
   activo BOOLEAN NOT NULL DEFAULT true,
+  password_temporal BOOLEAN NOT NULL DEFAULT false,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );

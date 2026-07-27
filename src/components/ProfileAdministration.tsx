@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { User, Project, ProjectConfig } from '../types';
-import { Plus, Search, Shield, Trash2, Edit2, Check, X, Mail, Briefcase, User as UserIcon, ShieldAlert, CheckSquare, Square, Settings2, AlertCircle, Building } from 'lucide-react';
+import { Plus, Search, Shield, Trash2, Edit2, Check, X, Mail, Briefcase, User as UserIcon, ShieldAlert, CheckSquare, Square, Settings2, AlertCircle, Building, KeyRound, Copy } from 'lucide-react';
 
 interface ProfileAdministrationProps {
   users: User[];
@@ -19,6 +19,7 @@ type ProjectCfg = {
   bonoPiePct: number;
   vigenciaCotizacionDias: number;
   duracionReservaDias: number;
+  horasSolicitudAprobacionReserva: number; // plazo (h) para aprobar la solicitud de reserva
   // SSilva PDF fields
   reservaCLP: number;
   direccionProyecto: string;
@@ -30,6 +31,7 @@ type ProjectCfg = {
 const DEFAULT_CFG: ProjectCfg = {
   jefeMaxPct: 3, supervisorMaxPct: 8, bonoPiePct: 10, vigenciaCotizacionDias: 7,
   duracionReservaDias: 15,
+  horasSolicitudAprobacionReserva: 72,
   reservaCLP: 0, direccionProyecto: '', comunaProyecto: '', ciudadProyecto: '',
   nombreInmobiliaria: '', cantidadCuotasPie: 36,
 };
@@ -59,6 +61,7 @@ const ProjectConfigSection: React.FC<{
               bonoPiePct:              d.bonoPiePct ?? DEFAULT_CFG.bonoPiePct,
               vigenciaCotizacionDias:  d.discountConfig?.vigenciaCotizacionDias ?? DEFAULT_CFG.vigenciaCotizacionDias,
               duracionReservaDias:  d.duracionReservaDias ?? DEFAULT_CFG.duracionReservaDias,
+              horasSolicitudAprobacionReserva: d.horasSolicitudAprobacionReserva ?? DEFAULT_CFG.horasSolicitudAprobacionReserva,
               reservaCLP:              d.reservaCLP ?? DEFAULT_CFG.reservaCLP,
               direccionProyecto:       d.direccionProyecto ?? DEFAULT_CFG.direccionProyecto,
               comunaProyecto:          d.comunaProyecto ?? DEFAULT_CFG.comunaProyecto,
@@ -78,6 +81,7 @@ const ProjectConfigSection: React.FC<{
     if (cfg.supervisorMaxPct < 0 || cfg.supervisorMaxPct > 30) return 'Banda 2 debe estar entre 0 y 30%';
     if (cfg.bonoPiePct < 0 || cfg.bonoPiePct > 99) return '% Bono Pie debe estar entre 0 y 99';
     if (cfg.vigenciaCotizacionDias < 1 || cfg.vigenciaCotizacionDias > 30) return 'Vigencia debe estar entre 1 y 30 días';
+    if (cfg.horasSolicitudAprobacionReserva < 1 || cfg.horasSolicitudAprobacionReserva > 720) return 'Horas para aprobar reserva debe estar entre 1 y 720';
     return '';
   };
 
@@ -107,6 +111,7 @@ const ProjectConfigSection: React.FC<{
       nombreInmobiliaria: cfg.nombreInmobiliaria,
       cantidadCuotasPie: cfg.cantidadCuotasPie,
       duracionReservaDias: cfg.duracionReservaDias,
+      horasSolicitudAprobacionReserva: cfg.horasSolicitudAprobacionReserva,
     };
     try {
       const res = await fetch(`/api/projects/${projectId}/config`, {
@@ -223,6 +228,16 @@ const ProjectConfigSection: React.FC<{
                     </div>
                   </div>
                   <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Horas para aprobar reserva</label>
+                    <div className="flex items-center gap-2">
+                      <input type="number" step="1" min="1" max="720"
+                        value={cfg.horasSolicitudAprobacionReserva}
+                        onChange={e => upd(p.id, 'horasSolicitudAprobacionReserva', Number(e.target.value))}
+                        className="w-24 px-3 py-2 border border-amber-200 rounded-lg text-sm font-mono text-center outline-none focus:ring-2 focus:ring-amber-100" />
+                      <span className="text-sm text-gray-500">horas</span>
+                    </div>
+                  </div>
+                  <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">Cuotas del pie <span className="text-gray-400 text-xs">(cantidad fija)</span></label>
                     <div className="flex items-center gap-2">
                       <input type="number" step="1" min="1" max="120"
@@ -316,6 +331,24 @@ export const ProfileAdministration: React.FC<ProfileAdministrationProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  // Panel copiable con la clave provisoria (creación o regeneración). Única vez que se ve en claro.
+  const [passwordPanel, setPasswordPanel] = useState<{ title: string; userName: string; password: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+  // Clave provisoria vigente mostrada en el modal de edición (solo si passwordTemporal === true).
+  // null = no visible (usuario ya definió su clave, o el GET devolvió 409/falló).
+  const [editProvisional, setEditProvisional] = useState<string | null>(null);
+  const [editProvisionalLoading, setEditProvisionalLoading] = useState(false);
+
+  const copyText = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      showToast?.('No se pudo copiar automáticamente. Copia la clave manualmente.', 'warning');
+    }
+  };
 
   // Form State
   const [formData, setFormData] = useState<{
@@ -343,15 +376,36 @@ export const ProfileAdministration: React.FC<ProfileAdministrationProps> = ({
     }
   }, [editingUser, isModalOpen]);
 
-  const filteredUsers = users.filter(u => 
+  // Al abrir el modal en modo edición: si el usuario aún tiene clave provisoria, consultarla
+  // al backend para mostrarla en claro. El 409/fallo cae a "no visible" (estado esperado, no error).
+  useEffect(() => {
+    if (!isModalOpen || !editingUser || !editingUser.passwordTemporal) {
+      setEditProvisional(null);
+      setEditProvisionalLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setEditProvisional(null);
+    setEditProvisionalLoading(true);
+    const token = localStorage.getItem('dw_token');
+    fetch(`/api/users/${editingUser.id}/provisional-password`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(async r => (r.ok ? ((await r.json()) as { passwordProvisoria: string }).passwordProvisoria : null))
+      .then(p => { if (!cancelled) setEditProvisional(p); })
+      .catch(() => { if (!cancelled) setEditProvisional(null); })
+      .finally(() => { if (!cancelled) setEditProvisionalLoading(false); });
+    return () => { cancelled = true; };
+  }, [editingUser, isModalOpen]);
+
+  const filteredUsers = users.filter(u =>
     u.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
     u.email.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (editingUser) {
+      // Edición fuera de alcance del backend (no existe PATCH /api/users/:id): solo estado local.
       onUpdateUser({
         ...editingUser,
         name: formData.name,
@@ -361,20 +415,69 @@ export const ProfileAdministration: React.FC<ProfileAdministrationProps> = ({
         assignedProjectIds: formData.assignedProjectIds,
       });
       showToast?.('✓ Usuario actualizado');
-    } else {
-      onAddUser({
-        id: crypto.randomUUID(),
-        name: formData.name,
-        email: formData.email,
-        company: formData.company,
-        role: formData.role,
-        avatar: undefined,
-        assignedProjectIds: formData.assignedProjectIds,
-      });
-      showToast?.('✓ Usuario creado correctamente');
+      setIsModalOpen(false);
+      setEditingUser(null);
+      return;
     }
-    setIsModalOpen(false);
-    setEditingUser(null);
+
+    // Creación real contra el backend: el id y la clave los determina el servidor.
+    setSubmitting(true);
+    try {
+      const token = localStorage.getItem('dw_token');
+      const res = await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          name: formData.name,
+          email: formData.email,
+          company: formData.company,
+          role: formData.role,
+          assignedProjectIds: formData.assignedProjectIds,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // No cerrar el modal ni mostrar el toast de éxito: mostrar el error real del backend.
+        showToast?.((body as { error?: string }).error || 'No se pudo crear el usuario', 'error');
+        return;
+      }
+      const { user, passwordProvisoria } = body as { user: User; passwordProvisoria: string };
+      onAddUser(user); // usar el usuario que devuelve el servidor, no uno inventado en el cliente
+      setIsModalOpen(false);
+      setEditingUser(null);
+      setPasswordPanel({ title: 'Usuario creado', userName: user.name, password: passwordProvisoria });
+      showToast?.('✓ Usuario creado correctamente');
+    } catch {
+      showToast?.('Error de conexión al crear el usuario', 'error');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleRegenerate = async (user: User) => {
+    if (!window.confirm(`¿Regenerar la contraseña de ${user.name}? La clave actual dejará de funcionar y el usuario deberá cambiarla en su próximo ingreso.`)) return;
+    try {
+      const token = localStorage.getItem('dw_token');
+      const res = await fetch(`/api/users/${user.id}/reset-password`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast?.((body as { error?: string }).error || 'No se pudo regenerar la contraseña', 'error');
+        return;
+      }
+      const { passwordProvisoria } = body as { passwordProvisoria: string };
+      onUpdateUser({ ...user, passwordTemporal: true }); // reflejar el flag en la lista local
+      // Cerrar el modal de edición antes de abrir el panel: ambos son overlays z-50 y se
+      // superpondrían si el reset se disparó desde dentro de la edición (no-op desde la lista).
+      setIsModalOpen(false);
+      setEditingUser(null);
+      setPasswordPanel({ title: 'Contraseña regenerada', userName: user.name, password: passwordProvisoria });
+      showToast?.('✓ Contraseña regenerada');
+    } catch {
+      showToast?.('Error de conexión al regenerar la contraseña', 'error');
+    }
   };
 
   const toggleProjectAssignment = (projectId: string) => {
@@ -472,6 +575,11 @@ export const ProfileAdministration: React.FC<ProfileAdministrationProps> = ({
                                          <div className="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1">
                                              <Mail className="w-3 h-3" /> {user.email}
                                          </div>
+                                         {user.passwordTemporal && (
+                                             <div className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1 mt-0.5">
+                                                 <KeyRound className="w-3 h-3" /> Clave provisoria pendiente
+                                             </div>
+                                         )}
                                      </div>
                                  </div>
                              </td>
@@ -504,7 +612,7 @@ export const ProfileAdministration: React.FC<ProfileAdministrationProps> = ({
                              </td>
                              <td className="px-6 py-4 text-right">
                                  <div className="flex justify-end gap-2">
-                                     <button 
+                                     <button
                                         onClick={() => {
                                             setEditingUser(user);
                                             setIsModalOpen(true);
@@ -513,6 +621,13 @@ export const ProfileAdministration: React.FC<ProfileAdministrationProps> = ({
                                         title="Editar usuario"
                                      >
                                          <Edit2 className="w-4 h-4" />
+                                     </button>
+                                     <button
+                                        onClick={() => handleRegenerate(user)}
+                                        className="p-2 text-gray-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/30 rounded-lg transition-colors"
+                                        title="Regenerar contraseña"
+                                     >
+                                         <KeyRound className="w-4 h-4" />
                                      </button>
                                      {user.id !== currentUser.id && (
                                          <button
@@ -631,6 +746,12 @@ export const ProfileAdministration: React.FC<ProfileAdministrationProps> = ({
                                  );
                              })}
                          </div>
+                         {(formData.role === 'Ventas' || formData.role === 'JefeSala' || formData.role === 'Lectura') && formData.assignedProjectIds.length === 0 && (
+                             <div className="mt-3 flex gap-2 items-start text-xs text-amber-700 dark:text-amber-300">
+                                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                                 <span>Sin proyectos asignados, este usuario no tendrá acceso a ningún proyecto. Puedes crearlo así y asignarle proyectos después.</span>
+                             </div>
+                         )}
                      </div>
                  )}
 
@@ -643,6 +764,48 @@ export const ProfileAdministration: React.FC<ProfileAdministrationProps> = ({
                      </div>
                  )}
 
+                 {/* Contraseña — solo en edición. Dos estados excluyentes según passwordTemporal. */}
+                 {editingUser && (
+                     <div className="pt-4 border-t border-gray-100 dark:border-gray-700">
+                         <label className="flex items-center gap-2 text-xs font-bold text-gray-500 dark:text-gray-400 uppercase mb-3">
+                             <KeyRound className="w-4 h-4" /> Contraseña
+                         </label>
+                         {editingUser.passwordTemporal ? (
+                             editProvisionalLoading ? (
+                                 <div className="text-sm text-gray-400 italic">Consultando clave provisoria...</div>
+                             ) : editProvisional ? (
+                                 <div className="space-y-2">
+                                     <p className="text-xs text-gray-500 dark:text-gray-400">Clave provisoria vigente (el usuario aún no la cambió):</p>
+                                     <div className="flex items-center gap-2">
+                                         <code className="flex-1 px-4 py-3 bg-gray-100 dark:bg-gray-900 rounded-xl text-base font-mono tracking-wide text-gray-900 dark:text-white select-all break-all">
+                                             {editProvisional}
+                                         </code>
+                                         <button
+                                            type="button"
+                                            onClick={() => copyText(editProvisional)}
+                                            className="p-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors shrink-0"
+                                            title="Copiar al portapapeles"
+                                         >
+                                             {copied ? <Check className="w-5 h-5" /> : <Copy className="w-5 h-5" />}
+                                         </button>
+                                     </div>
+                                 </div>
+                             ) : (
+                                 <p className="text-sm text-gray-500 dark:text-gray-400">Clave definida por el usuario — no es visible por seguridad.</p>
+                             )
+                         ) : (
+                             <p className="text-sm text-gray-500 dark:text-gray-400">Clave definida por el usuario — no es visible por seguridad.</p>
+                         )}
+                         <button
+                            type="button"
+                            onClick={() => handleRegenerate(editingUser)}
+                            className="mt-3 flex items-center gap-2 px-4 py-2 text-sm font-medium text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-colors"
+                         >
+                             <KeyRound className="w-4 h-4" /> Resetear clave
+                         </button>
+                     </div>
+                 )}
+
                  <div className="pt-4 flex gap-3">
                      <button 
                         type="button" 
@@ -651,15 +814,56 @@ export const ProfileAdministration: React.FC<ProfileAdministrationProps> = ({
                      >
                          Cancelar
                      </button>
-                     <button 
-                        type="submit" 
-                        className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2"
+                     <button
+                        type="submit"
+                        disabled={submitting}
+                        className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 disabled:opacity-60 shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2"
                      >
                          <Check className="w-4 h-4" />
-                         {editingUser ? 'Guardar Cambios' : 'Crear Usuario'}
+                         {submitting ? 'Guardando...' : editingUser ? 'Guardar Cambios' : 'Crear Usuario'}
                      </button>
                  </div>
              </form>
+          </div>
+        </div>
+      )}
+
+      {/* Panel copiable con la clave provisoria (creación / regeneración) */}
+      {passwordPanel && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white dark:bg-gray-800 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center gap-2 bg-gray-50 dark:bg-gray-700/50">
+              <KeyRound className="w-5 h-5 text-amber-600" />
+              <h3 className="font-bold text-gray-800 dark:text-white">{passwordPanel.title}</h3>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-sm text-gray-600 dark:text-gray-300">
+                Entrega esta clave provisoria a <span className="font-bold">{passwordPanel.userName}</span>.
+                Deberá cambiarla obligatoriamente en su primer ingreso.
+              </p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 px-4 py-3 bg-gray-100 dark:bg-gray-900 rounded-xl text-lg font-mono tracking-wide text-gray-900 dark:text-white select-all break-all">
+                  {passwordPanel.password}
+                </code>
+                <button
+                  onClick={() => copyText(passwordPanel.password)}
+                  className="p-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors shrink-0"
+                  title="Copiar al portapapeles"
+                >
+                  {copied ? <Check className="w-5 h-5" /> : <Copy className="w-5 h-5" />}
+                </button>
+              </div>
+              <div className="flex gap-2 items-start text-xs text-amber-700 dark:text-amber-300">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>Esta es la única vez que la clave se muestra en texto claro. Cópiala o anótala ahora.</span>
+              </div>
+              <button
+                onClick={() => { setPasswordPanel(null); setCopied(false); }}
+                className="w-full px-4 py-2.5 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-xl font-medium hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+              >
+                Entendido
+              </button>
+            </div>
           </div>
         </div>
       )}

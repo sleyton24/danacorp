@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { Client, RealEstateUnit, Project, User, AuditLogEntry, Notification as AppNotification } from './types';
 import { Sidebar } from './components/Sidebar';
 import { LoginScreen } from './components/LoginScreen';
+import { ForcePasswordChange } from './components/ForcePasswordChange';
 import { ClientList } from './components/ClientList';
 import { UnitList } from './components/UnitList';
 import { UnitDetail } from './components/UnitDetail';
@@ -620,6 +621,18 @@ const App: React.FC = () => {
 
   if (!currentUser) {
     return <LoginScreen onLogin={handleLogin} />;
+  }
+
+  // Clave provisoria: bloquea todo el acceso hasta que el usuario cambie su clave.
+  // Cubre ambos caminos de entrada (login directo y restauración de sesión vía /api/me).
+  if (currentUser.passwordTemporal) {
+    return (
+      <ForcePasswordChange
+        currentUser={currentUser}
+        onChanged={() => setCurrentUser({ ...currentUser, passwordTemporal: false })}
+        onLogout={handleLogout}
+      />
+    );
   }
 
   return (
