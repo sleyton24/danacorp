@@ -119,6 +119,10 @@ export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit,
                   <span className="font-bold">{unit.banos || 0}B</span>
                   <span className="text-gray-300">|</span>
                   <span>{unit.superficie || 0} m²</span>
+                  {unit.terraza ? (<>
+                    <span className="text-gray-300">|</span>
+                    <span>{unit.terraza} m² terraza</span>
+                  </>) : null}
               </div>
           );
       }

@@ -78,8 +78,8 @@ const passwordChangeLimiter = rateLimit({
 
 // ── Helper: upsert unit row ───────────────────────────────────────────────────
 async function upsertUnit(u: Record<string, unknown>, stableId: string, now: string) {
-  await db.prepare(`INSERT INTO units (id, project_id, type, numero, estado, superficie, orientacion, piso, dormitorios, banos, gasto_comun, gastos_operacionales, gastos_notariales, gastos_conservador, bodegas, estacionamientos, cliente_id, asignado_por, fecha_asignacion, precio_lista, precio_venta, pie, pie_forma_pago, pie_cuotas, bono_descuento, reserva_monto, reserva_forma_pago, reserva_cuotas, credito_hipotecario, tasa_financiamiento, total_pagado, saldo_por_pagar, canal_venta, intermediario, banco, notaria, repertorio, fecha_reserva, fecha_promesa, fecha_solicitud_credito, fecha_aprobacion_credito, fecha_escritura, fecha_termino_pago, fecha_alzamiento, fecha_entrega, fecha_pago, factura_numero, factura_fecha, recepcion_municipal_numero, recepcion_municipal_fecha, cbr_fojas, cbr_numero, cbr_ano, plan_pagos, observaciones, documents, descuento_pct, descuento_pendiente, descuento_solicitud_id, aplica_bono_pie, extras, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  await db.prepare(`INSERT INTO units (id, project_id, type, numero, estado, superficie, terraza, orientacion, piso, dormitorios, banos, gasto_comun, gastos_operacionales, gastos_notariales, gastos_conservador, bodegas, estacionamientos, cliente_id, asignado_por, fecha_asignacion, precio_lista, precio_venta, pie, pie_forma_pago, pie_cuotas, bono_descuento, reserva_monto, reserva_forma_pago, reserva_cuotas, credito_hipotecario, tasa_financiamiento, total_pagado, saldo_por_pagar, canal_venta, intermediario, banco, notaria, repertorio, fecha_reserva, fecha_promesa, fecha_solicitud_credito, fecha_aprobacion_credito, fecha_escritura, fecha_termino_pago, fecha_alzamiento, fecha_entrega, fecha_pago, factura_numero, factura_fecha, recepcion_municipal_numero, recepcion_municipal_fecha, cbr_fojas, cbr_numero, cbr_ano, plan_pagos, observaciones, documents, descuento_pct, descuento_pendiente, descuento_solicitud_id, aplica_bono_pie, extras, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET estado = excluded.estado, precio_venta = excluded.precio_venta, cliente_id = excluded.cliente_id, asignado_por = excluded.asignado_por, fecha_asignacion = excluded.fecha_asignacion, descuento_pct = excluded.descuento_pct, descuento_pendiente = excluded.descuento_pendiente, descuento_solicitud_id = excluded.descuento_solicitud_id, updated_at = excluded.updated_at`
   ).run(
     stableId, (u.projectId as string | undefined) || '',
@@ -87,6 +87,7 @@ async function upsertUnit(u: Record<string, unknown>, stableId: string, now: str
     (u.numero as string | undefined) || '',
     (u.estado as string | undefined) || 'Disponible',
     (u.superficie as number | undefined) ?? null,
+    (u.terraza as number | undefined) ?? null,
     (u.orientacion as string | undefined) ?? null,
     (u.piso as number | undefined) ?? null,
     (u.dormitorios as number | undefined) ?? null,
@@ -268,7 +269,7 @@ async function buildAppStateFromTables(): Promise<Record<string, unknown> | null
     })),
     units: units.map(u => ({
       id: u.id, projectId: u.project_id, type: u.type, numero: u.numero, estado: u.estado,
-      superficie: u.superficie, orientacion: u.orientacion, piso: u.piso,
+      superficie: u.superficie, terraza: u.terraza, orientacion: u.orientacion, piso: u.piso,
       dormitorios: u.dormitorios, banos: u.banos,
       gastoComun: u.gasto_comun, gastosOperacionales: u.gastos_operacionales,
       gastosNotariales: u.gastos_notariales, gastosConservador: u.gastos_conservador,
@@ -2334,6 +2335,7 @@ app.get('/api/units', requireAuth, async (req, res) => {
     type: r.type,
     estado: r.estado,
     superficie: r.superficie,
+    terraza: r.terraza,
     orientacion: r.orientacion,
     piso: r.piso,
     dormitorios: r.dormitorios,
@@ -3010,6 +3012,7 @@ if (isMain) {
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS precio_lista_original REAL`).run();
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS descuento_cliente NUMERIC(5,2)`).run();
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS ejecutivo_id TEXT`).run();
+      await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS terraza DOUBLE PRECISION`).run();
       await db.prepare(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS eliminada INTEGER DEFAULT 0`).run();
       // ── 4.1: flag `activo` en users + desactivar la cuenta muerta lectura@danacorp.cl ──
       await db.prepare(`ALTER TABLE users ADD COLUMN IF NOT EXISTS activo BOOLEAN NOT NULL DEFAULT true`).run();

@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS units (
   numero TEXT NOT NULL,
   estado TEXT DEFAULT 'Disponible' NOT NULL,
   superficie DOUBLE PRECISION,
+  terraza DOUBLE PRECISION,
   orientacion TEXT,
   piso INTEGER,
   dormitorios INTEGER,

@@ -105,6 +105,7 @@ export interface RealEstateUnit {
   estado: 'Disponible' | 'Reservado' | 'Promesado' | 'Escriturado' | 'Libre Asignación' | 'Asignado';
   
   superficie?: number;
+  terraza?: number;
   orientacion?: string;
   piso?: number;
   dormitorios?: number;
