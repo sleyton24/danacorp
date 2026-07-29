@@ -24,18 +24,33 @@ por el usuario, SIEMPRE realizar este flujo:
        "⚠️ Los cambios no están en git — si se rompen, hay que
         revertir manualmente."
 
-5. Después del commit (si aplica):
-   a. Hacer push a origin:  git push origin master
-   b. Confirmar con:
-      "✓ Commit <hash corto> pusheado a origin/master — '<mensaje>'"
+5. Después del commit: DETENERSE. No hacer push. Ver la regla de
+   despliegue más abajo.
+
+## Regla de despliegue (CRÍTICA — leer antes de tocar ramas)
+
+**El despliegue NO sale de GitHub. Sale de ESTA carpeta local.** Sleyton
+despliega tomando el contenido del directorio de trabajo, no haciendo
+`git pull` desde origin.
+
+Consecuencias, todas importantes:
+
+- **El working tree ES producción.** Lo que esté checkouteado acá es lo
+  que se puede desplegar en cualquier momento. `master` tiene que quedar
+  siempre en un estado publicable: typecheck y suite en verde.
+- **Cambiar de rama en esta carpeta expone la rama al despliegue.** Una
+  rama NO aísla el trabajo en curso. Para trabajo experimental usar un
+  **git worktree en otro directorio**, dejando esta carpeta en `master`.
+- **El push a origin no es el mecanismo de release**, así que no es
+  urgente ni se hace automáticamente. Preguntar antes; es solo respaldo
+  y sincronización con GitHub (sleyton24/danacorp).
+- El push HTTPS pide autenticación interactiva por Git Credential
+  Manager, que no se puede completar de forma no interactiva.
 
 ## Reglas adicionales
 
 - NUNCA hacer commit sin preguntar primero al usuario
-- El push a origin (GitHub: sleyton24/danacorp) está PERMITIDO: el VPS
-  despliega desde el repositorio. Hacer push a origin/master después de
-  cada commit confirmado. (La regla anterior "nunca push / local" era de
-  la etapa de QA y quedó obsoleta.)
+- NUNCA hacer push sin que el usuario lo pida explícitamente
 - Si el usuario dice "guarda esto" o "commitea esto", proceder
   directamente sin preguntar (interpreta como [S] implícito)
 - Si el repositorio no está inicializado (git status falla),
