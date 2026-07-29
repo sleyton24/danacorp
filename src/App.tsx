@@ -26,6 +26,7 @@ const SalesPerformanceView = React.lazy(() =>
   import('./components/SalesPerformanceView').then(m => ({ default: m.SalesPerformanceView })));
 import { Shield, User as UserIcon, ChevronUp, ChevronDown, RefreshCw, Lock, Unlock } from 'lucide-react';
 import { ToastContainer, ToastMessage } from './components/Toast';
+import { canViewView, vistaInicial } from './utils/viewAccess';
 
 // Lazy-loaded heavy module — jsPDF only downloads when user opens the Quoter
 const Quoter = React.lazy(() => import('./components/Quoter').then(m => ({ default: m.Quoter })));
@@ -50,14 +51,7 @@ const defaultUsers: User[] = [
 // 3.3: guard central de rol para vistas. Refleja el gating del Sidebar, pero se valida en
 // el RENDER (no solo ocultando el ítem del sidebar), para que ninguna vista privilegiada se
 // renderice si se llega por otra vía — p.ej. link de notificación que hace setCurrentView directo.
-const ADMIN_ONLY_VIEWS = ['audit', 'downloads', 'profile_admin', 'create_project', 'manage_projects'];
-function canViewView(role: string, view: string): boolean {
-  if (role === 'Admin') return true;
-  if (ADMIN_ONLY_VIEWS.includes(view)) return false;
-  if (view === 'approvals') return ['Supervisor', 'JefeSala'].includes(role);
-  if (view === 'performance') return role !== 'Lectura';
-  return true; // summary, quoter, clients, inventory, prices, settings, notifications
-}
+// canViewView / vistaInicial viven en src/utils/viewAccess.ts (funciones puras, con tests).
 
 const App: React.FC = () => {
   // ── Auth ──────────────────────────────────────────────────────────────────
@@ -104,6 +98,7 @@ const App: React.FC = () => {
           return;
         }
         setCurrentUser(data.user);
+        setCurrentView(vistaInicial(data.user.role));
         // data-loading effect handles setAuthLoading(false)
       })
       .catch(() => { setAuthLoading(false); });
@@ -196,7 +191,8 @@ const App: React.FC = () => {
       return;
     }
     setCurrentProjectId(newId);
-    setCurrentView('summary');
+    // Cuarto punto de aterrizaje: cambiar de proyecto también reponía 'summary'.
+    setCurrentView(currentUser ? vistaInicial(currentUser.role) : 'summary');
     setSelectedUnit(null);
   };
 
@@ -204,12 +200,15 @@ const App: React.FC = () => {
   // reponer a 'summary' — mantiene el estado/sidebar coherente con el guard de render.
   useEffect(() => {
     if (currentUser && !canViewView(currentUser.role, currentView)) {
-      setCurrentView('summary');
+      setCurrentView(vistaInicial(currentUser.role));
     }
   }, [currentUser, currentView]);
-  // Vista efectiva a renderizar: si el rol no puede verla, cae a 'summary' (guard de render,
-  // sin flash de contenido privilegiado aunque el efecto de arriba aún no haya corrido).
-  const renderView = currentUser && canViewView(currentUser.role, currentView) ? currentView : 'summary';
+  // Vista efectiva a renderizar: si el rol no puede verla, cae a su vista de aterrizaje
+  // (guard de render, sin flash de contenido privilegiado aunque el efecto de arriba aún no
+  // haya corrido). Para Ventas eso es 'performance', no 'summary'.
+  const renderView = currentUser && canViewView(currentUser.role, currentView)
+    ? currentView
+    : (currentUser ? vistaInicial(currentUser.role) : 'summary');
 
   // ── P6: Poll backend notifications every 15 s ─────────────────────────────
   useEffect(() => {
@@ -261,6 +260,7 @@ const App: React.FC = () => {
   const handleLogin = (user: User, tok: string) => {
     tokenRef.current = tok;
     setCurrentUser(user);
+    setCurrentView(vistaInicial(user.role));
   };
 
   const handleLogout = () => {
@@ -648,7 +648,7 @@ const App: React.FC = () => {
       showToast('Error al reabrir el proyecto', 'error');
     }
   };
-
+  
   const currentProjectClients = useMemo(() => {
     if (!currentUser) return [];
     const projectClients = clients.filter(c => c.projectId === currentProjectId);
