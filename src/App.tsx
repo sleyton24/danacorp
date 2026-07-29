@@ -214,6 +214,8 @@ const App: React.FC = () => {
     }
     // La unidad abierta pertenece al proyecto anterior: se cierra siempre.
     setSelectedUnit(null);
+    // Y una confirmación de reapertura a medio abrir no se arrastra al proyecto nuevo.
+    setConfirmandoReapertura(false);
   };
 
   // 3.3: si la vista actual no está permitida para el rol (llegada por cualquier vía),
@@ -658,6 +660,8 @@ const App: React.FC = () => {
   const proyectoActual = useMemo(() => projects.find(p => p.id === currentProjectId), [projects, currentProjectId]);
   const proyectoTerminado = proyectoActual?.archivado === true;
 
+  const [confirmandoReapertura, setConfirmandoReapertura] = useState(false);
+
   const reabrirProyectoActual = async () => {
     if (!proyectoActual) return;
     const tok = localStorage.getItem('dw_token');
@@ -875,9 +879,29 @@ const App: React.FC = () => {
                 </span>
               )}
             </div>
-            {currentUser.role === 'Admin' && (
+            {/* Reabrir en dos pasos: este botón vive en el tope de TODAS las vistas mientras
+                el proyecto está terminado, así que un clic suelto lo descongelaba sin
+                que el usuario lo notara. */}
+            {currentUser.role === 'Admin' && confirmandoReapertura && (
+              <div className="shrink-0 flex items-center gap-2">
+                <span className="text-xs text-amber-800">Volverá a admitir cambios.</span>
+                <button
+                  onClick={() => setConfirmandoReapertura(false)}
+                  className="px-3 py-2 text-xs font-bold rounded-lg text-amber-800 hover:bg-amber-100 transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={() => { setConfirmandoReapertura(false); void reabrirProyectoActual(); }}
+                  className="px-3 py-2 text-xs font-bold rounded-lg bg-amber-600 text-white hover:bg-amber-700 transition-colors flex items-center gap-2"
+                >
+                  <Unlock className="w-3.5 h-3.5" /> Sí, reabrir
+                </button>
+              </div>
+            )}
+            {currentUser.role === 'Admin' && !confirmandoReapertura && (
               <button
-                onClick={reabrirProyectoActual}
+                onClick={() => setConfirmandoReapertura(true)}
                 className="shrink-0 px-3 py-2 text-xs font-bold rounded-lg bg-white border border-amber-300 text-amber-800 hover:bg-amber-100 transition-colors flex items-center gap-2"
               >
                 <Unlock className="w-3.5 h-3.5" /> Reabrir para editar

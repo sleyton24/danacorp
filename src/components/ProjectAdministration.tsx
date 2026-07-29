@@ -20,6 +20,9 @@ export const ProjectAdministration: React.FC<ProjectAdministrationProps> = ({
   // Proyecto en confirmación de borrado + texto tipeado por el usuario.
   const [deleting, setDeleting] = useState<Project | null>(null);
   const [confirmText, setConfirmText] = useState('');
+  // Reabrir descongela un proyecto cerrado, asi que pide confirmacion. Terminar no: es
+  // reversible y no destructivo. El motivo esta documentado en el commit del hallazgo.
+  const [reabriendo, setReabriendo] = useState<Project | null>(null);
 
   const activos = projects.filter(p => !p.archivado);
   const archivados = projects.filter(p => p.archivado);
@@ -41,6 +44,7 @@ export const ProjectAdministration: React.FC<ProjectAdministrationProps> = ({
         body: JSON.stringify({ archivado: archivar }),
       });
       if (!res.ok) throw new Error(String(res.status));
+      setReabriendo(null);
       await onRefresh();
       showToast?.(archivar ? `"${project.nombre}" marcado como terminado` : `"${project.nombre}" reabierto para edición`);
     } catch {
@@ -100,9 +104,12 @@ export const ProjectAdministration: React.FC<ProjectAdministrationProps> = ({
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <button
-            onClick={() => toggleArchivado(project)}
+            onClick={() => project.archivado ? setReabriendo(project) : toggleArchivado(project)}
             disabled={ocupado}
-            className="px-3 py-2 text-sm font-medium rounded-lg border border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 flex items-center gap-2 transition-colors"
+            title={project.archivado ? 'Reabrir para volver a editar (pide confirmacion)' : 'Marcar como terminado: queda en solo lectura'}
+            className={`px-3 py-2 text-sm font-medium rounded-lg border disabled:opacity-50 flex items-center gap-2 transition-colors ${project.archivado
+              ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
+              : 'border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}
           >
             {ocupado ? <Loader2 className="w-4 h-4 animate-spin" />
               : project.archivado ? <Unlock className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
@@ -148,6 +155,47 @@ export const ProjectAdministration: React.FC<ProjectAdministrationProps> = ({
             <h3 className="text-sm font-bold text-gray-700 dark:text-gray-200">Terminados ({archivados.length})</h3>
           </div>
           {archivados.map(p => <Fila key={p.id} project={p} />)}
+        </div>
+      )}
+
+      {reabriendo && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl max-w-md w-full p-6">
+            <div className="flex items-start gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center shrink-0">
+                <Unlock className="w-5 h-5 text-amber-700" />
+              </div>
+              <div className="flex-1">
+                <h3 className="font-bold text-lg text-gray-900 dark:text-white">¿Reabrir el proyecto?</h3>
+                <p className="text-sm text-gray-500 mt-1">{reabriendo.nombre}</p>
+              </div>
+              <button onClick={() => setReabriendo(null)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-sm text-gray-600 dark:text-gray-300 leading-relaxed mb-4">
+              Vuelve a admitir cambios: se podrán editar unidades y precios, asignar clientes y
+              emitir cotizaciones nuevas. Deja de estar en solo lectura.
+            </p>
+
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setReabriendo(null)}
+                className="px-4 py-2.5 text-gray-600 dark:text-gray-300 font-medium rounded-xl hover:bg-gray-100 dark:hover:bg-gray-700"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => toggleArchivado(reabriendo)}
+                disabled={busyId === reabriendo.id}
+                className="px-5 py-2.5 bg-amber-600 text-white font-bold rounded-xl hover:bg-amber-700 disabled:opacity-40 flex items-center gap-2"
+              >
+                {busyId === reabriendo.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Unlock className="w-4 h-4" />}
+                Sí, reabrir
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
