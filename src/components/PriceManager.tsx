@@ -216,7 +216,7 @@ export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit,
 
   const hasActiveFilters = filterOrientacion || filterPiso || filterDormitorios || filterBanos || searchTerm;
 
-  const canBulkEdit = currentUser.role === 'Admin' || currentUser.role === 'Supervisor';
+  const canBulkEdit = !proyectoTerminado && currentUser.role === 'Admin' || currentUser.role === 'Supervisor';
   const bulkTargetUnits = filteredUnits.filter(u => isStatusEditable(getEffectiveStatus(u)));
 
   const handleBulkApply = async () => {
@@ -450,7 +450,7 @@ export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit,
         ) : filteredUnits.map((unit) => {
           const effectiveStatus = getEffectiveStatus(unit);
           // Tarea Puntual: Se restringe isEditable para JefeSala
-          const isEditable = isStatusEditable(effectiveStatus) && (currentUser.role !== 'Ventas' && currentUser.role !== 'Lectura' && currentUser.role !== 'JefeSala');
+          const isEditable = !proyectoTerminado && isStatusEditable(effectiveStatus) && (currentUser.role !== 'Ventas' && currentUser.role !== 'Lectura' && currentUser.role !== 'JefeSala');
           return (
           <div key={unit.id} onClick={() => openEditModal(unit, effectiveStatus)} className={`bg-white rounded-xl border border-gray-200 p-6 transition-all cursor-pointer group relative ${!isEditable ? 'opacity-60 grayscale-[0.3]' : 'hover:shadow-lg hover:border-blue-300'}`}>
             <div className="flex justify-between items-start mb-4">
@@ -458,7 +458,7 @@ export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit,
                     <div className={`w-12 h-12 rounded-lg flex items-center justify-center transition-colors ${unit.type === 'Departamento' ? 'bg-blue-50 text-blue-600' : unit.type === 'Estacionamiento' ? 'bg-gray-100 text-gray-600' : 'bg-orange-50 text-orange-600'}`}>{getUnitIcon(unit.type)}</div>
                     <div><h3 className="font-bold text-lg text-gray-900">{getUnitTitle(unit)}</h3><div className="flex flex-wrap gap-1 mt-1"><span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${getStatusColor(effectiveStatus)}`}>{effectiveStatus}</span></div></div>
                 </div>
-                {!isEditable && <div title="Edición bloqueada" className="text-gray-300"><Lock className="w-5 h-5" /></div>}
+                {!isEditable && <div title={proyectoTerminado ? 'El proyecto está terminado: los precios no se pueden editar' : 'Edición bloqueada por el estado de la unidad'} className="text-gray-300"><Lock className="w-5 h-5" /></div>}
             </div>
             <div className="px-2 mb-4 text-xs text-gray-500 border-b border-gray-50 pb-3">{getUnitAttributes(unit)}</div>
             <div className={`flex flex-col items-center py-4 rounded-xl mb-4 transition-colors ${!isEditable ? 'bg-gray-50' : 'bg-gray-50 group-hover:bg-blue-50'}`}>
@@ -497,7 +497,7 @@ export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit,
                           ) : filteredUnits.map((unit) => {
                               const effectiveStatus = getEffectiveStatus(unit);
                               // Tarea Puntual: Se restringe isEditable para JefeSala
-                              const isEditable = isStatusEditable(effectiveStatus) && (currentUser.role !== 'Ventas' && currentUser.role !== 'Lectura' && currentUser.role !== 'JefeSala');
+                              const isEditable = !proyectoTerminado && isStatusEditable(effectiveStatus) && (currentUser.role !== 'Ventas' && currentUser.role !== 'Lectura' && currentUser.role !== 'JefeSala');
                               return (
                               <tr key={unit.id} onClick={() => openEditModal(unit, effectiveStatus)} className={`transition-colors ${isEditable ? 'hover:bg-blue-50 cursor-pointer' : 'hover:bg-gray-50 opacity-70 cursor-not-allowed'}`}>
                                   <td className="px-6 py-4 font-bold text-gray-900 dark:text-white">{unit.numero}</td>
@@ -517,7 +517,7 @@ export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit,
                                       <span className="font-mono font-bold text-blue-700">{formatPrice(unit.precioLista)}</span>
                                     )}
                                   </td>
-                                  <td className="px-6 py-4 text-center">{isEditable ? <Edit2 className="w-4 h-4 text-blue-400" /> : <Lock className="w-4 h-4 text-gray-300" />}</td>
+                                  <td className="px-6 py-4 text-center" title={isEditable ? 'Editar precio' : (proyectoTerminado ? 'El proyecto está terminado: los precios no se pueden editar' : 'Edición bloqueada por el estado de la unidad')}>{isEditable ? <Edit2 className="w-4 h-4 text-blue-400" /> : <Lock className="w-4 h-4 text-gray-300" />}</td>
                               </tr>
                           )})}
                       </tbody>
