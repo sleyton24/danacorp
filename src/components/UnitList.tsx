@@ -12,9 +12,11 @@ interface UnitListProps {
   onSelectUnit: (unit: RealEstateUnit) => void;
   onReleaseUnit?: (unitId: string) => void;
   showToast?: (message: string, type?: 'success' | 'error' | 'warning') => void;
+  /** Proyecto terminado: solo consulta. El backend igual rechaza con 409. */
+  proyectoTerminado?: boolean;
 }
 
-export const UnitList: React.FC<UnitListProps> = ({ units, clients, currentUser, onSelectUnit, onReleaseUnit, showToast }) => {
+export const UnitList: React.FC<UnitListProps> = ({ units, clients, currentUser, onSelectUnit, onReleaseUnit, showToast, proyectoTerminado }) => {
   const [filterType, setFilterType] = useState<string>('Todos');
   const [searchTerm, setSearchTerm] = useState('');
   const [viewMode, setViewMode] = useState<'table' | 'grid'>('table');
@@ -147,6 +149,7 @@ export const UnitList: React.FC<UnitListProps> = ({ units, clients, currentUser,
     unit.reservaVendedorId !== currentUser?.id;
 
   const handleLiberar = async (unitId: string, e: React.MouseEvent) => {
+    if (proyectoTerminado) return; // proyecto terminado: no se libera nada
     e.stopPropagation();
     const tok = localStorage.getItem('dw_token');
     if (!tok) return;
@@ -357,7 +360,7 @@ export const UnitList: React.FC<UnitListProps> = ({ units, clients, currentUser,
                         const owner = getUnitOwner(unit);
                         const effectiveStatus = getEffectiveStatus(unit);
                         const reservadaOtro = isReservadaOtroVendedor(unit);
-                        const canLiberar = currentUser && ['Admin', 'Supervisor', 'JefeSala'].includes(currentUser.role) && unit.estado === 'Reservado';
+                        const canLiberar = !proyectoTerminado && currentUser && ['Admin', 'Supervisor', 'JefeSala'].includes(currentUser.role) && unit.estado === 'Reservado';
                         const isVentas = currentUser?.role === 'Ventas';
                         const expiraDate = unit.reservaExpira ? new Date(unit.reservaExpira) : null;
                         const expiraProxima = expiraDate && (expiraDate.getTime() - Date.now()) < 24 * 60 * 60 * 1000;

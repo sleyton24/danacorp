@@ -155,8 +155,16 @@ const ProjectConfigSection: React.FC<{
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-100 flex items-center gap-3">
               <Building className="w-5 h-5 text-gray-400" />
               <h4 className="font-bold text-gray-800">{p.nombre}</h4>
+              {p.archivado && (
+                <span className="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-bold uppercase">
+                  Terminado — solo lectura
+                </span>
+              )}
             </div>
-            <div className="p-6 space-y-6">
+            {/* fieldset disabled desactiva de una todos los inputs y el botón de guardar:
+                el backend responde 409 al POST de config de un proyecto terminado, y dejar
+                el botón activo solo produciría un error confuso. */}
+            <fieldset disabled={p.archivado === true} className="p-6 space-y-6 disabled:opacity-60">
               {/* Bandas de descuento */}
               <div>
                 <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4">Bandas de Descuento</div>
@@ -311,7 +319,7 @@ const ProjectConfigSection: React.FC<{
                   {saved === p.id ? '✓ Configuración guardada' : 'Guardar cambios'}
                 </button>
               </div>
-            </div>
+            </fieldset>
           </div>
         );
       })}

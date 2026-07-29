@@ -41,6 +41,8 @@ interface UnitDetailProps {
   showToast?: (message: string, type?: 'success' | 'error' | 'warning') => void;
   onUnsavedChangesUpdate?: (hasChanges: boolean) => void;
   saveRef?: React.MutableRefObject<(() => void) | null>;
+  /** Proyecto terminado: solo consulta. El backend igual rechaza con 409. */
+  proyectoTerminado?: boolean;
 }
 
 // Formateador estricto: Miles con punto, 1 decimal con coma (Ej: 4.565,0)
@@ -146,7 +148,7 @@ const PercentInput = ({ value, onChange, disabled, className, max }: { value: nu
 export const UnitDetail: React.FC<UnitDetailProps> = ({
   unit, client, onBack, onUpdate, allUnits = [], currentUser, onSelectClient,
   clients = [], users = [], onAssignClient, onUnassignClient, showToast,
-  onUnsavedChangesUpdate, saveRef,
+  onUnsavedChangesUpdate, saveRef, proyectoTerminado,
 }) => {
   // Backfill de uid + orden cronológico una sola vez al montar (Bloque C).
   const [formData, setFormData] = useState<RealEstateUnit>(() => ({
@@ -476,7 +478,9 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   const formatDateDisplay = (d?: string) =>
     d ? new Date(d + 'T00:00:00').toLocaleDateString('es-CL') : '—';
 
-  const isReadOnly = currentUser.role === 'Lectura' || isAssociatedToParent;
+  // Un proyecto terminado congela la ficha completa: reutiliza el mismo isReadOnly que
+  // ya gobierna el rol Lectura y las unidades asociadas a un padre.
+  const isReadOnly = currentUser.role === 'Lectura' || isAssociatedToParent || proyectoTerminado === true;
   const puedeReasignar = ['Admin', 'Supervisor', 'JefeSala'].includes(currentUser.role);
 
   // Cambio 2: reasignación de ejecutivo (solo Admin/Supervisor/JefeSala, cualquier estado)

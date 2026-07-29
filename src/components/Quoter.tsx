@@ -55,6 +55,8 @@ interface QuoterProps {
   onDraftStateChange?: (draftId: string | null) => void;
   openDraftId?: string | null;
   onDraftOpened?: () => void;
+  /** Proyecto terminado: solo consulta. El backend igual rechaza con 409. */
+  proyectoTerminado?: boolean;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -221,7 +223,13 @@ export const Quoter: React.FC<QuoterProps> = ({
   onDraftStateChange,
   openDraftId,
   onDraftOpened,
+  proyectoTerminado,
 }) => {
+  // Solo lectura: rol Lectura (3.1) o proyecto terminado. Con un proyecto terminado el
+  // backend rechaza crear el borrador, generarlo y persistir el PDF, así que el cotizador
+  // no puede completar el flujo: se desactivan las acciones en vez de fallar a mitad.
+  const isReadOnly = currentUser.role === 'Lectura' || proyectoTerminado === true;
+
   // ── Step & Flow ──────────────────────────────────────────────────────────
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [isFinalized, setIsFinalized] = useState(false);
@@ -546,7 +554,7 @@ export const Quoter: React.FC<QuoterProps> = ({
   ]);
 
   const saveImmediately = useCallback(async (): Promise<void> => {
-    if (currentUser.role === 'Lectura') return; // 3.1: Lectura no persiste borradores
+    if (isReadOnly) return; // 3.1 / proyecto terminado: no persiste borradores
     const token = localStorage.getItem('dw_token');
     if (!token || !currentProjectId) return;
     if (!selectedClient.nombre?.trim() && !selectedClient.rut?.trim()) return;
@@ -1391,7 +1399,7 @@ export const Quoter: React.FC<QuoterProps> = ({
   const [toastMsg, setToastMsg] = useState('');
 
   const promoteDraft = async () => {
-    if (currentUser.role === 'Lectura') return; // 3.1: Lectura no genera cotizaciones
+    if (isReadOnly) return; // 3.1 / proyecto terminado: no genera cotizaciones
     if (!draftId || isDraftGenerated) return;
     const token = localStorage.getItem('dw_token');
     try {
@@ -1476,7 +1484,7 @@ export const Quoter: React.FC<QuoterProps> = ({
   };
 
   const handleSendEmail = async () => {
-    if (currentUser.role === 'Lectura') return; // 3.1
+    if (isReadOnly) return; // 3.1 / proyecto terminado
     // Mismo patrón que handleDownloadPDF: cancelar autosave y forzar guardado
     if (autoSaveTimerRef.current) {
       clearTimeout(autoSaveTimerRef.current);
@@ -1516,7 +1524,7 @@ export const Quoter: React.FC<QuoterProps> = ({
 
   // ── Finalize ─────────────────────────────────────────────────────────────
   const handleFinalizeAndSave = async () => {
-    if (currentUser.role === 'Lectura') return; // 3.1
+    if (isReadOnly) return; // 3.1 / proyecto terminado
     let wasJustGenerated = false;
 
     if (!isDraftGenerated) {
@@ -2462,11 +2470,11 @@ export const Quoter: React.FC<QuoterProps> = ({
                 {toastMsg}
               </span>
             )}
-            <button onClick={handleDownloadPDF} disabled={hasPendingDiscount}
+            <button onClick={handleDownloadPDF} disabled={hasPendingDiscount || isReadOnly}
               className="px-6 py-3 bg-white border border-gray-200 text-gray-700 font-bold rounded-xl flex items-center gap-2 hover:bg-gray-50 transition-all shadow-sm disabled:opacity-50">
               <Download className="w-4 h-4" /> Descargar PDF
             </button>
-            <button onClick={handleSendEmail} disabled={isEmailSending || hasPendingDiscount || !selectedClient.email}
+            <button onClick={handleSendEmail} disabled={isEmailSending || hasPendingDiscount || !selectedClient.email || isReadOnly}
               className="px-6 py-3 bg-white border border-blue-200 text-blue-600 font-bold rounded-xl flex items-center gap-2 hover:bg-blue-50 transition-all shadow-sm disabled:opacity-50">
               {isEmailSending ? <Loader2 className="w-4 h-4 animate-spin" /> : emailSent ? <Check className="w-4 h-4 text-green-600" /> : <Mail className="w-4 h-4" />}
               {isEmailSending ? 'Enviando…' : emailSent ? 'Enviado' : 'Enviar por Correo'}
@@ -2728,7 +2736,7 @@ export const Quoter: React.FC<QuoterProps> = ({
               className="px-8 py-4 border-2 border-gray-200 font-black rounded-2xl text-gray-500 hover:bg-gray-50 transition-all uppercase tracking-widest text-xs">
               Regresar
             </button>
-            <button onClick={handleFinalizeAndSave} disabled={hasPendingDiscount}
+            <button onClick={handleFinalizeAndSave} disabled={hasPendingDiscount || isReadOnly}
               className="px-12 py-4 bg-green-600 text-white font-black rounded-2xl shadow-xl hover:bg-green-700 transition-all active:scale-95 flex items-center gap-3 uppercase tracking-widest text-xs disabled:opacity-50">
               <Save className="w-5 h-5" /> Finalizar y Guardar en Ficha
             </button>

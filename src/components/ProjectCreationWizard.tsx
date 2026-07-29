@@ -15,6 +15,15 @@ interface ValidationError {
   suggestion?: string;
 }
 
+// Las superficies (Superficie y Terraza) se truncan siempre a 2 decimales, sin redondear:
+// 12.349 → 12.34. Math.trunc(n * 100) por sí solo falla por representación binaria
+// (4.57 * 100 = 456.99999999999994 → daría 4.56), así que absorbemos ese ruido con un
+// redondeo previo a 1e-6 antes de truncar.
+const truncar2Decimales = (n: number): number => {
+  if (!Number.isFinite(n)) return n;
+  return Math.trunc(Math.round(n * 100 * 1e6) / 1e6) / 100;
+};
+
 const REQUIRED_HEADERS = [
   'Numero de Unidad', 'Tipo', 'Precio Lista (UF)', 'Superficie (m2)', 'Terraza (m2)', 'Piso', 'Orientación', 'Dormitorios', 'Baños',
   'Est. 1', 'Est. 2', 'Est. 3', 'Est. 4', 'Bodega 1', 'Bodega 2', 'Atributo'
@@ -107,10 +116,12 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ on
          if (typeof superficie === 'string') {
             const cleanSurf = superficie.replace(',', '.');
             if(!isNaN(parseFloat(cleanSurf))) {
-                superficie = parseFloat(cleanSurf);
+                superficie = truncar2Decimales(parseFloat(cleanSurf));
             } else {
                 errors.push({ row: rowIndex, col: 'Superficie', message: 'Debe ser numérico' });
             }
+         } else if (typeof superficie === 'number') {
+            superficie = truncar2Decimales(superficie);
          }
       }
 
@@ -119,10 +130,12 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ on
          if (typeof terraza === 'string') {
             const cleanTerr = terraza.replace(',', '.');
             if(!isNaN(parseFloat(cleanTerr))) {
-                terraza = parseFloat(cleanTerr);
+                terraza = truncar2Decimales(parseFloat(cleanTerr));
             } else {
                 errors.push({ row: rowIndex, col: 'Terraza', message: 'Debe ser numérico' });
             }
+         } else if (typeof terraza === 'number') {
+            terraza = truncar2Decimales(terraza);
          }
       }
 
@@ -343,6 +356,7 @@ export const ProjectCreationWizard: React.FC<ProjectCreationWizardProps> = ({ on
                <div>
                   <h3 className="font-bold text-gray-800">Planilla de Unidades</h3>
                   <p className="text-sm text-gray-500">Los atributos (Tandem/Single/Notas) se declaran en la columna final para cada fila.</p>
+                  <p className="text-sm text-gray-500">Superficie y Terraza se truncan a 2 decimales.</p>
                </div>
                <button onClick={handleDownloadTemplate} className="px-4 py-2 bg-green-600 text-white text-sm font-bold rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2 shadow-sm">
                   <FileSpreadsheet className="w-4 h-4" />

@@ -1,10 +1,10 @@
 import React from 'react';
-import { Users, Settings, Building, Tag, ChevronDown, PlusCircle, PieChart, ClipboardList, Shield, Bell, Calculator, Download, LogOut, CheckSquare, TrendingUp } from 'lucide-react';
+import { Users, Settings, Building, Tag, ChevronDown, PlusCircle, PieChart, ClipboardList, Shield, Bell, Calculator, Download, LogOut, CheckSquare, TrendingUp, Archive } from 'lucide-react';
 import { Project, User } from '../types';
 
 interface SidebarProps {
   currentView: string;
-  onChangeView: (view: 'clients' | 'inventory' | 'prices' | 'create_project' | 'summary' | 'settings' | 'audit' | 'profile_admin' | 'quoter' | 'notifications' | 'downloads' | 'approvals' | 'performance') => void;
+  onChangeView: (view: 'clients' | 'inventory' | 'prices' | 'create_project' | 'manage_projects' | 'summary' | 'settings' | 'audit' | 'profile_admin' | 'quoter' | 'notifications' | 'downloads' | 'approvals' | 'performance') => void;
   projects: Project[];
   currentProjectId: string | null;
   onSelectProject: (id: string) => void;
@@ -37,7 +37,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const adminItems = [
       { id: 'downloads', label: 'Descargas', icon: Download, adminOnly: true },
       { id: 'profile_admin', label: 'Admin. perfiles', icon: Shield, adminOnly: true },
+      { id: 'manage_projects', label: 'Admin. proyectos', icon: Archive, adminOnly: true },
   ];
+
+  // Los proyectos terminados SÍ se ofrecen en el selector: hay que poder entrar a
+  // consultarlos y descargar sus reportes. Se separan en su propio grupo para que quede
+  // claro que no se pueden modificar.
+  const proyectosActivos = projects.filter(p => !p.archivado);
+  const proyectosTerminados = projects.filter(p => p.archivado);
 
   const isDisabled = !currentProjectId && projects.length === 0;
 
@@ -67,7 +74,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
               onChange={(e) => e.target.value === 'NEW' ? onChangeView('create_project') : onSelectProject(e.target.value)}
               className="w-full appearance-none bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-gray-800 dark:text-white text-sm font-bold rounded-lg pl-3 pr-8 py-2.5 outline-none cursor-pointer"
             >
-              {projects.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+              {proyectosActivos.length > 0 && (
+                <optgroup label="Activos">
+                  {proyectosActivos.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+                </optgroup>
+              )}
+              {proyectosTerminados.length > 0 && (
+                <optgroup label="Terminados (solo consulta)">
+                  {proyectosTerminados.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+                </optgroup>
+              )}
               <option disabled>──────────</option>
               {currentUser.role === 'Admin' && <option value="NEW">+ Nuevo proyecto</option>}
             </select>

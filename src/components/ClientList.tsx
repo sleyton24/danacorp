@@ -43,6 +43,8 @@ interface ClientListProps {
   showToast?: (message: string, type?: 'success' | 'error' | 'warning') => void;
   projects?: Project[];
   onOpenDraft?: (draftId: string) => void;
+  /** Proyecto terminado: solo consulta. El backend igual rechaza con 409. */
+  proyectoTerminado?: boolean;
 }
 
 const parseDate = (dateStr: string): number => {
@@ -97,6 +99,7 @@ export const ClientList: React.FC<ClientListProps> = ({
   showToast,
   projects = [],
   onOpenDraft,
+  proyectoTerminado,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('Todos');
@@ -316,7 +319,8 @@ export const ClientList: React.FC<ClientListProps> = ({
   const handleTriggerUpload = () => { if (fileInputRef.current) fileInputRef.current.click(); };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (currentUser.role === 'Lectura') return; // 3.1
+    // isReadOnly se declara más abajo; acá se usa el prop directo.
+    if (currentUser.role === 'Lectura' || proyectoTerminado) return; // 3.1 / proyecto terminado
     const file = e.target.files?.[0];
     if (file && expandedClientId) {
         const client = clients.find(c => c.id === expandedClientId);
@@ -364,7 +368,8 @@ export const ClientList: React.FC<ClientListProps> = ({
     setDeleteConfirmation(null);
   };
 
-  const isReadOnly = currentUser.role === 'Lectura'; // 3.1: rol Lectura no muta nada (mismo patrón que UnitDetail)
+  // Se suma el proyecto terminado al mismo interruptor del rol Lectura.
+  const isReadOnly = currentUser.role === 'Lectura' || proyectoTerminado === true;
   const handleSaveClient = (e: React.FormEvent) => {
     e.preventDefault();
     if (isReadOnly) return;

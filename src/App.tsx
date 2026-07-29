@@ -18,11 +18,13 @@ const ProfileAdministration = React.lazy(() =>
   import('./components/ProfileAdministration').then(m => ({ default: m.ProfileAdministration })));
 const DownloadsView = React.lazy(() =>
   import('./components/DownloadsView').then(m => ({ default: m.DownloadsView })));
+const ProjectAdministration = React.lazy(() =>
+  import('./components/ProjectAdministration').then(m => ({ default: m.ProjectAdministration })));
 const ApprovalsView = React.lazy(() =>
   import('./components/ApprovalsView').then(m => ({ default: m.ApprovalsView })));
 const SalesPerformanceView = React.lazy(() =>
   import('./components/SalesPerformanceView').then(m => ({ default: m.SalesPerformanceView })));
-import { Shield, User as UserIcon, ChevronUp, ChevronDown, RefreshCw } from 'lucide-react';
+import { Shield, User as UserIcon, ChevronUp, ChevronDown, RefreshCw, Lock, Unlock } from 'lucide-react';
 import { ToastContainer, ToastMessage } from './components/Toast';
 
 // Lazy-loaded heavy module — jsPDF only downloads when user opens the Quoter
@@ -48,7 +50,7 @@ const defaultUsers: User[] = [
 // 3.3: guard central de rol para vistas. Refleja el gating del Sidebar, pero se valida en
 // el RENDER (no solo ocultando el ítem del sidebar), para que ninguna vista privilegiada se
 // renderice si se llega por otra vía — p.ej. link de notificación que hace setCurrentView directo.
-const ADMIN_ONLY_VIEWS = ['audit', 'downloads', 'profile_admin', 'create_project'];
+const ADMIN_ONLY_VIEWS = ['audit', 'downloads', 'profile_admin', 'create_project', 'manage_projects'];
 function canViewView(role: string, view: string): boolean {
   if (role === 'Admin') return true;
   if (ADMIN_ONLY_VIEWS.includes(view)) return false;
@@ -64,7 +66,7 @@ const App: React.FC = () => {
   const tokenRef = useRef<string>('');
 
   // ── App State ─────────────────────────────────────────────────────────────
-  const [currentView, setCurrentView] = useState<'clients' | 'inventory' | 'prices' | 'create_project' | 'summary' | 'settings' | 'audit' | 'profile_admin' | 'quoter' | 'notifications' | 'downloads' | 'approvals' | 'performance'>('summary');
+  const [currentView, setCurrentView] = useState<'clients' | 'inventory' | 'prices' | 'create_project' | 'manage_projects' | 'summary' | 'settings' | 'audit' | 'profile_admin' | 'quoter' | 'notifications' | 'downloads' | 'approvals' | 'performance'>('summary');
   const [clients, setClients] = useState<Client[]>([]);
   const [units, setUnits] = useState<RealEstateUnit[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -124,7 +126,8 @@ const App: React.FC = () => {
         if (projRes.ok) {
           const projs = await projRes.json() as Project[];
           setProjects(projs);
-          setCurrentProjectId(prev => prev ?? (projs[0]?.id ?? null));
+          // Nunca arrancar apuntando a un proyecto terminado.
+          setCurrentProjectId(prev => prev ?? (projs.find(p => !p.archivado)?.id ?? null));
         }
         if (clientRes.ok) setClients(await clientRes.json() as Client[]);
         if (unitRes.ok) setUnits(await unitRes.json() as RealEstateUnit[]);
@@ -422,6 +425,34 @@ const App: React.FC = () => {
     } catch { /* silencioso */ }
   };
 
+  /**
+   * Recarga proyectos + unidades + clientes. Necesario tras archivar o eliminar un
+   * proyecto: el borrado es en cascada, así que unidades y clientes en memoria quedan
+   * desactualizados. También reencauza currentProjectId si el proyecto apuntado ya no
+   * está seleccionable (eliminado o archivado).
+   */
+  const refreshProjectsAndData = async () => {
+    const tok = localStorage.getItem('dw_token');
+    if (!tok) return;
+    const headers = { Authorization: `Bearer ${tok}` };
+    try {
+      const [projRes, unitRes, clientRes] = await Promise.all([
+        fetch('/api/projects', { headers }),
+        fetch('/api/units', { headers }),
+        fetch('/api/clients', { headers }),
+      ]);
+      if (unitRes.ok) setUnits(await unitRes.json() as RealEstateUnit[]);
+      if (clientRes.ok) setClients(await clientRes.json() as Client[]);
+      if (projRes.ok) {
+        const projs = await projRes.json() as Project[];
+        setProjects(projs);
+        const seleccionables = projs.filter(p => !p.archivado);
+        setCurrentProjectId(prev =>
+          prev && seleccionables.some(p => p.id === prev) ? prev : (seleccionables[0]?.id ?? null));
+      }
+    } catch (err) { console.error('[App] Error refrescando proyectos:', err); }
+  };
+
   const handleAddClient = (client: Client) => {
       try {
         const existingClient = clients.find(c => c.id === client.id || c.rut === client.rut);
@@ -594,7 +625,30 @@ const App: React.FC = () => {
   };
 
   const currentProjectUnits = useMemo(() => units.filter(u => u.projectId === currentProjectId), [units, currentProjectId]);
-  
+
+  // Proyecto terminado: se puede consultar y descargar reportes, pero no modificar. Es una
+  // cortesía de UI — la garantía es el 409 del backend (bloquearSiTerminado en server.ts).
+  const proyectoActual = useMemo(() => projects.find(p => p.id === currentProjectId), [projects, currentProjectId]);
+  const proyectoTerminado = proyectoActual?.archivado === true;
+
+  const reabrirProyectoActual = async () => {
+    if (!proyectoActual) return;
+    const tok = localStorage.getItem('dw_token');
+    if (!tok) return;
+    try {
+      const res = await fetch(`/api/projects/${proyectoActual.id}/archivar`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+        body: JSON.stringify({ archivado: false }),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      await refreshProjectsAndData();
+      showToast(`"${proyectoActual.nombre}" reabierto para edición`);
+    } catch {
+      showToast('Error al reabrir el proyecto', 'error');
+    }
+  };
+
   const currentProjectClients = useMemo(() => {
     if (!currentUser) return [];
     const projectClients = clients.filter(c => c.projectId === currentProjectId);
@@ -780,6 +834,30 @@ const App: React.FC = () => {
       />
       
       <main className="flex-1 ml-64 p-8 bg-gray-50 dark:bg-gray-900 min-h-screen overflow-auto">
+        {/* Banner de solo lectura: una sola vez en el layout, no dentro de cada vista, para
+            que nadie se pregunte por qué los botones no responden. */}
+        {proyectoTerminado && (
+          <div className="mb-6 flex flex-col sm:flex-row sm:items-center gap-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl px-4 py-3">
+            <Lock className="w-5 h-5 shrink-0 text-amber-600" />
+            <div className="flex-1 text-sm">
+              <span className="font-bold">Proyecto terminado</span> — solo consulta y descarga de reportes.
+              {proyectoActual?.archivadoPor && (
+                <span className="text-amber-700">
+                  {' '}Cerrado por {proyectoActual.archivadoPor}
+                  {proyectoActual.archivadoAt ? ` el ${new Date(proyectoActual.archivadoAt).toLocaleDateString('es-CL')}` : ''}.
+                </span>
+              )}
+            </div>
+            {currentUser.role === 'Admin' && (
+              <button
+                onClick={reabrirProyectoActual}
+                className="shrink-0 px-3 py-2 text-xs font-bold rounded-lg bg-white border border-amber-300 text-amber-800 hover:bg-amber-100 transition-colors flex items-center gap-2"
+              >
+                <Unlock className="w-3.5 h-3.5" /> Reabrir para editar
+              </button>
+            )}
+          </div>
+        )}
         {selectedUnit && renderView === 'inventory' ? (
           <UnitDetail
             unit={selectedUnit}
@@ -791,6 +869,7 @@ const App: React.FC = () => {
             clients={clients}
             users={users}
             onSelectClient={(id) => { setExpandedClientId(id); setCurrentView('clients'); setSelectedUnit(null); setUnitDetailHasChanges(false); }}
+            proyectoTerminado={proyectoTerminado}
             onAssignClient={handleAssignUnit}
             onUnassignClient={handleUnassignUnit}
             showToast={showToast}
@@ -802,6 +881,7 @@ const App: React.FC = () => {
             {renderView === 'summary' && <SummaryDashboard units={currentProjectUnits} />}
             {renderView === 'clients' && (
               <ClientList
+                proyectoTerminado={proyectoTerminado}
                 clients={currentProjectClients}
                 units={currentProjectUnits}
                 onAddClient={handleAddClient}
@@ -822,6 +902,7 @@ const App: React.FC = () => {
               />
             )}
             {renderView === 'inventory' && <UnitList
+              proyectoTerminado={proyectoTerminado}
               units={currentProjectUnits}
               clients={currentProjectClients}
               currentUser={currentUser}
@@ -841,8 +922,18 @@ const App: React.FC = () => {
               } : u))}
               showToast={showToast}
             />}
-            {renderView === 'prices' && <PriceManager units={currentProjectUnits} onUpdateUnit={handleUpdateUnit} currentUser={currentUser} onRefreshUnits={refreshUnits} />}
+            {renderView === 'prices' && <PriceManager units={currentProjectUnits} onUpdateUnit={handleUpdateUnit} currentUser={currentUser} onRefreshUnits={refreshUnits} proyectoTerminado={proyectoTerminado} />}
             {renderView === 'create_project' && <ProjectCreationWizard onSave={handleCreateProject} onCancel={() => setCurrentView('summary')} />}
+            {renderView === 'manage_projects' && (
+              <React.Suspense fallback={<LazyFallback />}>
+                <ProjectAdministration
+                  projects={projects}
+                  currentProjectId={currentProjectId}
+                  onRefresh={refreshProjectsAndData}
+                  showToast={showToast}
+                />
+              </React.Suspense>
+            )}
             {renderView === 'audit' && (
               <React.Suspense fallback={<LazyFallback />}>
                 <AuditLogView logs={auditLogs} />
@@ -884,6 +975,7 @@ const App: React.FC = () => {
                 </div>
               }>
                 <Quoter
+                  proyectoTerminado={proyectoTerminado}
                   units={currentProjectUnits}
                   clients={clients}
                   projects={projects}
