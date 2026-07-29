@@ -5,6 +5,12 @@ CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
   nombre TEXT NOT NULL,
   fecha_creacion TEXT,
+  -- Proyecto TERMINADO: sigue consultable y descargable, pero no admite escrituras.
+  -- La columna conserva el nombre 'archivado' para no arrastrar una migración de rename;
+  -- en pantalla el concepto se llama "Terminado".
+  archivado BOOLEAN NOT NULL DEFAULT false,
+  archivado_at TIMESTAMPTZ,
+  archivado_por TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );

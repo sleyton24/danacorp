@@ -758,6 +758,100 @@ const requireRole = (...roles: string[]) => (req: express.Request, res: express.
   next();
 };
 
+// ── Bloqueo de escritura en proyectos terminados ─────────────────────────────
+/**
+ * Un proyecto terminado (projects.archivado = true) sigue siendo consultable y sus
+ * reportes descargables, pero no admite ninguna modificación. El bloqueo vive acá, en el
+ * backend: la UI que deshabilita botones es cortesía, no la garantía.
+ *
+ * Responde 409 y no 403 a propósito: no es un problema de permisos del usuario sino de
+ * estado del recurso. El mismo usuario con el mismo rol puede editar otro proyecto.
+ */
+type ResolverProyecto = (req: express.Request) => Promise<string | null | undefined>;
+
+const bloquearSiTerminado = (resolver: ResolverProyecto) =>
+  async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const projectId = await resolver(req);
+    // Sin projectId resoluble no hay nada que bloquear: la validación del handler decide.
+    if (!projectId) { next(); return; }
+    const row = await db.prepare('SELECT archivado, nombre FROM projects WHERE id = ?').get(projectId) as
+      { archivado: boolean; nombre: string } | undefined;
+    if (row?.archivado === true) {
+      res.status(409).json({
+        error: `El proyecto "${row.nombre}" está terminado y no admite modificaciones. Reábrelo para editarlo.`,
+        codigo: 'PROYECTO_TERMINADO',
+        projectId,
+      });
+      return;
+    }
+    next();
+  };
+
+/** El projectId viene en el body (creaciones y operaciones masivas). */
+const desdeBody = (campo = 'projectId'): ResolverProyecto =>
+  async (req) => {
+    const v = (req.body as Record<string, unknown> | undefined)?.[campo];
+    return typeof v === 'string' && v.length > 0 ? v : null;
+  };
+
+/** El :id de la ruta ES el projectId. */
+const desdeParams = (campo = 'id'): ResolverProyecto =>
+  async (req) => {
+    const v = req.params[campo];
+    return typeof v === 'string' && v.length > 0 ? v : null;
+  };
+
+/**
+ * El :id de la ruta identifica una entidad; su proyecto se busca en la tabla.
+ * La lista de tablas es cerrada: el nombre se interpola en el SQL, así que no puede
+ * venir de la request.
+ */
+type TablaConProyecto = 'units' | 'clients' | 'quotation_drafts' | 'discount_requests' | 'approval_requests';
+const desdeTabla = (tabla: TablaConProyecto, campo = 'id'): ResolverProyecto =>
+  async (req) => {
+    const entityId = req.params[campo];
+    if (!entityId) return null;
+    const row = await db.prepare(`SELECT project_id FROM ${tabla} WHERE id = ?`).get(entityId) as
+      { project_id: string | null } | undefined;
+    return row?.project_id ?? null;
+  };
+
+/**
+ * POST /api/units/bulk-price-update no recibe projectId: su body es { unitIds, tipo,
+ * valor, motivo }. El proyecto se resuelve desde las unidades, y el ORDER BY archivado
+ * DESC hace que un lote mixto devuelva el proyecto TERMINADO — así el request se rechaza
+ * completo en vez de aplicar el cambio a una parte.
+ */
+const desdeUnitIdsDelBody = (campo = 'unitIds'): ResolverProyecto =>
+  async (req) => {
+    const crudo = (req.body as Record<string, unknown> | undefined)?.[campo];
+    if (!Array.isArray(crudo)) return null;
+    const ids = crudo.filter((x): x is string => typeof x === 'string' && x.length > 0);
+    if (ids.length === 0) return null;
+    const placeholders = ids.map(() => '?').join(',');
+    const row = await db.prepare(
+      `SELECT u.project_id FROM units u JOIN projects p ON p.id = u.project_id
+       WHERE u.id IN (${placeholders}) ORDER BY p.archivado DESC LIMIT 1`,
+    ).get(...ids) as { project_id: string } | undefined;
+    return row?.project_id ?? null;
+  };
+
+/**
+ * Caso especial de POST /api/quotations/documents: no recibe projectId ni id de entidad,
+ * solo project_name como query param (escribe un archivo, no una fila). Se resuelve por
+ * nombre, que NO tiene restricción de unicidad en la tabla — si dos proyectos comparten
+ * nombre el bloqueo es ambiguo, y si el nombre no coincide con ninguno no bloquea nada.
+ * Es la mejor resolución disponible sin cambiar el contrato del endpoint.
+ */
+const desdeNombreProyectoEnQuery = (campo = 'project_name'): ResolverProyecto =>
+  async (req) => {
+    const nombre = (req.query as Record<string, string | undefined>)[campo];
+    if (!nombre) return null;
+    const row = await db.prepare('SELECT id FROM projects WHERE nombre = ? ORDER BY archivado DESC LIMIT 1').get(nombre) as
+      { id: string } | undefined;
+    return row?.id ?? null;
+  };
+
 async function auditProjectAccess(req: express.Request, projectId: string | null | undefined, context: string) {
   if (!projectId) return;
   const userId = (req as AuthenticatedRequest).userId;
@@ -1065,7 +1159,7 @@ app.post('/api/auth/change-password', passwordChangeLimiter, requireAuth, async 
 
 // ── 4. Borradores de Cotización ──────────────────────────────────────────────
 
-app.post('/api/quotation-drafts', requireAuth, async (req, res) => {
+app.post('/api/quotation-drafts', requireAuth, bloquearSiTerminado(desdeBody('projectId')), async (req, res) => {
   const { id, projectId, clienteRut, clienteNombre, clienteId, ...rest } = req.body as Record<string, unknown>;
   const userId = (req as AuthenticatedRequest).userId;
   const draftId = (id as string) || crypto.randomUUID();
@@ -1157,7 +1251,7 @@ app.get('/api/quotation-drafts', requireAuth, async (req, res) => {
   })));
 });
 
-app.delete('/api/quotation-drafts/:id', requireAuth, async (req, res) => {
+app.delete('/api/quotation-drafts/:id', requireAuth, bloquearSiTerminado(desdeTabla('quotation_drafts')), async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const existing = await db.prepare(
     'SELECT project_id FROM quotation_drafts WHERE id = ? AND user_id = ?'
@@ -1174,7 +1268,7 @@ app.delete('/api/quotation-drafts/:id', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/quotation-drafts/:id/generate', requireAuth, async (req, res) => {
+app.post('/api/quotation-drafts/:id/generate', requireAuth, bloquearSiTerminado(desdeTabla('quotation_drafts')), async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const { id } = req.params;
   const { vendedorId } = req.body as { vendedorId?: string };
@@ -1262,7 +1356,7 @@ app.post('/api/quotation-drafts/:id/generate', requireAuth, async (req, res) => 
   }
 });
 
-app.post('/api/quotation-drafts/:id/pdf', requireAuth, async (req, res) => {
+app.post('/api/quotation-drafts/:id/pdf', requireAuth, bloquearSiTerminado(desdeTabla('quotation_drafts')), async (req, res) => {
   const { id } = req.params;
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
@@ -1441,7 +1535,7 @@ async function getProjectDiscountConfig(projectId: string): Promise<{
 // ── 5. Solicitudes de Descuento ──────────────────────────────────────────────
 
 // Create discount request
-app.post('/api/discount-requests', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), async (req, res) => {
+app.post('/api/discount-requests', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), bloquearSiTerminado(desdeBody('projectId')), async (req, res) => {
   const { projectId, unitId, unitNumero, precioSolicitado, cotizacionId } = req.body as Record<string, unknown>;
   const userId = (req as AuthenticatedRequest).userId;
   const user = await getUserById(userId);
@@ -1521,7 +1615,7 @@ app.get('/api/discount-requests/:id', requireAuth, async (req, res) => {
 });
 
 // Approve discount request
-app.post('/api/discount-requests/:id/approve', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor'), async (req, res) => {
+app.post('/api/discount-requests/:id/approve', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor'), bloquearSiTerminado(desdeTabla('discount_requests')), async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
   const { motivo } = req.body as { motivo?: string };
@@ -1620,7 +1714,7 @@ app.post('/api/discount-requests/:id/approve', requireAuth, requireRole('Admin',
 });
 
 // Reject discount request
-app.post('/api/discount-requests/:id/reject', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor'), async (req, res) => {
+app.post('/api/discount-requests/:id/reject', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor'), bloquearSiTerminado(desdeTabla('discount_requests')), async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
   const { motivo } = req.body as { motivo?: string };
@@ -1663,7 +1757,7 @@ app.post('/api/discount-requests/:id/reject', requireAuth, requireRole('Admin', 
 });
 
 // Cancel discount request (vendedor only)
-app.post('/api/discount-requests/:id/cancel', requireAuth, async (req, res) => {
+app.post('/api/discount-requests/:id/cancel', requireAuth, bloquearSiTerminado(desdeTabla('discount_requests')), async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const now = new Date().toISOString();
   const result = await db.prepare(
@@ -1690,7 +1784,7 @@ async function ensureApprovalsTable() {
 }
 
 // Crear solicitud (cualquier rol autenticado)
-app.post('/api/approval-requests', requireAuth, async (req, res) => {
+app.post('/api/approval-requests', requireAuth, bloquearSiTerminado(desdeBody('projectId')), async (req, res) => {
   await ensureApprovalsTable();
   const { tipo, unitId, projectId, descripcion, datos } = req.body as Record<string, unknown>;
   if (!tipo) { res.status(400).json({ error: 'tipo requerido' }); return; }
@@ -1725,7 +1819,7 @@ app.get('/api/approval-requests', requireAuth, requireRole('Admin', 'Supervisor'
 });
 
 // Aprobar: marca aprobada y APLICA el cambio (cronograma_pago → plan_pagos de la unidad)
-app.post('/api/approval-requests/:id/aprobar', requireAuth, requireRole('Admin', 'Supervisor'), async (req, res) => {
+app.post('/api/approval-requests/:id/aprobar', requireAuth, requireRole('Admin', 'Supervisor'), bloquearSiTerminado(desdeTabla('approval_requests')), async (req, res) => {
   await ensureApprovalsTable();
   const userId = (req as AuthenticatedRequest).userId;
   const now = new Date().toISOString();
@@ -1758,7 +1852,7 @@ app.post('/api/approval-requests/:id/aprobar', requireAuth, requireRole('Admin',
 });
 
 // Rechazar: marca rechazada, NO aplica cambio
-app.post('/api/approval-requests/:id/rechazar', requireAuth, requireRole('Admin', 'Supervisor'), async (req, res) => {
+app.post('/api/approval-requests/:id/rechazar', requireAuth, requireRole('Admin', 'Supervisor'), bloquearSiTerminado(desdeTabla('approval_requests')), async (req, res) => {
   await ensureApprovalsTable();
   const userId = (req as AuthenticatedRequest).userId;
   const now = new Date().toISOString();
@@ -1869,7 +1963,7 @@ app.get('/api/audit-logs', requireAuth, requireRole('Admin', 'Supervisor'), asyn
 const UPLOAD_MAX_BYTES = 15 * 1024 * 1024; // 15 MB
 const UPLOAD_ALLOWED_EXT = ['.pdf', '.png', '.jpg', '.jpeg', '.xlsx', '.xls'];
 
-app.post('/api/quotations/documents', requireAuth, async (req, res) => {
+app.post('/api/quotations/documents', requireAuth, bloquearSiTerminado(desdeNombreProyectoEnQuery()), async (req, res) => {
   const { client_rut, client_name, project_name, file_name, created_by } =
     req.query as Record<string, string>;
 
@@ -1934,16 +2028,23 @@ app.get('/api/projects', requireAuth, async (req, res) => {
   const rows = await db.prepare(`
     SELECT p.*, pc.jefe_max_pct, pc.supervisor_max_pct, pc.bono_pie_pct,
       pc.vigencia_cotizacion_dias, pc.reserva_clp, pc.nombre_inmobiliaria,
-      pc.direccion_proyecto, pc.comuna_proyecto, pc.ciudad_proyecto, pc.cantidad_cuotas_pie
+      pc.direccion_proyecto, pc.comuna_proyecto, pc.ciudad_proyecto, pc.cantidad_cuotas_pie,
+      (SELECT COUNT(*) FROM units u WHERE u.project_id = p.id) AS unidades_count,
+      (SELECT COUNT(*) FROM clients c WHERE c.project_id = p.id) AS clientes_count
     FROM projects p
     LEFT JOIN project_configs pc ON pc.project_id = p.id
-    ORDER BY p.created_at DESC
+    ORDER BY p.archivado ASC, p.created_at DESC
   `).all() as Array<Record<string, unknown>>;
   await auditProjectAccessForProjectIds(req, rows.map(r => r.id as string | undefined), 'GET /api/projects');
   res.json(rows.map(r => ({
     id: r.id,
     nombre: r.nombre,
     fechaCreacion: r.fecha_creacion,
+    archivado: r.archivado === true,
+    archivadoAt: (r.archivado_at as string | null) ?? undefined,
+    archivadoPor: (r.archivado_por as string | null) ?? undefined,
+    unidadesCount: Number(r.unidades_count ?? 0),
+    clientesCount: Number(r.clientes_count ?? 0),
     ...(r.jefe_max_pct != null ? {
       discountConfig: {
         jefeMaxPct: r.jefe_max_pct,
@@ -1988,29 +2089,164 @@ app.patch('/api/projects/:id', requireAuth, requireRole('Admin'), async (req, re
   res.json({ ok: true });
 });
 
+/**
+ * Terminar / reabrir un proyecto. Reversible y no destructivo.
+ *
+ * Un proyecto terminado sigue siendo consultable y seleccionable — hay que poder descargar
+ * sus reportes — pero ningún endpoint de escritura lo acepta (ver bloquearSiTerminado).
+ * Este endpoint es deliberadamente la ÚNICA puerta de reapertura, y por eso NO lleva el
+ * middleware de bloqueo: si lo llevara, un proyecto terminado no se podría reabrir nunca.
+ */
+app.patch('/api/projects/:id/archivar', requireAuth, requireRole('Admin'), async (req, res) => {
+  const { id } = req.params;
+  const { archivado } = req.body as { archivado?: unknown };
+  if (typeof archivado !== 'boolean') {
+    res.status(400).json({ error: 'archivado debe ser booleano' });
+    return;
+  }
+
+  const project = await db.prepare('SELECT id, nombre FROM projects WHERE id = ?').get(id) as { id: string; nombre: string } | undefined;
+  if (!project) { res.status(404).json({ error: 'Proyecto no encontrado' }); return; }
+
+  const userId = (req as AuthenticatedRequest).userId;
+  const userRole = (req as AuthenticatedRequest).userRole;
+  const userName = (await getUserById(userId))?.name || '';
+  const now = new Date().toISOString();
+
+  // Al terminar se sella quién y cuándo; al reabrir se limpia, para que el sello siempre
+  // describa el cierre vigente y no uno anterior.
+  await db.prepare('UPDATE projects SET archivado = ?, archivado_at = ?, archivado_por = ?, updated_at = ? WHERE id = ?')
+    .run(archivado, archivado ? now : null, archivado ? (userName || userId) : null, now, id);
+
+  await createAuditLog(
+    userId, userName, userRole,
+    archivado ? 'Terminar proyecto' : 'Reabrir proyecto',
+    'Project', id,
+    `Proyecto "${project.nombre}" ${archivado ? 'marcado como terminado (solo lectura)' : 'reabierto para edición'}`,
+  );
+
+  res.json({ ok: true, archivado });
+});
+
 app.delete('/api/projects/:id', requireAuth, requireRole('Admin'), async (req, res) => {
   const { id } = req.params;
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
 
-  const project = await db.prepare('SELECT id, nombre FROM projects WHERE id = ?').get(id) as { id: string; nombre: string } | undefined;
+  const project = await db.prepare('SELECT id, nombre, archivado FROM projects WHERE id = ?').get(id) as
+    { id: string; nombre: string; archivado: boolean } | undefined;
   if (!project) { res.status(404).json({ error: 'Proyecto no encontrado' }); return; }
+  await auditProjectAccess(req, id, 'DELETE /api/projects/:id');
+
+  // Flujo obligatorio de dos pasos: terminar y después eliminar. Evita que un click
+  // accidental borre un proyecto en operación.
+  if (project.archivado !== true) {
+    res.status(409).json({
+      error: `El proyecto "${project.nombre}" está activo. Márcalo como terminado antes de eliminarlo.`,
+      codigo: 'PROYECTO_NO_TERMINADO',
+    });
+    return;
+  }
+
+  // Venta notariada = valor de retención legal. Esas filas cargan fecha_escritura,
+  // notaria, repertorio, cbr_* y factura_numero; no se borran por API.
+  const notariadas = await db.prepare(
+    `SELECT estado, COUNT(*)::int AS n FROM units
+     WHERE project_id = ? AND estado IN ('Escriturado', 'Promesado') GROUP BY estado`,
+  ).all(id) as Array<{ estado: string; n: number }>;
+  if (notariadas.length > 0) {
+    const detalle = notariadas.map(r => `${r.n} ${r.estado}`).join(' y ');
+    res.status(409).json({
+      error: `El proyecto "${project.nombre}" tiene ${detalle}. Una venta con promesa o escritura no se puede eliminar: ` +
+        'esos registros tienen valor legal de retención.',
+      codigo: 'UNIDADES_CON_VALOR_LEGAL',
+      detalle: notariadas,
+    });
+    return;
+  }
+
+  // Conteos previos: van al audit log, que es el único rastro que sobrevive al borrado.
+  const previo = await db.prepare(`
+    SELECT (SELECT COUNT(*) FROM units WHERE project_id = ?) AS unidades,
+           (SELECT COUNT(*) FROM clients WHERE project_id = ?) AS clientes
+  `).get(id, id) as { unidades: string; clientes: string };
+
+  /**
+   * Rutas de archivos a borrar, recolectadas y validadas ANTES de la transacción: un
+   * fs.unlink no se revierte con ROLLBACK, así que el unlink va después del COMMIT.
+   * Cada ruta se valida contra UPLOADS_DIR con la misma lógica del guard de traversal
+   * de /uploads — un `url` guardado en documents es dato de entrada, no confiable.
+   */
+  const uploadsDir = path.resolve(UPLOADS_DIR);
+  const archivosABorrar = new Set<string>();
+  const agregarRuta = (relativa: unknown) => {
+    if (typeof relativa !== 'string' || relativa.trim() === '') return;
+    const limpia = relativa.replace(/^\/?uploads\//, '').replace(/^\/+/, '');
+    if (limpia === '') return;
+    const absoluta = path.resolve(path.join(uploadsDir, limpia));
+    if (!absoluta.startsWith(uploadsDir + path.sep)) return; // fuera de UPLOADS_DIR: se ignora
+    archivosABorrar.add(absoluta);
+  };
+
+  for (const r of await db.prepare('SELECT pdf_path FROM quotation_drafts WHERE project_id = ? AND pdf_path IS NOT NULL').all(id) as Array<{ pdf_path: string }>) {
+    agregarRuta(r.pdf_path);
+  }
+  for (const tabla of ['clients', 'units'] as const) {
+    for (const r of await db.prepare(`SELECT documents FROM ${tabla} WHERE project_id = ?`).all(id) as Array<{ documents: unknown }>) {
+      try {
+        const docs = typeof r.documents === 'string' ? JSON.parse(r.documents || '[]') : (r.documents ?? []);
+        if (Array.isArray(docs)) for (const d of docs) agregarRuta((d as { url?: unknown })?.url);
+      } catch { /* documents corrupto: no se borra ningún archivo por esa fila */ }
+    }
+  }
 
   await withTx(async (tx) => {
+    // Las notificaciones se borran ANTES que sus entidades padre: los subselects
+    // necesitan que discount_requests / approval_requests / units / clients existan aún.
+    await tx.prepare(`
+      DELETE FROM notifications WHERE related_id IN (
+        SELECT id FROM discount_requests WHERE project_id = ?
+        UNION ALL SELECT id FROM approval_requests WHERE project_id = ?
+        UNION ALL SELECT id FROM units WHERE project_id = ?
+        UNION ALL SELECT id FROM clients WHERE project_id = ?
+      )`).run(id, id, id, id);
     await tx.prepare('DELETE FROM payment_plans WHERE project_id = ?').run(id);
-    await tx.prepare(`DELETE FROM notifications WHERE related_id IN (SELECT id FROM discount_requests WHERE project_id = ?)`).run(id);
+    await tx.prepare('DELETE FROM approval_requests WHERE project_id = ?').run(id);
     await tx.prepare('DELETE FROM discount_requests WHERE project_id = ?').run(id);
+    await tx.prepare('DELETE FROM price_history WHERE project_id = ?').run(id);
     await tx.prepare('DELETE FROM quotation_drafts WHERE project_id = ?').run(id);
     await tx.prepare('DELETE FROM units WHERE project_id = ?').run(id);
     await tx.prepare('DELETE FROM clients WHERE project_id = ?').run(id);
     await tx.prepare('DELETE FROM project_configs WHERE project_id = ?').run(id);
+    // Sin esto los usuarios quedan con el id de un proyecto inexistente en su
+    // allowlist, y canAccessProject compara contra basura. El operador `-` es no-op
+    // cuando el elemento no está, así que no hace falta filtrar con WHERE. NO usar el
+    // operador de existencia jsonb `?`: db.ts reescribe todo '?' como placeholder.
+    await tx.prepare(`UPDATE users SET assigned_project_ids = COALESCE(assigned_project_ids, '[]'::jsonb) - ?::text`)
+      .run(id);
     await tx.prepare('DELETE FROM projects WHERE id = ?').run(id);
   });
 
-  const userName = (await getUserById(userId))?.name || '';
-  createAuditLog(userId, userName, userRole, 'Eliminar proyecto', 'Project', id, `Proyecto "${project.nombre}" eliminado con cascada`);
+  // Después del COMMIT: un unlink no se revierte con ROLLBACK, así que si la transacción
+  // hubiera fallado los archivos siguen ahí junto a sus filas. Cada uno en su try/catch
+  // porque un archivo ya inexistente no debe abortar el resto.
+  let archivosBorrados = 0;
+  for (const ruta of archivosABorrar) {
+    try {
+      if (fs.existsSync(ruta)) { fs.unlinkSync(ruta); archivosBorrados++; }
+    } catch (err) {
+      console.warn(`[delete-project] no se pudo borrar ${ruta}:`, (err as Error).message);
+    }
+  }
 
-  res.json({ ok: true });
+  const userName = (await getUserById(userId))?.name || '';
+  await createAuditLog(
+    userId, userName, userRole, 'Eliminar proyecto', 'Project', id,
+    `Proyecto "${project.nombre}" eliminado con cascada (${previo.unidades} unidades, ${previo.clientes} clientes, ` +
+    `${archivosBorrados}/${archivosABorrar.size} archivos)`,
+  );
+
+  res.json({ ok: true, archivosBorrados });
 });
 
 app.get('/api/projects/:id/config', requireAuth, async (req, res) => {
@@ -2038,7 +2274,7 @@ app.get('/api/projects/:id/config', requireAuth, async (req, res) => {
   });
 });
 
-app.post('/api/projects/:id/config', requireAuth, requireRole('Admin', 'Supervisor'), async (req, res) => {
+app.post('/api/projects/:id/config', requireAuth, requireRole('Admin', 'Supervisor'), bloquearSiTerminado(desdeParams('id')), async (req, res) => {
   const body = req.body as Record<string, unknown>;
   const now = new Date().toISOString();
   await auditProjectAccess(req, req.params.id, 'POST /api/projects/:id/config');
@@ -2106,7 +2342,7 @@ app.get('/api/clients', requireAuth, async (req, res) => {
   })));
 });
 
-app.post('/api/clients', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), async (req, res) => {
+app.post('/api/clients', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), bloquearSiTerminado(desdeBody('projectId')), async (req, res) => {
   const body = req.body as Record<string, unknown>;
   const now = new Date().toISOString();
   const id = (body.id as string | undefined) || crypto.randomUUID();
@@ -2135,7 +2371,7 @@ app.post('/api/clients', requireAuth, requireRole('Admin', 'JefeSala', 'Supervis
   res.json({ id, ...body });
 });
 
-app.patch('/api/clients/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), async (req, res) => {
+app.patch('/api/clients/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), bloquearSiTerminado(desdeTabla('clients')), async (req, res) => {
   const body = req.body as Record<string, unknown>;
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
@@ -2226,7 +2462,7 @@ app.get('/api/clients/:id/quotations', requireAuth, async (req, res) => {
   res.json(result);
 });
 
-app.post('/api/clients/bulk-import', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), async (req, res) => {
+app.post('/api/clients/bulk-import', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), bloquearSiTerminado(desdeBody('projectId')), async (req, res) => {
   const { clients: clientList, projectId } = req.body as { clients: Array<Record<string, unknown>>; projectId: string };
 
   if (!Array.isArray(clientList) || clientList.length === 0) {
@@ -2293,7 +2529,7 @@ app.post('/api/clients/bulk-import', requireAuth, requireRole('Admin', 'JefeSala
   res.json(results);
 });
 
-app.delete('/api/clients/:id', requireAuth, requireRole('Admin', 'Supervisor'), async (req, res) => {
+app.delete('/api/clients/:id', requireAuth, requireRole('Admin', 'Supervisor'), bloquearSiTerminado(desdeTabla('clients')), async (req, res) => {
   const existing = await db.prepare('SELECT project_id FROM clients WHERE id = ?').get(req.params.id) as { project_id: string | null } | undefined;
   await auditProjectAccess(req, existing?.project_id, 'DELETE /api/clients/:id');
   const result = await db.prepare('DELETE FROM clients WHERE id = ?').run(req.params.id);
@@ -2388,6 +2624,11 @@ app.get('/api/units', requireAuth, async (req, res) => {
     observaciones: (r.observaciones as string) || '',
     documents: JSON.parse((r.documents as string) || '[]'),
     descuentoPct: r.descuento_pct,
+    // descuento_cliente existía en la BD pero no se mapeaba, así que nunca llegaba al
+    // navegador aunque el tipo RealEstateUnit ya lo declaraba. Number() es necesario:
+    // la columna es NUMERIC(5,2) y node-postgres devuelve NUMERIC como string ("7.50"),
+    // así que sin convertir el campo violaría su propio tipo `number`.
+    descuentoCliente: r.descuento_cliente != null ? Number(r.descuento_cliente) : undefined,
     descuentoPendiente: r.descuento_pendiente === 1,
     descuentoSolicitudId: r.descuento_solicitud_id,
     aplicaBonoPie: r.aplica_bono_pie === 1,
@@ -2419,7 +2660,7 @@ app.get('/api/units/:id/price-history', requireAuth, async (req, res) => {
   })));
 });
 
-app.post('/api/units/bulk-price-update', requireAuth, requireRole('Admin', 'Supervisor'), async (req, res) => {
+app.post('/api/units/bulk-price-update', requireAuth, requireRole('Admin', 'Supervisor'), bloquearSiTerminado(desdeUnitIdsDelBody()), async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
   const { unitIds, tipo, valor, motivo } = req.body as {
@@ -2486,7 +2727,7 @@ app.post('/api/units/bulk-price-update', requireAuth, requireRole('Admin', 'Supe
   res.json({ updated, errors });
 });
 
-app.post('/api/units', requireAuth, requireRole('Admin'), async (req, res) => {
+app.post('/api/units', requireAuth, requireRole('Admin'), bloquearSiTerminado(desdeBody('projectId')), async (req, res) => {
   const body = req.body as Record<string, unknown>;
   const now = new Date().toISOString();
   const id = (body.id as string | undefined) || crypto.randomUUID();
@@ -2495,7 +2736,7 @@ app.post('/api/units', requireAuth, requireRole('Admin'), async (req, res) => {
   res.json({ id, ...body });
 });
 
-app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), async (req, res) => {
+app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), bloquearSiTerminado(desdeTabla('units')), async (req, res) => {
   const body = req.body as Record<string, unknown>;
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
@@ -2722,7 +2963,7 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
   res.json({ ok: true });
 });
 
-app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), async (req, res) => {
+app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), bloquearSiTerminado(desdeTabla('units')), async (req, res) => {
   const body = req.body as { clienteId: string; asignadoPor?: string; fechaAsignacion?: string; fechaReserva?: string };
   const { id } = req.params;
   const userId = (req as AuthenticatedRequest).userId;
@@ -2822,7 +3063,7 @@ app.patch('/api/units/:id/assign', requireAuth, requireRole('Admin', 'JefeSala',
   }
 });
 
-app.patch('/api/units/:id/unassign', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), async (req, res) => {
+app.patch('/api/units/:id/unassign', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), bloquearSiTerminado(desdeTabla('units')), async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
   const userName = (await getUserById(userId))?.name || '';
@@ -2851,7 +3092,7 @@ app.patch('/api/units/:id/unassign', requireAuth, requireRole('Admin', 'JefeSala
   res.json({ ok: true });
 });
 
-app.post('/api/units/:id/liberar', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor'), async (req, res) => {
+app.post('/api/units/:id/liberar', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor'), bloquearSiTerminado(desdeTabla('units')), async (req, res) => {
   const userId = (req as AuthenticatedRequest).userId;
   const userRole = (req as AuthenticatedRequest).userRole;
   const userName = (await getUserById(userId))?.name || '';
@@ -2926,6 +3167,45 @@ app.post('/api/sync', requireAuth, requireRole('Admin'), async (req, res) => {
     await auditProjectAccessForProjectIds(req, projects.map(p => p.id as string | undefined), 'POST /api/sync app_state');
   } else if (key.startsWith('project_config_')) {
     await auditProjectAccess(req, key.replace('project_config_', ''), 'POST /api/sync project_config');
+  }
+
+  /**
+   * Este endpoint escribe snapshots del estado completo y puede sobrescribir o resucitar
+   * datos de cualquier proyecto, así que no alcanza con el middleware por endpoint: hay
+   * que mirar el payload. Si toca aunque sea una entidad de un proyecto terminado se
+   * rechaza el request COMPLETO y se nombran los proyectos — un filtrado silencioso
+   * dejaría al cliente creyendo que su snapshot se aplicó entero.
+   */
+  const proyectosDelPayload = new Set<string>();
+  if (key === 'app_state') {
+    const state = (value ?? {}) as Record<string, unknown>;
+    const listas: Array<[string, string]> = [['projects', 'id'], ['clients', 'projectId'], ['units', 'projectId']];
+    for (const [lista, campo] of listas) {
+      for (const fila of (state[lista] as Array<Record<string, unknown>> | undefined) ?? []) {
+        const pid = fila?.[campo];
+        if (typeof pid === 'string' && pid.length > 0) proyectosDelPayload.add(pid);
+      }
+    }
+  } else if (key.startsWith('project_config_')) {
+    const pid = key.replace('project_config_', '');
+    if (pid) proyectosDelPayload.add(pid);
+  }
+
+  if (proyectosDelPayload.size > 0) {
+    const ids = [...proyectosDelPayload];
+    const terminados = await db.prepare(
+      `SELECT nombre FROM projects WHERE archivado = true AND id IN (${ids.map(() => '?').join(',')})`,
+    ).all(...ids) as Array<{ nombre: string }>;
+    if (terminados.length > 0) {
+      const nombres = terminados.map(p => `"${p.nombre}"`).join(', ');
+      res.status(409).json({
+        error: `El payload incluye datos de ${terminados.length === 1 ? 'un proyecto terminado' : 'proyectos terminados'} (${nombres}). ` +
+          'Reábrelo para sincronizar, o quitá esas entidades del snapshot.',
+        codigo: 'PROYECTO_TERMINADO',
+        proyectosTerminados: terminados.map(p => p.nombre),
+      });
+      return;
+    }
   }
 
   await db.prepare(`INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, ?)
@@ -3039,6 +3319,34 @@ if (isMain) {
         if (!done) {
           await db.prepare(`UPDATE project_configs SET dias_duracion_reserva = duracion_cotizacion_dias WHERE duracion_cotizacion_dias IS NOT NULL`).run();
           await db.prepare("INSERT INTO app_state (key, value) VALUES ('migration_checkpoint_a_reserva', 'true') ON CONFLICT(key) DO UPDATE SET value = 'true'").run();
+        }
+      }
+      // ── Proyecto terminado ────────────────────────────────────────────────
+      // Congelamiento reversible: el proyecto terminado sigue consultable y se pueden
+      // descargar sus reportes, pero ningún endpoint de escritura lo acepta.
+      // DEFAULT false deja los proyectos existentes editables como hasta ahora.
+      await db.prepare(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS archivado BOOLEAN NOT NULL DEFAULT false`).run();
+      // Sello de quién y cuándo lo terminó: es lo primero que se pregunta cuando alguien
+      // se topa con un proyecto cerrado. Se limpia a NULL al reabrir.
+      await db.prepare(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS archivado_at TIMESTAMPTZ`).run();
+      await db.prepare(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS archivado_por TEXT`).run();
+      // ── Truncado de superficies a 2 decimales ─────────────────────────────
+      // La carga masiva ya trunca Superficie/Terraza al parsear el Excel; esto normaliza
+      // las filas que entraron antes de esa regla. trunc() de Postgres corta sin redondear
+      // (12.349 → 12.34), igual que truncar2Decimales en ProjectCreationWizard.
+      // Con flag: init() corre en cada arranque y no debe re-machacar ediciones posteriores.
+      {
+        const done = await db.prepare("SELECT value FROM app_state WHERE key = 'migration_trunc_superficies'").get() as { value: string } | undefined;
+        if (!done) {
+          const r = await db.prepare(`
+            UPDATE units SET
+              superficie = trunc(superficie::numeric, 2),
+              terraza = trunc(terraza::numeric, 2)
+            WHERE (superficie IS NOT NULL AND superficie <> trunc(superficie::numeric, 2))
+               OR (terraza IS NOT NULL AND terraza <> trunc(terraza::numeric, 2))
+          `).run();
+          console.log(`[Migration] ✓ superficies truncadas a 2 decimales: ${r.changes} unidad(es)`);
+          await db.prepare("INSERT INTO app_state (key, value) VALUES ('migration_trunc_superficies', 'true') ON CONFLICT(key) DO UPDATE SET value = 'true'").run();
         }
       }
       await db.prepare(`CREATE TABLE IF NOT EXISTS indicadores_cache (

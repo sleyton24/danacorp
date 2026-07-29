@@ -7,9 +7,11 @@ interface PriceManagerProps {
   onUpdateUnit: (unit: RealEstateUnit) => void;
   currentUser: User;
   onRefreshUnits?: () => Promise<void> | void;
+  /** Proyecto terminado: solo consulta. El backend igual rechaza con 409. */
+  proyectoTerminado?: boolean;
 }
 
-export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit, currentUser, onRefreshUnits }) => {
+export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit, currentUser, onRefreshUnits, proyectoTerminado }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedUnit, setSelectedUnit] = useState<RealEstateUnit | null>(null);
   const [tempPrice, setTempPrice] = useState<string>('');
@@ -178,6 +180,7 @@ export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit,
   }, [units, searchTerm, filterType, filterOrientacion, filterPiso, filterDormitorios, filterBanos]);
 
   const openEditModal = (unit: RealEstateUnit, effectiveStatus: string) => {
+    if (proyectoTerminado) return; // proyecto terminado: no se abre el editor de precio
     // Tarea Puntual: Se restringe la edición para JefeSala
     if (!isStatusEditable(effectiveStatus) || currentUser.role === 'Ventas' || currentUser.role === 'Lectura' || currentUser.role === 'JefeSala') return;
     setSelectedUnit(unit);
@@ -190,6 +193,7 @@ export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit,
   };
 
   const handleSave = () => {
+    if (proyectoTerminado) return;
     if (selectedUnit && tempPrice) {
       const newPrice = parseFloat(tempPrice);
       const updatedUnit: RealEstateUnit = {
@@ -216,6 +220,7 @@ export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit,
   const bulkTargetUnits = filteredUnits.filter(u => isStatusEditable(getEffectiveStatus(u)));
 
   const handleBulkApply = async () => {
+    if (proyectoTerminado) return;
     const valor = parseFloat(bulkValor);
     if (isNaN(valor) || valor <= 0) return;
     setBulkLoading(true);

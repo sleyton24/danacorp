@@ -59,6 +59,18 @@ export interface Project {
   id: string;
   nombre: string;
   fechaCreacion: string;
+  /**
+   * TERMINADO: el proyecto sigue consultable y sus reportes descargables, pero ningún
+   * endpoint de escritura lo acepta. La columna de BD conserva el nombre 'archivado';
+   * en pantalla el concepto se llama "Terminado".
+   */
+  archivado?: boolean;
+  /** Sello del cierre vigente. Se limpian al reabrir. */
+  archivadoAt?: string;
+  archivadoPor?: string;
+  /** Conteos que devuelve GET /api/projects; se usan al confirmar una eliminación. */
+  unidadesCount?: number;
+  clientesCount?: number;
   discountConfig?: DiscountConfig;
 }
 
