@@ -505,7 +505,8 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     Promesado:   'bg-blue-50 border-blue-500 text-blue-700',
     Escriturado: 'bg-purple-50 border-purple-500 text-purple-700',
   };
-  const canAssign = currentUser.role !== 'Lectura' && (!formData.clienteId || puedeReasignar);
+  // isReadOnly, no solo el rol: con el proyecto terminado tampoco se asigna ni reasigna.
+  const canAssign = !isReadOnly && (!formData.clienteId || puedeReasignar);
   const canAssignClient = !isAssociatedToParent || parentUnit?.estado === 'Disponible';
 
   // NUEVA REGLA: permisos del cuadro financiero (descuentos, bono pie, forma de pago) por estado.
@@ -1186,7 +1187,8 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                     disabled={isReadOnly}
                     value={formData.estado}
                     onChange={(e) => handleChange('estado', e.target.value)}
-                    className={`ml-4 px-4 py-2 rounded-lg text-base font-semibold border-2 shadow-sm outline-none cursor-pointer focus:ring-2 focus:ring-offset-1 ${estadoStyles[formData.estado] ?? estadoStyles.Disponible}`}
+                    title={isReadOnly ? 'El proyecto está terminado: el estado no se puede cambiar' : 'Cambiar estado de la unidad'}
+                    className={`ml-4 px-4 py-2 rounded-lg text-base font-semibold border-2 shadow-sm outline-none focus:ring-2 focus:ring-offset-1 ${isReadOnly ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'} ${estadoStyles[formData.estado] ?? estadoStyles.Disponible}`}
                 >
                     {['Disponible', 'Reservado', 'Promesado', 'Escriturado'].map(s => <option key={s} value={s}>● {s}</option>)}
                 </select>
@@ -1339,8 +1341,8 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
               </div>
 
               <div className="pt-6 border-t border-gray-100 grid grid-cols-1 md:grid-cols-2 gap-8">
-                    <AssetTagInput label="Estacionamientos" type="Estacionamiento" allUnits={allUnits} selectedUnits={formData.estacionamientos} onChange={(val) => handleChange('estacionamientos', val)} />
-                    <AssetTagInput label="Bodegas" type="Bodega" allUnits={allUnits} selectedUnits={formData.bodegas} onChange={(val) => handleChange('bodegas', val)} />
+                    <AssetTagInput disabled={isReadOnly} label="Estacionamientos" type="Estacionamiento" allUnits={allUnits} selectedUnits={formData.estacionamientos} onChange={(val) => handleChange('estacionamientos', val)} />
+                    <AssetTagInput disabled={isReadOnly} label="Bodegas" type="Bodega" allUnits={allUnits} selectedUnits={formData.bodegas} onChange={(val) => handleChange('bodegas', val)} />
               </div>
           </div>
 

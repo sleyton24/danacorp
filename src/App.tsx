@@ -98,7 +98,7 @@ const App: React.FC = () => {
           return;
         }
         setCurrentUser(data.user);
-        setCurrentView(vistaInicial(data.user.role));
+        aplicarVistaInicial(data.user.role);
         // data-loading effect handles setAuthLoading(false)
       })
       .catch(() => { setAuthLoading(false); });
@@ -165,7 +165,21 @@ const App: React.FC = () => {
     return () => window.removeEventListener('popstate', handlePopState);
   }, [selectedUnit?.id]);
 
+  /**
+   * La vista de aterrizaje se aplica UNA sola vez por sesión y nunca por encima de una
+   * navegación del usuario. Se resuelve de forma asíncrona (después del fetch a /api/me),
+   * así que sin este candado podía pisar la vista a la que el usuario ya había entrado.
+   */
+  const vistaDefinidaRef = useRef(false);
+  const aplicarVistaInicial = (role: string) => {
+    if (vistaDefinidaRef.current) return;
+    vistaDefinidaRef.current = true;
+    setCurrentView(vistaInicial(role));
+  };
+
   const handleChangeView = (newView: typeof currentView) => {
+    // Cualquier navegación deliberada cierra la puerta a la vista de aterrizaje.
+    vistaDefinidaRef.current = true;
     if (currentView === 'quoter' && newView !== 'quoter' && activeDraftId) {
       setPendingNavigation(newView);
       return;
@@ -191,8 +205,14 @@ const App: React.FC = () => {
       return;
     }
     setCurrentProjectId(newId);
-    // Cuarto punto de aterrizaje: cambiar de proyecto también reponía 'summary'.
-    setCurrentView(currentUser ? vistaInicial(currentUser.role) : 'summary');
+    // Cambiar de proyecto NO cambia de vista: si estabas en Inventario o en Lista de
+    // precios, seguís ahí con el proyecto nuevo. Reponer la vista de aterrizaje acá era el
+    // salto a Resumen "sin navegar" — el usuario cambia de proyecto, no de sección.
+    // Solo se reencauza si la vista actual no es válida para el rol.
+    if (currentUser && !canViewView(currentUser.role, currentView)) {
+      setCurrentView(vistaInicial(currentUser.role));
+    }
+    // La unidad abierta pertenece al proyecto anterior: se cierra siempre.
     setSelectedUnit(null);
   };
 
@@ -260,13 +280,15 @@ const App: React.FC = () => {
   const handleLogin = (user: User, tok: string) => {
     tokenRef.current = tok;
     setCurrentUser(user);
-    setCurrentView(vistaInicial(user.role));
+    vistaDefinidaRef.current = false; // sesion nueva: la vista de aterrizaje vuelve a aplicar
+    aplicarVistaInicial(user.role);
   };
 
   const handleLogout = () => {
     localStorage.removeItem('dw_token');
     localStorage.removeItem('dw_user');
     tokenRef.current = '';
+    vistaDefinidaRef.current = false;
     setCurrentUser(null);
   };
 
@@ -426,10 +448,14 @@ const App: React.FC = () => {
   };
 
   /**
-   * Recarga proyectos + unidades + clientes. Necesario tras archivar o eliminar un
+   * Recarga proyectos + unidades + clientes. Necesario tras terminar o eliminar un
    * proyecto: el borrado es en cascada, así que unidades y clientes en memoria quedan
-   * desactualizados. También reencauza currentProjectId si el proyecto apuntado ya no
-   * está seleccionable (eliminado o archivado).
+   * desactualizados.
+   *
+   * Solo reencauza currentProjectId si el proyecto apuntado dejó de EXISTIR. Un proyecto
+   * terminado sigue siendo seleccionable y consultable, así que echar al usuario de él al
+   * terminarlo era el primer eslabón del salto de vista: el reencauce cambiaba de proyecto
+   * y volver a elegirlo a mano reponía la vista de aterrizaje.
    */
   const refreshProjectsAndData = async () => {
     const tok = localStorage.getItem('dw_token');
@@ -446,9 +472,10 @@ const App: React.FC = () => {
       if (projRes.ok) {
         const projs = await projRes.json() as Project[];
         setProjects(projs);
-        const seleccionables = projs.filter(p => !p.archivado);
         setCurrentProjectId(prev =>
-          prev && seleccionables.some(p => p.id === prev) ? prev : (seleccionables[0]?.id ?? null));
+          prev && projs.some(p => p.id === prev)
+            ? prev
+            : (projs.find(p => !p.archivado)?.id ?? projs[0]?.id ?? null));
       }
     } catch (err) { console.error('[App] Error refrescando proyectos:', err); }
   };

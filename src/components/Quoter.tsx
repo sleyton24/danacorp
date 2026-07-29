@@ -1765,6 +1765,36 @@ export const Quoter: React.FC<QuoterProps> = ({
     );
   };
 
+  /**
+   * Proyecto terminado: se corta en la ENTRADA, no al final del flujo.
+   *
+   * El backend rechaza con 409 crear el borrador, generarlo y persistir el PDF, así que
+   * dejar entrar al paso 1 ofrecía un formulario editable y un "Continuar" habilitado para
+   * un flujo que no puede completarse. El autosave además retorna temprano, así que lo
+   * tipeado no se guardaba en ninguna parte: puro trabajo perdido.
+   *
+   * Los borradores ya emitidos siguen accesibles desde la ficha del cliente y Descargas,
+   * que son lectura.
+   */
+  if (proyectoTerminado) {
+    return (
+      <div className="animate-fade-in max-w-2xl mx-auto py-16 px-4 text-center">
+        <div className="w-14 h-14 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-center mx-auto mb-5">
+          <Lock className="w-7 h-7 text-amber-600" />
+        </div>
+        <h2 className="text-xl font-bold text-gray-900">No se pueden emitir cotizaciones</h2>
+        <p className="text-sm text-gray-500 mt-2 leading-relaxed">
+          Este proyecto está terminado: se puede consultar y descargar sus reportes, pero no
+          admite cotizaciones nuevas.
+        </p>
+        <p className="text-sm text-gray-500 mt-3 leading-relaxed">
+          Las cotizaciones ya emitidas siguen disponibles en la ficha de cada cliente y en
+          Descargas. Para volver a cotizar, un administrador tiene que reabrir el proyecto.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="animate-fade-in max-w-6xl mx-auto space-y-8 pb-12">
       {showDraftModal && <DraftModal />}

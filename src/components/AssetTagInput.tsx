@@ -9,6 +9,8 @@ interface AssetTagInputProps {
   selectedUnits: string[];
   onChange: (units: string[]) => void;
   currentUnitId?: string;
+  /** Solo lectura: oculta la X de los chips y bloquea el alta. */
+  disabled?: boolean;
 }
 
 export const AssetTagInput: React.FC<AssetTagInputProps> = ({
@@ -17,7 +19,8 @@ export const AssetTagInput: React.FC<AssetTagInputProps> = ({
   allUnits,
   selectedUnits,
   onChange,
-  currentUnitId
+  currentUnitId,
+  disabled = false
 }) => {
   const [inputValue, setInputValue] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +74,7 @@ export const AssetTagInput: React.FC<AssetTagInputProps> = ({
   };
 
   const addTag = (numero: string) => {
+    if (disabled) return;
     if (selectedUnits.includes(numero)) {
       setInputValue('');
       setShowSuggestions(false);
@@ -104,10 +108,12 @@ export const AssetTagInput: React.FC<AssetTagInputProps> = ({
   };
 
   const removeTag = (numeroToRemove: string) => {
+    if (disabled) return;
     onChange(selectedUnits.filter(n => n !== numeroToRemove));
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (disabled) return;
     if (e.key === 'Enter') {
       e.preventDefault();
       if (inputValue.trim()) {
@@ -129,9 +135,11 @@ export const AssetTagInput: React.FC<AssetTagInputProps> = ({
         {selectedUnits.map(tag => (
           <span key={tag} className="bg-blue-600 text-white px-2 py-1 rounded-lg text-[10px] font-black uppercase flex items-center gap-1.5 shadow-sm">
             {tag}
-            <button type="button" onClick={() => removeTag(tag)} className="hover:bg-white/20 rounded-full p-0.5 transition-colors">
-              <X className="w-3 h-3" />
-            </button>
+            {!disabled && (
+              <button type="button" onClick={() => removeTag(tag)} className="hover:bg-white/20 rounded-full p-0.5 transition-colors">
+                <X className="w-3 h-3" />
+              </button>
+            )}
           </span>
         ))}
         
@@ -139,6 +147,7 @@ export const AssetTagInput: React.FC<AssetTagInputProps> = ({
             <input
                 ref={inputRef}
                 type="text"
+                disabled={disabled}
                 value={inputValue}
                 onChange={handleInputChange}
                 onKeyDown={handleKeyDown}
