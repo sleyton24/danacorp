@@ -1,6 +1,12 @@
 import React, { useState, useMemo } from 'react';
 import { RealEstateUnit, Client, User, Project } from '../types';
 import { TrendingUp, ChevronDown, ChevronRight } from 'lucide-react';
+import {
+  estaTomado, esRolVendedor,
+  sumarUF, parseFechaFlexible, bucketMes, enPeriodo, type Periodo,
+  crearIndiceVinculos, estadoEfectivoUnidad, departamentoPadre, fechaHitoUnidad,
+  vendedorAtribuidoId,
+} from '../utils/analytics';
 
 interface SalesPerformanceViewProps {
   currentUser: User;
@@ -17,105 +23,159 @@ export const SalesPerformanceView: React.FC<SalesPerformanceViewProps> = ({
   const isVentas = currentUser.role === 'Ventas';
 
   const [filterProject, setFilterProject] = useState(currentProjectId || 'all');
-  const [filterPeriod, setFilterPeriod] = useState<'all' | 'year' | 'quarter' | 'month'>('all');
+  const [filterPeriod, setFilterPeriod] = useState<Periodo>('all');
   const [filterVendor, setFilterVendor] = useState(isVentas ? currentUser.id : 'all');
   const [expandedVendors, setExpandedVendors] = useState<Set<string>>(new Set());
 
-  const parseFecha = (s: string): Date | null => {
-    const parts = s.split('-');
-    if (parts.length < 3) return null;
-    const d = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
-    return isNaN(d.getTime()) ? null : d;
-  };
+  const clientePorId = useMemo(() => {
+    const m = new Map<string, Client>();
+    for (const c of clients) m.set(c.id, c);
+    return m;
+  }, [clients]);
 
   const filteredClients = useMemo(() => {
-    const now = new Date();
+    const ahora = new Date();
     return clients.filter(c => {
       if (filterProject !== 'all' && c.projectId !== filterProject) return false;
       if (isVentas) { if (c.ejecutivoId !== currentUser.id) return false; }
       else if (filterVendor !== 'all' && c.ejecutivoId !== filterVendor) return false;
-      if (filterPeriod !== 'all') {
-        const d = parseFecha(c.fechaRegistro);
-        if (!d) return true;
-        if (filterPeriod === 'month') return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-        if (filterPeriod === 'quarter') return Math.floor(d.getMonth() / 3) === Math.floor(now.getMonth() / 3) && d.getFullYear() === now.getFullYear();
-        if (filterPeriod === 'year') return d.getFullYear() === now.getFullYear();
-      }
-      return true;
+      // Una fecha ilegible queda FUERA del período en vez de colarse en todos.
+      return enPeriodo(parseFechaFlexible(c.fechaRegistro), filterPeriod, ahora);
     });
   }, [clients, filterProject, filterPeriod, filterVendor, isVentas, currentUser.id]);
 
-  const filteredUnits = useMemo(() =>
-    filterProject === 'all' ? units : units.filter(u => u.projectId === filterProject),
-    [units, filterProject]);
+  /**
+   * Unidades del proyecto seleccionado + el índice de vínculos.
+   *
+   * El índice se construye ANTES de filtrar por vendedor y período: las bodegas y
+   * estacionamientos heredan estado, fecha de hito y atribución de su departamento padre,
+   * y ese padre podría quedar fuera del filtro.
+   */
+  const scopeProyecto = useMemo(() => {
+    const delProyecto = filterProject === 'all' ? units : units.filter(u => u.projectId === filterProject);
+    const vinculos = crearIndiceVinculos(delProyecto.filter(u => u.type === 'Departamento'));
+    return { delProyecto, vinculos };
+  }, [units, filterProject]);
+
+  /**
+   * Los tres filtros aplicados a las unidades. Antes solo se aplicaba el de proyecto, así
+   * que la tarjeta de UF y el bloque de distribución mostraban el total del proyecto
+   * sentados al lado de tarjetas que sí respetaban vendedor y período.
+   */
+  const filteredUnits = useMemo(() => {
+    const { delProyecto, vinculos } = scopeProyecto;
+    const ahora = new Date();
+    const vendedorEfectivo = isVentas ? currentUser.id : filterVendor;
+
+    return delProyecto.filter(u => {
+      if (vendedorEfectivo !== 'all') {
+        // La atribución vive en la unidad; las vinculadas la heredan del depto padre.
+        const fuente = u.type === 'Departamento' ? u : (departamentoPadre(u, vinculos) ?? u);
+        const cliente = fuente.clienteId ? clientePorId.get(fuente.clienteId) : undefined;
+        if (vendedorAtribuidoId(fuente, cliente) !== vendedorEfectivo) return false;
+      }
+      if (filterPeriod !== 'all') {
+        // Sin hito no hay evento: una unidad disponible queda fuera de todo período.
+        if (!enPeriodo(fechaHitoUnidad(u, vinculos), filterPeriod, ahora)) return false;
+      }
+      return true;
+    });
+  }, [scopeProyecto, filterVendor, filterPeriod, isVentas, currentUser.id, clientePorId]);
+
+  /** Unidades colocadas (reservadas, promesadas o escrituradas) según estado EFECTIVO. */
+  const unidadesTomadas = useMemo(() => {
+    const { vinculos } = scopeProyecto;
+    return filteredUnits.filter(u => estaTomado(estadoEfectivoUnidad(u, vinculos)));
+  }, [filteredUnits, scopeProyecto]);
 
   const kpis = useMemo(() => {
     const cerrados = filteredClients.filter(c => c.estado === 'Cerrado').length;
     const total = filteredClients.length;
-    const ufVendidas = filteredUnits
-      .filter(u => ['Reservado', 'Promesado', 'Escriturado'].includes(u.estado))
-      .reduce((s, u) => s + (u.precioVenta || 0), 0);
     return {
       total,
       cerrados,
       activos: filteredClients.filter(c => c.estado === 'Activo').length,
       prospectos: filteredClients.filter(c => c.estado === 'Prospecto').length,
-      desistidos: filteredClients.filter(c => c.estado === 'Desistido').length,
-      ufVendidas,
-      conversion: total > 0 ? Math.round((cerrados / total) * 1000) / 10 : 0,
+      ufColocadas: sumarUF(unidadesTomadas),
+      // cerrados / total, donde Cerrado exige que TODAS las unidades del cliente estén
+      // escrituradas: es una tasa de escrituración, no de conversión de cotización.
+      tasaEscrituracion: total > 0 ? Math.round((cerrados / total) * 1000) / 10 : 0,
     };
-  }, [filteredClients, filteredUnits]);
+  }, [filteredClients, unidadesTomadas]);
 
   const funnelData = [
     { label: 'Prospectos', count: kpis.prospectos, color: '#3b82f6' },
     { label: 'Activos', count: kpis.activos, color: '#8b5cf6' },
     { label: 'Cerrados', count: kpis.cerrados, color: '#10b981' },
-    { label: 'Desistidos', count: kpis.desistidos, color: '#ef4444' },
   ];
   const funnelMax = Math.max(...funnelData.map(f => f.count), 1);
 
-  const unitTypeDist = useMemo(() => {
-    const sold = filteredUnits.filter(u => ['Reservado', 'Promesado', 'Escriturado'].includes(u.estado));
-    return (['Departamento', 'Bodega', 'Estacionamiento'] as const).map(type => ({
-      type,
-      count: sold.filter(u => u.type === type).length,
-      uf: sold.filter(u => u.type === type).reduce((s, u) => s + (u.precioVenta || 0), 0),
-    }));
-  }, [filteredUnits]);
+  /**
+   * Distribución por tipo sobre el estado EFECTIVO. Antes filtraba por el estado propio,
+   * y como las bodegas y estacionamientos viven en 'Libre Asignación'/'Asignado', las dos
+   * filas mostraban 0 y 0.0 UF de forma permanente.
+   */
+  const unitTypeDist = useMemo(() =>
+    (['Departamento', 'Bodega', 'Estacionamiento'] as const).map(type => {
+      const delTipo = unidadesTomadas.filter(u => u.type === type);
+      return { type, count: delTipo.length, uf: sumarUF(delTipo) };
+    }), [unidadesTomadas]);
 
   const vendorStats = useMemo(() => {
-    const vendorUsers = users.filter(u => u.role === 'Ventas' || u.role === 'JefeSala');
-    return vendorUsers.map(v => {
-      const vClients = filteredClients.filter(c => c.ejecutivoId === v.id);
-      const vUnits = filteredUnits.filter(u => vClients.some(c => c.id === u.clienteId));
-      return {
-        user: v,
-        cotizantes: vClients.length,
-        activos: vClients.filter(c => c.estado === 'Activo').length,
-        cerrados: vClients.filter(c => c.estado === 'Cerrado').length,
-        desistidos: vClients.filter(c => c.estado === 'Desistido').length,
-        ufVendidas: vUnits.filter(u => ['Reservado', 'Promesado', 'Escriturado'].includes(u.estado)).reduce((s, u) => s + (u.precioVenta || 0), 0),
-        clients: vClients,
-      };
-    }).sort((a, b) => b.cerrados - a.cerrados);
-  }, [filteredClients, filteredUnits, users]);
+    const { vinculos } = scopeProyecto;
+    const atribucion = (u: RealEstateUnit) => {
+      const fuente = u.type === 'Departamento' ? u : (departamentoPadre(u, vinculos) ?? u);
+      const cliente = fuente.clienteId ? clientePorId.get(fuente.clienteId) : undefined;
+      return vendedorAtribuidoId(fuente, cliente);
+    };
+
+    return users
+      .filter(u => esRolVendedor(u.role))
+      .map(v => {
+        const vClients = filteredClients.filter(c => c.ejecutivoId === v.id);
+        const vUnits = unidadesTomadas.filter(u => atribucion(u) === v.id);
+        return {
+          user: v,
+          clientesRegistrados: vClients.length,
+          activos: vClients.filter(c => c.estado === 'Activo').length,
+          cerrados: vClients.filter(c => c.estado === 'Cerrado').length,
+          unidades: vUnits.length,
+          ufColocadas: sumarUF(vUnits),
+          clients: vClients,
+        };
+      })
+      // Se muestra si tiene unidades atribuidas O clientes en cartera: un vendedor con
+      // cotizantes y cero colocaciones es una señal de gestión, no una fila vacía.
+      // Solo se oculta a quien no tiene ni unidades ni clientes en el alcance filtrado.
+      .filter(v => v.unidades > 0 || v.clientesRegistrados > 0)
+      .sort((a, b) => b.cerrados - a.cerrados);
+  }, [filteredClients, unidadesTomadas, users, scopeProyecto, clientePorId]);
 
   const top3 = vendorStats.slice(0, 3);
 
-  const trendData = useMemo(() => {
+  /**
+   * Tendencia mensual de registros. El parser tolera los dos formatos que conviven en
+   * clients.fecha_registro (DD-MM-YYYY de la UI e ISO del backend); los ilegibles se
+   * cuentan y se declaran al pie en vez de generar un bucket basura en el eje X.
+   */
+  const trend = useMemo(() => {
     const months: Record<string, { cotizantes: number; cerrados: number }> = {};
+    let descartados = 0;
     filteredClients.forEach(c => {
-      const parts = c.fechaRegistro.split('-');
-      if (parts.length < 3) return;
-      const key = `${parts[2]}-${parts[1]}`;
+      const d = parseFechaFlexible(c.fechaRegistro);
+      if (!d) { descartados++; return; }
+      const key = bucketMes(d);
       if (!months[key]) months[key] = { cotizantes: 0, cerrados: 0 };
       months[key].cotizantes++;
       if (c.estado === 'Cerrado') months[key].cerrados++;
     });
-    return Object.entries(months).sort(([a], [b]) => a.localeCompare(b)).map(([key, val]) => ({ key, ...val }));
+    const series = Object.entries(months)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, val]) => ({ key, ...val }));
+    return { series, descartados };
   }, [filteredClients]);
 
-  const trendMax = Math.max(...trendData.map(d => d.cotizantes), 1);
+  const trendMax = Math.max(...trend.series.map(d => d.cotizantes), 1);
   const fmtUF = (v: number) => v.toLocaleString('es-CL', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
   const toggleVendor = (id: string) => {
@@ -148,7 +208,7 @@ export const SalesPerformanceView: React.FC<SalesPerformanceViewProps> = ({
         </div>
         <div>
           <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wide block mb-1">Período</label>
-          <select value={filterPeriod} onChange={e => setFilterPeriod(e.target.value as typeof filterPeriod)}
+          <select value={filterPeriod} onChange={e => setFilterPeriod(e.target.value as Periodo)}
             className="px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-100">
             <option value="all">Todo el tiempo</option>
             <option value="year">Este año</option>
@@ -162,7 +222,7 @@ export const SalesPerformanceView: React.FC<SalesPerformanceViewProps> = ({
             <select value={filterVendor} onChange={e => setFilterVendor(e.target.value)}
               className="px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-100">
               <option value="all">Todos</option>
-              {users.filter(u => u.role === 'Ventas' || u.role === 'JefeSala').map(u => (
+              {users.filter(u => esRolVendedor(u.role)).map(u => (
                 <option key={u.id} value={u.id}>{u.name}</option>
               ))}
             </select>
@@ -173,10 +233,10 @@ export const SalesPerformanceView: React.FC<SalesPerformanceViewProps> = ({
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: 'Cotizantes', value: String(kpis.total), sub: 'clientes registrados', emoji: '👥' },
+          { label: 'Clientes registrados', value: String(kpis.total), sub: 'fichas de cliente creadas', emoji: '👥' },
           { label: 'Cierres', value: String(kpis.cerrados), sub: 'estado Cerrado', emoji: '✅' },
-          { label: 'UF Vendidas', value: fmtUF(kpis.ufVendidas), sub: 'precio de venta', emoji: '💰' },
-          { label: 'Conversión', value: `${kpis.conversion}%`, sub: 'cerrados / total', emoji: '📈' },
+          { label: 'UF Colocadas', value: fmtUF(kpis.ufColocadas), sub: 'reservado + promesado + escriturado, todos los tipos', emoji: '💰' },
+          { label: 'Tasa de escrituración', value: `${kpis.tasaEscrituracion}%`, sub: 'clientes con todas sus unidades escrituradas', emoji: '📈' },
         ].map(kpi => (
           <div key={kpi.label} className="bg-white rounded-xl shadow-sm border border-gray-200 p-5 space-y-1">
             <div className="text-2xl">{kpi.emoji}</div>
@@ -190,7 +250,8 @@ export const SalesPerformanceView: React.FC<SalesPerformanceViewProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Funnel */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-          <h3 className="text-sm font-bold text-gray-700 mb-5">Embudo de Ventas</h3>
+          <h3 className="text-sm font-bold text-gray-700 mb-1">Embudo de Ventas</h3>
+          <p className="text-[11px] text-gray-400 mb-5">Clientes por estado.</p>
           <div className="space-y-4">
             {funnelData.map(({ label, count, color }) => (
               <div key={label} className="flex items-center gap-3">
@@ -209,13 +270,17 @@ export const SalesPerformanceView: React.FC<SalesPerformanceViewProps> = ({
 
         {/* Unit type distribution */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-          <h3 className="text-sm font-bold text-gray-700 mb-5">Distribución por Tipo de Unidad</h3>
+          <h3 className="text-sm font-bold text-gray-700 mb-1">Distribución por Tipo de Unidad</h3>
+          <p className="text-[11px] text-gray-400 mb-5">
+            Colocadas = reservadas, promesadas o escrituradas. Las bodegas y estacionamientos
+            heredan el estado del departamento al que están vinculados.
+          </p>
           <div className="space-y-3">
             {unitTypeDist.map(({ type, count, uf }) => (
               <div key={type} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-100">
                 <div>
                   <div className="text-sm font-bold text-gray-800">{type}</div>
-                  <div className="text-xs text-gray-400">{count} unidades con estado activo</div>
+                  <div className="text-xs text-gray-400">{count} colocada{count !== 1 ? 's' : ''}</div>
                 </div>
                 <div className="text-right">
                   <div className="text-sm font-black text-blue-700 font-mono">{fmtUF(uf)} UF</div>
@@ -236,9 +301,9 @@ export const SalesPerformanceView: React.FC<SalesPerformanceViewProps> = ({
                 <div className="text-3xl">{i === 0 ? '🥇' : i === 1 ? '🥈' : '🥉'}</div>
                 <div className="font-bold text-gray-900">{v.user.name}</div>
                 <div className="text-xs text-gray-600">{v.cerrados} cierre{v.cerrados !== 1 ? 's' : ''}</div>
-                <div className="text-xs font-mono text-blue-700 font-bold">{fmtUF(v.ufVendidas)} UF</div>
+                <div className="text-xs font-mono text-blue-700 font-bold">{fmtUF(v.ufColocadas)} UF</div>
                 <div className="text-[10px] text-gray-400">
-                  Conversión: {v.cotizantes > 0 ? Math.round(v.cerrados / v.cotizantes * 100) : 0}%
+                  {v.unidades} unidad{v.unidades !== 1 ? 'es' : ''} atribuida{v.unidades !== 1 ? 's' : ''}
                 </div>
               </div>
             ))}
@@ -251,107 +316,120 @@ export const SalesPerformanceView: React.FC<SalesPerformanceViewProps> = ({
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
           <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50">
             <h3 className="text-sm font-bold text-gray-700">Matriz de Vendedores</h3>
-            <p className="text-xs text-gray-400 mt-0.5">Clic en una fila para ver los clientes del vendedor.</p>
+            <p className="text-xs text-gray-400 mt-0.5">
+              Solo vendedores con unidades atribuidas. Clic en una fila para ver sus clientes.
+            </p>
           </div>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-100 bg-gray-50 text-left">
-                <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Vendedor</th>
-                <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide text-right">Cotizantes</th>
-                <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide text-right">Activos</th>
-                <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide text-right">Cerrados</th>
-                <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide text-right">Desistidos</th>
-                <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide text-right">UF Vendidas</th>
-                <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide text-right">Conv.</th>
-              </tr>
-            </thead>
-            <tbody>
-              {vendorStats.map(v => (
-                <React.Fragment key={v.user.id}>
-                  <tr
-                    className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer transition-colors"
-                    onClick={() => toggleVendor(v.user.id)}
-                  >
-                    <td className="px-4 py-3 font-medium text-gray-900">
-                      <div className="flex items-center gap-2">
-                        {expandedVendors.has(v.user.id)
-                          ? <ChevronDown className="w-3.5 h-3.5 text-gray-400 shrink-0" />
-                          : <ChevronRight className="w-3.5 h-3.5 text-gray-400 shrink-0" />}
-                        {v.user.name}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-right text-gray-600">{v.cotizantes}</td>
-                    <td className="px-4 py-3 text-right text-gray-600">{v.activos}</td>
-                    <td className="px-4 py-3 text-right font-bold text-green-700">{v.cerrados}</td>
-                    <td className="px-4 py-3 text-right text-red-500">{v.desistidos}</td>
-                    <td className="px-4 py-3 text-right font-mono font-bold text-blue-700">{fmtUF(v.ufVendidas)}</td>
-                    <td className="px-4 py-3 text-right text-gray-500">
-                      {v.cotizantes > 0 ? Math.round(v.cerrados / v.cotizantes * 100) : 0}%
-                    </td>
-                  </tr>
-                  {expandedVendors.has(v.user.id) && v.clients.map(c => (
-                    <tr key={c.id} className="bg-blue-50/30 border-b border-blue-50">
-                      <td className="px-4 py-2 pl-10 text-xs text-gray-700" colSpan={2}>{c.nombre}</td>
-                      <td className="px-4 py-2 text-xs text-gray-400 font-mono">{c.rut}</td>
-                      <td className="px-4 py-2 text-right text-xs" colSpan={4}>
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                          c.estado === 'Cerrado' ? 'bg-green-100 text-green-700'
-                          : c.estado === 'Activo' ? 'bg-blue-100 text-blue-700'
-                          : c.estado === 'Desistido' ? 'bg-red-100 text-red-600'
-                          : 'bg-gray-100 text-gray-500'
-                        }`}>{c.estado}</span>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-100 bg-gray-50 text-left">
+                  <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Vendedor</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide text-right">Clientes</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide text-right">Activos</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide text-right">Cerrados</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide text-right">Unidades</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide text-right">UF Colocadas</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide text-right">Escrit.</th>
+                </tr>
+              </thead>
+              <tbody>
+                {vendorStats.map(v => (
+                  <React.Fragment key={v.user.id}>
+                    <tr
+                      className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer transition-colors"
+                      onClick={() => toggleVendor(v.user.id)}
+                    >
+                      <td className="px-4 py-3 font-medium text-gray-900">
+                        <div className="flex items-center gap-2">
+                          {expandedVendors.has(v.user.id)
+                            ? <ChevronDown className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                            : <ChevronRight className="w-3.5 h-3.5 text-gray-400 shrink-0" />}
+                          {v.user.name}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-right text-gray-600">{v.clientesRegistrados}</td>
+                      <td className="px-4 py-3 text-right text-gray-600">{v.activos}</td>
+                      <td className="px-4 py-3 text-right font-bold text-green-700">{v.cerrados}</td>
+                      <td className="px-4 py-3 text-right text-gray-600">{v.unidades}</td>
+                      <td className="px-4 py-3 text-right font-mono font-bold text-blue-700">{fmtUF(v.ufColocadas)}</td>
+                      <td className="px-4 py-3 text-right text-gray-500">
+                        {v.clientesRegistrados > 0 ? Math.round(v.cerrados / v.clientesRegistrados * 100) : 0}%
                       </td>
                     </tr>
-                  ))}
-                </React.Fragment>
-              ))}
-            </tbody>
-          </table>
+                    {expandedVendors.has(v.user.id) && v.clients.map(c => (
+                      <tr key={c.id} className="bg-blue-50/30 border-b border-blue-50">
+                        <td className="px-4 py-2 pl-10 text-xs text-gray-700" colSpan={2}>{c.nombre}</td>
+                        <td className="px-4 py-2 text-xs text-gray-400 font-mono">{c.rut}</td>
+                        <td className="px-4 py-2 text-right text-xs" colSpan={4}>
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            c.estado === 'Cerrado' ? 'bg-green-100 text-green-700'
+                            : c.estado === 'Activo' ? 'bg-blue-100 text-blue-700'
+                            : 'bg-gray-100 text-gray-500'
+                          }`}>{c.estado}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
       {/* Trend Line Chart (SVG) */}
-      {trendData.length > 1 && (
+      {(trend.series.length > 1 || trend.descartados > 0) && (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
           <h3 className="text-sm font-bold text-gray-700 mb-4">Tendencia de Clientes Registrados por Mes</h3>
-          <div className="overflow-x-auto">
-            <svg width={Math.max(trendData.length * 64 + 40, 400)} height={160}>
-              {[0, 0.25, 0.5, 0.75, 1].map(frac => {
-                const y = 120 - frac * 100;
-                return (
-                  <React.Fragment key={frac}>
-                    <line x1={30} y1={y} x2={Math.max(trendData.length * 64 + 40, 400)} y2={y} stroke="#f3f4f6" strokeWidth={1} />
-                    <text x={0} y={y + 4} fontSize={8} fill="#9ca3af">{Math.round(frac * trendMax)}</text>
-                  </React.Fragment>
-                );
-              })}
-              <polyline
-                fill="none" stroke="#3b82f6" strokeWidth={2}
-                points={trendData.map((d, i) => `${34 + i * 64},${120 - (d.cotizantes / trendMax) * 100}`).join(' ')}
-              />
-              <polyline
-                fill="none" stroke="#10b981" strokeWidth={2} strokeDasharray="5,3"
-                points={trendData.map((d, i) => `${34 + i * 64},${120 - (d.cerrados / trendMax) * 100}`).join(' ')}
-              />
-              {trendData.map((d, i) => (
-                <React.Fragment key={d.key}>
-                  <circle cx={34 + i * 64} cy={120 - (d.cotizantes / trendMax) * 100} r={3} fill="#3b82f6" />
-                  <circle cx={34 + i * 64} cy={120 - (d.cerrados / trendMax) * 100} r={3} fill="#10b981" />
-                  <text x={34 + i * 64} y={148} textAnchor="middle" fontSize={8} fill="#9ca3af">{d.key}</text>
-                </React.Fragment>
-              ))}
-            </svg>
-          </div>
-          <div className="flex items-center gap-5 mt-2">
-            <div className="flex items-center gap-1.5">
-              <div className="w-5 border-t-2 border-blue-500" />
-              <span className="text-xs text-gray-500">Cotizantes</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <div className="w-5 border-t-2 border-green-500 border-dashed" />
-              <span className="text-xs text-gray-500">Cerrados</span>
-            </div>
-          </div>
+          {trend.series.length > 1 && (
+            <>
+              <div className="overflow-x-auto">
+                <svg width={Math.max(trend.series.length * 64 + 40, 400)} height={160}>
+                  {[0, 0.25, 0.5, 0.75, 1].map(frac => {
+                    const y = 120 - frac * 100;
+                    return (
+                      <React.Fragment key={frac}>
+                        <line x1={30} y1={y} x2={Math.max(trend.series.length * 64 + 40, 400)} y2={y} stroke="#f3f4f6" strokeWidth={1} />
+                        <text x={0} y={y + 4} fontSize={8} fill="#9ca3af">{Math.round(frac * trendMax)}</text>
+                      </React.Fragment>
+                    );
+                  })}
+                  <polyline
+                    fill="none" stroke="#3b82f6" strokeWidth={2}
+                    points={trend.series.map((d, i) => `${34 + i * 64},${120 - (d.cotizantes / trendMax) * 100}`).join(' ')}
+                  />
+                  <polyline
+                    fill="none" stroke="#10b981" strokeWidth={2} strokeDasharray="5,3"
+                    points={trend.series.map((d, i) => `${34 + i * 64},${120 - (d.cerrados / trendMax) * 100}`).join(' ')}
+                  />
+                  {trend.series.map((d, i) => (
+                    <React.Fragment key={d.key}>
+                      <circle cx={34 + i * 64} cy={120 - (d.cotizantes / trendMax) * 100} r={3} fill="#3b82f6" />
+                      <circle cx={34 + i * 64} cy={120 - (d.cerrados / trendMax) * 100} r={3} fill="#10b981" />
+                      <text x={34 + i * 64} y={148} textAnchor="middle" fontSize={8} fill="#9ca3af">{d.key}</text>
+                    </React.Fragment>
+                  ))}
+                </svg>
+              </div>
+              <div className="flex items-center gap-5 mt-2">
+                <div className="flex items-center gap-1.5">
+                  <div className="w-5 border-t-2 border-blue-500" />
+                  <span className="text-xs text-gray-500">Clientes registrados</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-5 border-t-2 border-green-500 border-dashed" />
+                  <span className="text-xs text-gray-500">Cerrados</span>
+                </div>
+              </div>
+            </>
+          )}
+          {trend.descartados > 0 && (
+            <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mt-4">
+              {trend.descartados} cliente{trend.descartados !== 1 ? 's' : ''} con fecha de registro
+              ilegible, excluido{trend.descartados !== 1 ? 's' : ''} de este gráfico y de los filtros de período.
+            </p>
+          )}
         </div>
       )}
     </div>
