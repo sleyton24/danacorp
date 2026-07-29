@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Propuesta analitica - DanaWorks</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
+  .row-hit { cursor: pointer; }
+  .row-hit:hover { background: #f8fafc; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 4px; }
+</style>
+</head>
+<body class="bg-gray-50 text-gray-800">
+
+<div class="max-w-6xl mx-auto p-6">
+
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <p class="text-[11px] font-bold uppercase tracking-wider text-gray-400">Prototipo de propuesta &middot; datos sinteticos</p>
+      <h1 class="text-xl font-bold text-gray-900">DanaWorks &middot; Analitica</h1>
+    </div>
+    <div class="flex bg-white border border-gray-200 rounded-lg p-1 shadow-sm">
+      <button data-view="resumen" class="viewbtn px-4 py-1.5 text-sm font-bold rounded-md">Resumen</button>
+      <button data-view="performance" class="viewbtn px-4 py-1.5 text-sm font-bold rounded-md">Performance</button>
+    </div>
+  </div>
+
+  <div class="bg-white border border-gray-200 rounded-xl p-3 mb-4 flex flex-wrap items-end gap-3 shadow-sm">
+    <div>
+      <label class="text-[10px] font-bold text-gray-400 uppercase tracking-wide block mb-1">Proyecto</label>
+      <select id="f-proyecto" class="px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white outline-none">
+        <option value="SV155">SV155 &middot; Edificio Vista</option>
+        <option value="SV160">SV160 &middot; Parque Norte</option>
+        <option value="SV999">SV999 &middot; Proyecto nuevo (sin colocaciones)</option>
+      </select>
+    </div>
+    <div>
+      <label class="text-[10px] font-bold text-gray-400 uppercase tracking-wide block mb-1">Periodo</label>
+      <select id="f-periodo" class="px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white outline-none">
+        <option value="all">Todo el tiempo</option>
+        <option value="month">Este mes</option>
+        <option value="quarter">Este trimestre</option>
+        <option value="year">Este ano</option>
+      </select>
+    </div>
+    <div>
+      <label class="text-[10px] font-bold text-gray-400 uppercase tracking-wide block mb-1">Comparar contra</label>
+      <select id="f-compare" class="px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white outline-none">
+        <option value="none">Sin comparacion</option>
+        <option value="prev">Periodo anterior</option>
+        <option value="yoy">Mismo periodo, ano anterior</option>
+      </select>
+    </div>
+    <div id="vendor-wrap">
+      <label class="text-[10px] font-bold text-gray-400 uppercase tracking-wide block mb-1">Vendedor</label>
+      <select id="f-vendedor" class="px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white outline-none">
+        <option value="all">Todos</option>
+      </select>
+    </div>
+  </div>
+
+  <div id="chips" class="flex flex-wrap items-center gap-2 mb-4"></div>
+
+  <div id="view-resumen"></div>
+  <div id="view-performance" class="hidden"></div>
+
+  <div id="drawer" class="hidden fixed inset-0 z-50">
+    <div id="drawer-bg" class="absolute inset-0 bg-gray-900/40"></div>
+    <div class="absolute right-0 top-0 h-full w-full max-w-2xl bg-white shadow-2xl overflow-y-auto">
+      <div class="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-start justify-between">
+        <div>
+          <h3 id="drawer-title" class="font-bold text-gray-900"></h3>
+          <p id="drawer-sub" class="text-xs text-gray-400 mt-0.5"></p>
+        </div>
+        <button id="drawer-close" class="text-gray-400 hover:text-gray-700 text-2xl leading-none">&times;</button>
+      </div>
+      <div id="drawer-body" class="p-6"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const AHORA = new Date(2026, 6, 29);
+const ESTADOS = ['Disponible', 'Reservado', 'Promesado', 'Escriturado'];
+const COLOR = { Disponible: '#e5e7eb', Reservado: '#c7d2fe', Promesado: '#818cf8', Escriturado: '#4338ca' };
+const TEXTCOLOR = { Disponible: 'text-gray-600', Reservado: 'text-indigo-500', Promesado: 'text-indigo-600', Escriturado: 'text-indigo-800' };
+const BANCOS = ['BANCO DE CHILE', 'SANTANDER', 'BCI', 'ESTADO', 'ITAU', 'SIN INSTITUCION'];
+const VENDEDORES = [
+  { id: 'v1', name: 'Camila Fuentes' },
+  { id: 'v2', name: 'Rodrigo Salas' },
+  { id: 'v3', name: 'Ignacia Perez' },
+  { id: 'v4', name: 'Matias Vergara' },
+];
+
+let seed = 20260729;
+function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+function pick(a) { return a[Math.floor(rnd() * a.length)]; }
+function entre(a, b) { return a + Math.floor(rnd() * (b - a + 1)); }
+
+function generar(projectId, nDeptos, nEstac, nBod) {
+  const units = [];
+  const pisos = 12;
+  const porPiso = Math.round(nDeptos / pisos);
+  let n = 0;
+  for (let piso = 1; piso <= pisos; piso++) {
+    for (let i = 0; i < porPiso && n < nDeptos; i++) {
+      n++;
+      const dorms = pick([1, 2, 2, 3, 3, 3]);
+      const banos = dorms === 1 ? 1 : dorms === 2 ? 2 : rnd() > 0.5 ? 2 : 3;
+      const sup = Math.round((32 + dorms * 18 + rnd() * 12) * 100) / 100;
+      const factorPiso = 1 + piso * 0.008;
+      const precio = Math.round(sup * (68 + rnd() * 14) * factorPiso * 10) / 10;
+      const p = rnd();
+      let estado;
+      if (p < 0.34 + piso * 0.012) estado = 'Escriturado';
+      else if (p < 0.50) estado = 'Promesado';
+      else if (p < 0.58) estado = 'Reservado';
+      else estado = 'Disponible';
+      const mesesAtras = estado === 'Disponible' ? null : entre(0, 17);
+      const hito = mesesAtras === null ? null : new Date(2026, 6 - mesesAtras, entre(1, 28));
+      units.push({
+        id: projectId + '-D' + String(n).padStart(3, '0'),
+        projectId, type: 'Departamento', numero: piso + String(i + 1).padStart(2, '0'),
+        piso, dorms, banos, superficie: sup, precioVenta: precio, estado,
+        banco: estado === 'Promesado' || estado === 'Escriturado' ? pick(BANCOS) : null,
+        vendedorId: estado === 'Disponible' ? null : pick(VENDEDORES).id,
+        fechaHito: hito,
+        pagado: estado === 'Escriturado' ? Math.round(precio * (0.55 + rnd() * 0.45) * 10) / 10
+               : estado === 'Promesado' ? Math.round(precio * (0.05 + rnd() * 0.2) * 10) / 10 : 0,
+      });
+    }
+  }
+  const deptos = units.slice();
+  for (let i = 0; i < nEstac; i++) {
+    const padre = rnd() > 0.42 ? pick(deptos) : null;
+    units.push({ id: projectId + '-E' + String(i + 1).padStart(3, '0'), projectId, type: 'Estacionamiento',
+      numero: 'E' + (i + 1), piso: null, superficie: 12.5, precioVenta: Math.round((180 + rnd() * 90) * 10) / 10,
+      estado: padre ? padre.estado : 'Disponible', vinculadoA: padre ? padre.id : null,
+      banco: null, vendedorId: padre ? padre.vendedorId : null, fechaHito: padre ? padre.fechaHito : null, pagado: 0 });
+  }
+  for (let i = 0; i < nBod; i++) {
+    const padre = rnd() > 0.45 ? pick(deptos) : null;
+    units.push({ id: projectId + '-B' + String(i + 1).padStart(3, '0'), projectId, type: 'Bodega',
+      numero: 'B' + (i + 1), piso: null, superficie: 4.2, precioVenta: Math.round((55 + rnd() * 40) * 10) / 10,
+      estado: padre ? padre.estado : 'Disponible', vinculadoA: padre ? padre.id : null,
+      banco: null, vendedorId: padre ? padre.vendedorId : null, fechaHito: padre ? padre.fechaHito : null, pagado: 0 });
+  }
+  return units;
+}
+
+function vaciar(units) {
+  return units.map(u => Object.assign({}, u, {
+    estado: 'Disponible', banco: null, vendedorId: null, fechaHito: null, pagado: 0, vinculadoA: null,
+  }));
+}
+
+const UNITS = generar('SV155', 220, 90, 70)
+  .concat(generar('SV160', 96, 40, 30))
+  .concat(vaciar(generar('SV999', 180, 60, 45)));
+
+const CLIENTES = [];
+(function () {
+  const nombres = ['Marta Reyes', 'Jose Miranda', 'Ana Torres', 'Luis Cardenas', 'Paula Nunez', 'Diego Rojas',
+    'Sofia Herrera', 'Pedro Lagos', 'Elena Diaz', 'Ivan Moya', 'Rosa Castillo', 'Hugo Pinto',
+    'Nadia Soto', 'Bruno Alarcon', 'Clara Vidal', 'Tomas Aguirre', 'Vera Munoz', 'Raul Espinoza'];
+  let k = 0;
+  for (const proj of ['SV155', 'SV160', 'SV999']) {
+    const cuantos = proj === 'SV155' ? 62 : proj === 'SV160' ? 30 : 24;
+    const nuevo = proj === 'SV999';
+    for (let i = 0; i < cuantos; i++) {
+      k++;
+      const p = rnd();
+      const estado = nuevo ? 'Prospecto' : p < 0.28 ? 'Cerrado' : p < 0.62 ? 'Activo' : 'Prospecto';
+      const mesesAtras = nuevo ? 0 : entre(0, 17);
+      CLIENTES.push({
+        id: 'C' + k, projectId: proj,
+        nombre: nombres[k % nombres.length] + ' ' + k,
+        rut: entre(6, 20) + '.' + entre(100, 999) + '.' + entre(100, 999) + '-' + entre(0, 9),
+        estado, ejecutivoId: pick(VENDEDORES).id,
+        fechaRegistro: new Date(2026, 6 - mesesAtras, entre(1, 28)),
+      });
+    }
+  }
+})();
+
+const S = { view: 'resumen', proyecto: 'SV155', periodo: 'all', compare: 'none', vendedor: 'all',
+  cruce: { estado: null, piso: null, tipologia: null, banco: null } };
+
+const fmt = n => n.toLocaleString('es-CL', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+const fmt1 = n => n.toLocaleString('es-CL', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const tipologia = u => u.dorms + 'D + ' + u.banos + 'B';
+const tomado = e => e === 'Reservado' || e === 'Promesado' || e === 'Escriturado';
+
+function ventana(periodo, offset) {
+  if (periodo === 'all') return null;
+  const y = AHORA.getFullYear(), m = AHORA.getMonth();
+  if (periodo === 'month') { const d = new Date(y, m - offset, 1); return [d, new Date(y, m - offset + 1, 1)]; }
+  if (periodo === 'quarter') { const q = Math.floor(m / 3); const d = new Date(y, (q - offset) * 3, 1); return [d, new Date(y, (q - offset) * 3 + 3, 1)]; }
+  return [new Date(y - offset, 0, 1), new Date(y - offset + 1, 0, 1)];
+}
+function ventanaComparacion() {
+  if (S.compare === 'none' || S.periodo === 'all') return null;
+  if (S.compare === 'prev') return ventana(S.periodo, 1);
+  const v = ventana(S.periodo, 0);
+  return [new Date(v[0].getFullYear() - 1, v[0].getMonth(), v[0].getDate()),
+          new Date(v[1].getFullYear() - 1, v[1].getMonth(), v[1].getDate())];
+}
+const enVentana = (fecha, v) => !v ? true : (fecha ? fecha >= v[0] && fecha < v[1] : false);
+
+function baseUnits(v) {
+  return UNITS.filter(u => u.projectId === S.proyecto)
+    .filter(u => S.vendedor === 'all' || u.vendedorId === S.vendedor)
+    .filter(u => enVentana(u.fechaHito, v));
+}
+function aplicarCruce(units, excepto) {
+  const c = S.cruce;
+  return units.filter(u => {
+    if (c.estado && excepto !== 'estado' && u.estado !== c.estado) return false;
+    if (c.piso !== null && excepto !== 'piso' && u.piso !== c.piso) return false;
+    if (c.tipologia && excepto !== 'tipologia' && (u.type !== 'Departamento' || tipologia(u) !== c.tipologia)) return false;
+    if (c.banco && excepto !== 'banco' && u.banco !== c.banco) return false;
+    return true;
+  });
+}
+const hayCruce = () => Object.values(S.cruce).some(v => v !== null && v !== undefined);
+
+function metricas(units) {
+  const deptos = units.filter(u => u.type === 'Departamento');
+  const esc = deptos.filter(u => u.estado === 'Escriturado');
+  const prom = deptos.filter(u => u.estado === 'Promesado');
+  const res = deptos.filter(u => u.estado === 'Reservado');
+  const sumUF = arr => arr.reduce((a, u) => a + u.precioVenta, 0);
+  const supEsc = deptos.filter(u => u.estado === 'Promesado' || u.estado === 'Escriturado');
+  const supStock = deptos.filter(u => u.estado === 'Disponible' || u.estado === 'Reservado');
+  const ufm2 = arr => { const m2 = arr.reduce((a, u) => a + u.superficie, 0); return m2 > 0 ? sumUF(arr) / m2 : 0; };
+  return {
+    totalDeptos: deptos.length, escrituradas: esc.length, promesadas: prom.length, reservadas: res.length,
+    disponibles: deptos.filter(u => u.estado === 'Disponible').length,
+    avance: deptos.length ? Math.round(esc.length / deptos.length * 1000) / 10 : 0,
+    ufEscriturada: sumUF(units.filter(u => u.estado === 'Escriturado')),
+    ufPipeline: sumUF(units.filter(u => u.estado === 'Promesado' || u.estado === 'Reservado')),
+    recaudado: units.reduce((a, u) => a + (u.pagado || 0), 0),
+    ufM2Cerrada: ufm2(supEsc), ufM2Stock: ufm2(supStock),
+    estacTomados: units.filter(u => u.type === 'Estacionamiento' && tomado(u.estado)).length,
+    totalEstac: units.filter(u => u.type === 'Estacionamiento').length,
+    bodTomadas: units.filter(u => u.type === 'Bodega' && tomado(u.estado)).length,
+    totalBod: units.filter(u => u.type === 'Bodega').length,
+  };
+}
+
+function delta(actual, previo) {
+  if (previo === null || previo === undefined) return '';
+  if (previo === 0) return actual === 0 ? '' : '<span class="text-[11px] font-bold text-green-600">nuevo</span>';
+  const pct = Math.round((actual - previo) / previo * 1000) / 10;
+  if (pct === 0) return '<span class="text-[11px] font-bold text-gray-400">igual</span>';
+  const up = pct > 0;
+  return '<span class="text-[11px] font-bold ' + (up ? 'text-green-600' : 'text-red-600') + '">'
+    + (up ? '&#9650; ' : '&#9660; ') + Math.abs(pct).toFixed(1) + '%</span>';
+}
+
+function chip(label, valor, key) {
+  return '<button data-clear="' + key + '" class="group inline-flex items-center gap-2 pl-3 pr-2 py-1.5 bg-indigo-50 border border-indigo-200 rounded-full text-xs font-bold text-indigo-800 hover:bg-indigo-100">'
+    + '<span class="font-normal text-indigo-500">' + label + '</span>' + valor
+    + '<span class="text-indigo-400 group-hover:text-indigo-700 text-sm leading-none">&times;</span></button>';
+}
+function renderChips() {
+  const c = S.cruce; const out = [];
+  if (c.estado) out.push(chip('estado', c.estado, 'estado'));
+  if (c.piso !== null) out.push(chip('piso', c.piso, 'piso'));
+  if (c.tipologia) out.push(chip('tipologia', c.tipologia, 'tipologia'));
+  if (c.banco) out.push(chip('banco', c.banco, 'banco'));
+  const box = document.getElementById('chips');
+  if (!out.length) { box.innerHTML = '<p class="text-xs text-gray-400">Sin filtros cruzados. Haz clic en cualquier tramo, piso, tipologia o banco para cruzar.</p>'; return; }
+  box.innerHTML = out.join('') + '<button data-clear="todo" class="text-xs font-bold text-gray-500 hover:text-gray-800 underline ml-1">limpiar todo</button>';
+}
+
+function barraSegmentada(m, total) {
+  const seg = e => {
+    const n = e === 'Escriturado' ? m.escrituradas : e === 'Promesado' ? m.promesadas : e === 'Reservado' ? m.reservadas : m.disponibles;
+    const w = total ? (n / total * 100) : 0;
+    const activo = S.cruce.estado === e;
+    return '<button data-estado="' + e + '" title="' + e + ': ' + n + ' deptos" style="width:' + w + '%;background:' + COLOR[e]
+      + ';outline:' + (activo ? '2px solid #312e81' : 'none') + ';outline-offset:-2px" class="h-full transition-all hover:brightness-95"></button>';
+  };
+  return '<div class="flex h-4 rounded-lg overflow-hidden bg-gray-100">' + ESTADOS.map(seg).join('') + '</div>';
+}
+
+function leyenda(m) {
+  return ESTADOS.map(e => {
+    const n = e === 'Escriturado' ? m.escrituradas : e === 'Promesado' ? m.promesadas : e === 'Reservado' ? m.reservadas : m.disponibles;
+    const activo = S.cruce.estado === e;
+    if (n === 0) return '<span class="flex items-center gap-1.5 text-xs text-gray-300 cursor-default" title="Sin unidades en este estado">'
+      + '<span class="w-2 h-2 rounded-sm inline-block bg-gray-200"></span>' + e + ' 0</span>';
+    return '<button data-estado="' + e + '" class="flex items-center gap-1.5 text-xs ' + (activo ? 'font-bold text-indigo-900' : 'text-gray-600') + ' hover:text-indigo-800">'
+      + '<span class="w-2 h-2 rounded-sm inline-block" style="background:' + COLOR[e] + '"></span>' + e + ' ' + n + '</button>';
+  }).join('');
+}
+
+function tarjeta(label, valor, sub, deltaHtml) {
+  return '<div class="bg-white border border-gray-200 rounded-xl p-4">'
+    + '<div class="flex items-start justify-between"><p class="text-[11px] font-bold uppercase tracking-wide text-gray-400">' + label + '</p>' + (deltaHtml || '') + '</div>'
+    + '<p class="text-xl font-bold text-gray-900 mt-1 mono">' + valor + '</p>'
+    + '<p class="text-[11px] text-gray-400 mt-0.5">' + sub + '</p></div>';
+}
+
+function tablaDensa(titulo, filas, keyAttr, nota, vacio) {
+  const cuerpo = filas.map(f => {
+    const activo = keyAttr === 'vendedorTabla' ? S.vendedor === f.key : String(S.cruce[keyAttr]) === String(f.key);
+    return '<tr data-' + keyAttr + '="' + f.key + '" class="row-hit border-b border-gray-50 ' + (activo ? 'bg-indigo-50' : '') + '">'
+      + '<td class="py-1.5 pl-3 pr-2 text-xs ' + (activo ? 'font-bold text-indigo-900' : 'text-gray-700') + '">' + f.label + '</td>'
+      + '<td class="py-1.5 px-2 text-right text-xs text-gray-500 mono">' + (f.sinTotal ? f.colocadas : f.colocadas + '/' + f.total) + '</td>'
+      + '<td class="py-1.5 px-2 text-right text-xs font-bold text-gray-800 mono w-12">' + f.pct + '%</td>'
+      + '<td class="py-1.5 pr-3 pl-2 w-24"><div class="h-1.5 bg-gray-100 rounded-full overflow-hidden">'
+      + '<div class="h-full rounded-full" style="width:' + f.pct + '%;background:#4338ca"></div></div></td>'
+      + '<td class="py-1.5 pr-3 text-right text-[11px] text-gray-400 mono w-20">' + fmt(f.uf) + '</td></tr>';
+  }).join('');
+  return '<div class="bg-white border border-gray-200 rounded-xl overflow-hidden">'
+    + '<div class="px-3 py-2 border-b border-gray-100 flex items-baseline justify-between">'
+    + '<h3 class="text-xs font-bold text-gray-700">' + titulo + '</h3>'
+    + '<span class="text-[10px] text-gray-400">' + (nota || 'col/tot &middot; UF') + '</span></div>'
+    + (filas.length
+        ? '<div class="max-h-72 overflow-y-auto"><table class="w-full">' + cuerpo + '</table></div>'
+        : '<p class="px-3 py-6 text-[11px] text-gray-400">' + (vacio || 'Sin datos en la seleccion.') + '</p>')
+    + '</div>';
+}
+
+function renderResumen() {
+  const v = ventana(S.periodo, 0);
+  const vc = ventanaComparacion();
+  const base = baseUnits(null);
+  const filtrado = aplicarCruce(base);
+  const mSel = metricas(filtrado);
+  const m = metricas(base);
+  const totalBarra = m.totalDeptos;
+
+  const flujo = aplicarCruce(baseUnits(v)).filter(u => tomado(u.estado));
+  const flujoPrev = vc ? aplicarCruce(baseUnits(vc)).filter(u => tomado(u.estado)) : null;
+  const ufFlujo = flujo.reduce((a, u) => a + u.precioVenta, 0);
+  const ufFlujoPrev = flujoPrev ? flujoPrev.reduce((a, u) => a + u.precioVenta, 0) : null;
+
+  const seleccion = hayCruce() ? filtrado : base.filter(u => tomado(u.estado));
+  const notaTabla = hayCruce() ? 'sel/tot &middot; UF' : 'col/tot &middot; UF';
+  const pipelineU = m.promesadas + m.reservadas;
+  const ufSeleccion = seleccion.reduce((a, u) => a + u.precioVenta, 0);
+
+  const sinColocaciones = m.escrituradas + m.promesadas + m.reservadas === 0;
+
+  let html = '';
+  html += '<div class="bg-white border border-gray-200 rounded-xl p-6 mb-3">';
+  html += '<div class="flex items-baseline justify-between mb-1"><span class="text-sm text-gray-500">Avance de venta</span>'
+    + '<span class="text-xs text-gray-400">' + S.proyecto + ' &middot; ' + m.totalDeptos + ' deptos</span></div>';
+  if (sinColocaciones) {
+    html += '<div class="flex items-end gap-5 mb-4">'
+      + '<span class="text-3xl font-bold text-gray-400 leading-none">Sin colocaciones</span>'
+      + '<div class="text-sm text-gray-600 leading-tight pb-1">' + m.disponibles + ' departamentos disponibles'
+      + '<br><span class="text-gray-400">' + m.totalEstac + ' estacionamientos &middot; ' + m.totalBod + ' bodegas</span></div>'
+      + '<div class="pb-1 ml-auto text-right"><p class="text-[11px] text-gray-400 max-w-[220px]">'
+      + 'El avance aparece con la primera unidad reservada. El inventario ya esta cargado.</p></div>'
+      + '</div>';
+  } else {
+    html += '<div class="flex items-end gap-5 mb-4"><span class="text-5xl font-bold text-gray-900 leading-none mono">' + fmt1(m.avance) + '%</span>'
+      + '<div class="text-sm text-gray-600 leading-tight pb-1">' + m.escrituradas + ' escriturados'
+      + '<br><span class="text-gray-400">' + pipelineU + ' en pipeline</span></div>'
+      + '<div class="pb-1 ml-auto text-right"><p class="text-[10px] uppercase tracking-wide text-gray-400 font-bold">acumulado</p>'
+      + '<p class="text-[11px] text-gray-400">no depende del periodo</p></div>'
+      + '</div>';
+  }
+  html += barraSegmentada(m, totalBarra);
+  html += '<div class="flex flex-wrap gap-4 mt-3">' + leyenda(m) + '</div>';
+  if (hayCruce()) {
+    html += '<div class="mt-4 pt-3 border-t border-gray-100 flex flex-wrap items-baseline gap-x-6 gap-y-1">'
+      + '<span class="text-[11px] font-bold uppercase tracking-wide text-indigo-700">Seleccion</span>'
+      + '<span class="text-sm text-gray-700"><b class="mono">' + seleccion.length + '</b> unidades</span>'
+      + '<span class="text-sm text-gray-700"><b class="mono">' + fmt(ufSeleccion) + '</b> UF</span>'
+      + '<span class="text-sm text-gray-500">' + (m.totalDeptos ? Math.round(mSel.totalDeptos / m.totalDeptos * 100) : 0) + '% de los deptos</span></div>';
+  }
+  html += '</div>';
+
+  const etiquetaPeriodo = { all: 'todo el tiempo', month: 'este mes', quarter: 'este trimestre', year: 'este ano' }[S.periodo];
+  html += '<div class="bg-white border border-gray-200 rounded-xl p-4 mb-3">'
+    + '<div class="flex flex-wrap items-baseline gap-x-6 gap-y-2">'
+    + '<div><p class="text-[11px] font-bold uppercase tracking-wide text-gray-400">Colocado en el periodo</p>'
+    + '<p class="text-[11px] text-gray-400">' + etiquetaPeriodo + ' &middot; flujo, no acumulado</p></div>'
+    + '<div class="flex items-baseline gap-2"><span class="text-2xl font-bold text-gray-900 mono">' + flujo.length + '</span>'
+    + '<span class="text-xs text-gray-500">unidades</span>'
+    + (flujoPrev ? '<span class="ml-1">' + delta(flujo.length, flujoPrev.length) + '</span>' : '') + '</div>'
+    + '<div class="flex items-baseline gap-2"><span class="text-2xl font-bold text-gray-900 mono">' + fmt(ufFlujo) + '</span>'
+    + '<span class="text-xs text-gray-500">UF</span>'
+    + (ufFlujoPrev !== null ? '<span class="ml-1">' + delta(ufFlujo, ufFlujoPrev) + '</span>' : '') + '</div>'
+    + (sinColocaciones
+        ? '<span class="text-[11px] text-gray-400 ml-auto max-w-[280px]">Sin hitos registrados: la comparacion de periodos no tiene con que contrastar todavia.</span>'
+        : S.periodo === 'all' ? '<span class="text-[11px] text-gray-400 ml-auto">elige un periodo para comparar</span>' : '')
+    + '</div></div>';
+
+  html += '<div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">'
+    + tarjeta('UF escriturada', fmt(mSel.ufEscriturada), 'acumulado, todos los tipos', '')
+    + tarjeta('Pipeline UF', fmt(mSel.ufPipeline), (mSel.promesadas + mSel.reservadas) + ' unidades', '')
+    + tarjeta('Recaudado', fmt(mSel.recaudado), 'cuotas pagadas', '')
+    + tarjeta('UF/m&sup2; cerrada', fmt1(mSel.ufM2Cerrada), 'stock ' + fmt1(mSel.ufM2Stock), '')
+    + '</div>';
+
+  html += '<div class="grid grid-cols-2 gap-3 mb-3">'
+    + '<div class="bg-white border border-gray-200 rounded-xl p-4"><div class="flex justify-between items-baseline">'
+    + '<p class="text-[11px] font-bold uppercase tracking-wide text-gray-400">Estacionamientos</p>'
+    + '<span class="text-sm font-bold mono">' + (m.totalEstac ? Math.round(m.estacTomados / m.totalEstac * 100) : 0) + '%</span></div>'
+    + '<div class="h-1.5 bg-gray-100 rounded-full mt-2 overflow-hidden"><div class="h-full bg-gray-600 rounded-full" style="width:'
+    + (m.totalEstac ? m.estacTomados / m.totalEstac * 100 : 0) + '%"></div></div>'
+    + '<p class="text-[11px] text-gray-400 mt-1">' + m.estacTomados + ' colocados de ' + m.totalEstac
+    + (hayCruce() ? ' &middot; <span class="text-indigo-700 font-bold">' + mSel.totalEstac + ' en la seleccion</span>' : '') + '</p></div>'
+    + '<div class="bg-white border border-gray-200 rounded-xl p-4"><div class="flex justify-between items-baseline">'
+    + '<p class="text-[11px] font-bold uppercase tracking-wide text-gray-400">Bodegas</p>'
+    + '<span class="text-sm font-bold mono">' + (m.totalBod ? Math.round(m.bodTomadas / m.totalBod * 100) : 0) + '%</span></div>'
+    + '<div class="h-1.5 bg-gray-100 rounded-full mt-2 overflow-hidden"><div class="h-full bg-orange-500 rounded-full" style="width:'
+    + (m.totalBod ? m.bodTomadas / m.totalBod * 100 : 0) + '%"></div></div>'
+    + '<p class="text-[11px] text-gray-400 mt-1">' + m.bodTomadas + ' colocadas de ' + m.totalBod
+    + (hayCruce() ? ' &middot; <span class="text-indigo-700 font-bold">' + mSel.totalBod + ' en la seleccion</span>' : '') + '</p></div>'
+    + '</div>';
+
+  const deptosBase = base.filter(u => u.type === 'Departamento');
+  const selDeptos = seleccion.filter(u => u.type === 'Departamento');
+
+  const pisos = [...new Set(deptosBase.map(u => u.piso))].sort((a, b) => b - a);
+  const filasPiso = pisos.map(p => {
+    const en = deptosBase.filter(u => u.piso === p);
+    const sel = selDeptos.filter(u => u.piso === p);
+    return { key: p, label: 'Piso ' + p, total: en.length, colocadas: sel.length,
+      pct: en.length ? Math.round(sel.length / en.length * 100) : 0, uf: sel.reduce((a, u) => a + u.precioVenta, 0) };
+  });
+
+  const tipos = [...new Set(deptosBase.map(tipologia))].sort();
+  const filasTip = tipos.map(t => {
+    const en = deptosBase.filter(u => tipologia(u) === t);
+    const sel = selDeptos.filter(u => tipologia(u) === t);
+    return { key: t, label: t, total: en.length, colocadas: sel.length,
+      pct: en.length ? Math.round(sel.length / en.length * 100) : 0, uf: sel.reduce((a, u) => a + u.precioVenta, 0) };
+  }).sort((a, b) => b.total - a.total);
+
+  const unidadesBanco = seleccion.filter(u => u.banco);
+  const bancos = [...new Set(unidadesBanco.map(u => u.banco))];
+  const ufTotalBancos = unidadesBanco.reduce((a, u) => a + u.precioVenta, 0);
+  const filasBanco = bancos.map(b => {
+    const en = unidadesBanco.filter(u => u.banco === b);
+    const uf = en.reduce((a, u) => a + u.precioVenta, 0);
+    return { key: b, label: b, total: en.length, colocadas: en.length, sinTotal: true,
+      pct: ufTotalBancos ? Math.round(uf / ufTotalBancos * 100) : 0, uf };
+  }).sort((a, b) => b.uf - a.uf);
+
+  html += '<div class="grid grid-cols-1 lg:grid-cols-3 gap-3">'
+    + tablaDensa(hayCruce() ? 'Seleccion por piso' : 'Colocacion por piso', filasPiso, 'piso', notaTabla)
+    + tablaDensa(hayCruce() ? 'Seleccion por tipologia' : 'Colocacion por tipologia', filasTip, 'tipologia', notaTabla)
+    + tablaDensa('Financiamiento', filasBanco, 'banco', 'unid &middot; % UF &middot; UF',
+        'Aparece cuando haya unidades promesadas o escrituradas con banco asignado.')
+    + '</div>';
+
+  html += '<div class="mt-3 bg-white border border-gray-200 rounded-xl overflow-hidden">'
+    + '<div class="px-4 py-3 border-b border-gray-100 flex items-baseline justify-between">'
+    + '<div><h3 class="text-xs font-bold text-gray-700">Unidades de la seleccion</h3>'
+    + '<p class="text-[10px] text-gray-400 mt-0.5">' + filtrado.length + ' unidades &middot; clic en una fila para abrir la ficha</p></div>'
+    + '<button id="btn-export" class="text-[11px] font-bold text-indigo-700 hover:underline">exportar seleccion</button></div>'
+    + tablaUnidades(filtrado.slice(0, 40)) + '</div>';
+
+  document.getElementById('view-resumen').innerHTML = html;
+}
+
+function tablaUnidades(units) {
+  if (!units.length) return '<p class="px-4 py-6 text-xs text-gray-400">La seleccion no tiene unidades.</p>';
+  const filas = units.map(u => '<tr data-unidad="' + u.id + '" class="row-hit border-b border-gray-50">'
+    + '<td class="py-1.5 px-4 text-xs font-bold text-gray-800 mono">' + u.numero + '</td>'
+    + '<td class="py-1.5 px-2 text-xs text-gray-500">' + u.type + '</td>'
+    + '<td class="py-1.5 px-2 text-xs text-gray-500">' + (u.piso !== null ? 'P.' + u.piso : '&mdash;') + '</td>'
+    + '<td class="py-1.5 px-2 text-xs text-gray-500">' + (u.dorms ? tipologia(u) : '&mdash;') + '</td>'
+    + '<td class="py-1.5 px-2 text-xs text-gray-500 mono">' + fmt1(u.superficie) + '</td>'
+    + '<td class="py-1.5 px-2 text-xs font-bold ' + TEXTCOLOR[u.estado] + '">' + u.estado + '</td>'
+    + '<td class="py-1.5 px-4 text-right text-xs font-bold text-gray-800 mono">' + fmt1(u.precioVenta) + '</td></tr>').join('');
+  return '<div class="max-h-96 overflow-y-auto"><table class="w-full">'
+    + '<thead class="bg-gray-50 sticky top-0"><tr>'
+    + ['Unidad', 'Tipo', 'Piso', 'Tipologia', 'm&sup2;', 'Estado'].map(h => '<th class="py-2 px-2 text-left text-[10px] font-bold uppercase tracking-wide text-gray-400">' + h + '</th>').join('')
+    + '<th class="py-2 px-4 text-right text-[10px] font-bold uppercase tracking-wide text-gray-400">UF</th>'
+    + '</tr></thead><tbody>' + filas + '</tbody></table></div>';
+}
+
+function renderPerformance() {
+  const v = ventana(S.periodo, 0);
+  const vc = ventanaComparacion();
+  const base = aplicarCruce(baseUnits(v));
+  const prevBase = vc ? aplicarCruce(baseUnits(vc)) : null;
+  const clientes = CLIENTES.filter(c => c.projectId === S.proyecto)
+    .filter(c => S.vendedor === 'all' || c.ejecutivoId === S.vendedor)
+    .filter(c => enVentana(c.fechaRegistro, v));
+  const prevClientes = vc ? CLIENTES.filter(c => c.projectId === S.proyecto)
+    .filter(c => S.vendedor === 'all' || c.ejecutivoId === S.vendedor)
+    .filter(c => enVentana(c.fechaRegistro, vc)) : null;
+
+  const colocadas = base.filter(u => tomado(u.estado));
+  const ufColocadas = colocadas.reduce((a, u) => a + u.precioVenta, 0);
+  const cerrados = clientes.filter(c => c.estado === 'Cerrado').length;
+  const prevUf = prevBase ? prevBase.filter(u => tomado(u.estado)).reduce((a, u) => a + u.precioVenta, 0) : null;
+  const prevCerrados = prevClientes ? prevClientes.filter(c => c.estado === 'Cerrado').length : null;
+
+  const lider = VENDEDORES.map(vd => {
+    const suyas = colocadas.filter(u => u.vendedorId === vd.id);
+    return { vd, uf: suyas.reduce((a, u) => a + u.precioVenta, 0), unidades: suyas.length,
+      clientes: clientes.filter(c => c.ejecutivoId === vd.id).length,
+      cerrados: clientes.filter(c => c.ejecutivoId === vd.id && c.estado === 'Cerrado').length };
+  }).sort((a, b) => b.uf - a.uf);
+
+  let html = '';
+  html += '<div class="bg-white border border-gray-200 rounded-xl p-6 mb-3">';
+  html += '<div class="flex items-baseline justify-between mb-1"><span class="text-sm text-gray-500">UF colocadas</span>'
+    + '<span class="text-xs text-gray-400">' + S.proyecto + ' &middot; ' + (hayCruce() ? 'seleccion' : 'equipo completo') + '</span></div>';
+  html += '<div class="flex items-end gap-5 mb-4"><span class="text-5xl font-bold text-gray-900 leading-none mono">' + fmt(ufColocadas) + '</span>'
+    + '<div class="text-sm text-gray-600 leading-tight pb-1">' + colocadas.length + ' unidades<br><span class="text-gray-400">' + cerrados + ' clientes cerrados</span></div>'
+    + (prevUf !== null ? '<div class="pb-1 ml-auto text-right"><p class="text-[10px] uppercase tracking-wide text-gray-400 font-bold mb-0.5">vs comparacion</p>' + delta(ufColocadas, prevUf) + '</div>' : '')
+    + '</div>';
+  const maxUf = Math.max(...lider.map(l => l.uf), 1);
+  html += '<div class="space-y-2">' + lider.map(l =>
+      '<button data-vendedor="' + l.vd.id + '" class="w-full flex items-center gap-3 group">'
+      + '<span class="text-xs w-32 text-left ' + (S.vendedor === l.vd.id ? 'font-bold text-indigo-900' : 'text-gray-600') + '">' + l.vd.name + '</span>'
+      + '<span class="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden"><span class="block h-full rounded-full" style="width:'
+      + (l.uf / maxUf * 100) + '%;background:' + (S.vendedor === l.vd.id ? '#312e81' : '#818cf8') + '"></span></span>'
+      + '<span class="text-xs mono text-gray-700 w-20 text-right">' + fmt(l.uf) + '</span></button>').join('') + '</div>';
+  html += '</div>';
+
+  html += '<div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">'
+    + tarjeta('Clientes', String(clientes.length), 'fichas creadas', prevClientes ? delta(clientes.length, prevClientes.length) : '')
+    + tarjeta('Cierres', String(cerrados), 'estado Cerrado', prevCerrados !== null ? delta(cerrados, prevCerrados) : '')
+    + tarjeta('Tasa de cierre', (clientes.length ? Math.round(cerrados / clientes.length * 1000) / 10 : 0) + '%', 'cerrados / clientes', '')
+    + tarjeta('UF por cierre', cerrados ? fmt(Math.round(ufColocadas / cerrados)) : '&mdash;', 'promedio', '')
+    + '</div>';
+
+  const filasVend = lider.filter(l => l.unidades || l.clientes).map(l => ({
+    key: l.vd.id, label: l.vd.name, total: l.clientes || 1, colocadas: l.cerrados,
+    pct: l.clientes ? Math.round(l.cerrados / l.clientes * 100) : 0, uf: l.uf,
+  }));
+  html += '<div class="grid grid-cols-1 lg:grid-cols-2 gap-3">'
+    + tablaDensa('Matriz de vendedores', filasVend, 'vendedorTabla', 'cerrados/clientes &middot; UF')
+    + '<div class="bg-white border border-gray-200 rounded-xl overflow-hidden">'
+    + '<div class="px-3 py-2 border-b border-gray-100"><h3 class="text-xs font-bold text-gray-700">Colocacion por mes</h3></div>'
+    + serieMensual(base) + '</div></div>';
+
+  html += '<div class="mt-3 bg-white border border-gray-200 rounded-xl overflow-hidden">'
+    + '<div class="px-4 py-3 border-b border-gray-100"><h3 class="text-xs font-bold text-gray-700">Unidades atribuidas</h3>'
+    + '<p class="text-[10px] text-gray-400 mt-0.5">' + colocadas.length + ' unidades en la seleccion</p></div>'
+    + tablaUnidades(colocadas.slice(0, 40)) + '</div>';
+
+  document.getElementById('view-performance').innerHTML = html;
+}
+
+function serieMensual(units) {
+  const meses = {};
+  units.filter(u => u.fechaHito).forEach(u => {
+    const k = u.fechaHito.getFullYear() + '-' + String(u.fechaHito.getMonth() + 1).padStart(2, '0');
+    meses[k] = (meses[k] || 0) + u.precioVenta;
+  });
+  const keys = Object.keys(meses).sort().slice(-12);
+  if (!keys.length) return '<p class="px-4 py-6 text-xs text-gray-400">Sin hitos en el periodo seleccionado.</p>';
+  const max = Math.max(...keys.map(k => meses[k]));
+  return '<div class="p-3 flex items-end gap-1 h-40">' + keys.map(k =>
+    '<div class="flex-1 flex flex-col items-center justify-end h-full" style="max-width:56px" title="' + k + ': ' + fmt(meses[k]) + ' UF">'
+    + '<div class="w-full rounded-t" style="height:' + (meses[k] / max * 100) + '%;background:#818cf8"></div>'
+    + '<span class="text-[9px] text-gray-400 mt-1 mono">' + k.slice(5) + '</span></div>').join('') + '</div>';
+}
+
+function abrirFicha(id) {
+  const u = UNITS.find(x => x.id === id);
+  if (!u) return;
+  document.getElementById('drawer-title').textContent = 'Unidad ' + u.numero;
+  document.getElementById('drawer-sub').textContent = u.type + ' · ' + u.id;
+  const fila = (k, v) => '<div class="flex justify-between py-2 border-b border-gray-100"><span class="text-xs text-gray-500">' + k + '</span><span class="text-xs font-bold text-gray-800 mono">' + v + '</span></div>';
+  document.getElementById('drawer-body').innerHTML =
+    '<div class="mb-4 p-3 bg-indigo-50 border border-indigo-100 rounded-lg text-xs text-indigo-900">'
+    + 'En la aplicacion real este panel es la ficha de unidad existente. El prototipo muestra solo los campos que alimentan la analitica.</div>'
+    + fila('Estado', u.estado) + fila('Piso', u.piso !== null ? u.piso : '-')
+    + fila('Tipologia', u.dorms ? tipologia(u) : '-')
+    + fila('Superficie', fmt1(u.superficie) + ' m2')
+    + fila('Precio venta', fmt1(u.precioVenta) + ' UF')
+    + fila('Pagado', fmt1(u.pagado || 0) + ' UF')
+    + fila('Banco', u.banco || '-')
+    + fila('Vendedor', (VENDEDORES.find(v => v.id === u.vendedorId) || {}).name || '-')
+    + fila('Fecha de hito', u.fechaHito ? u.fechaHito.toLocaleDateString('es-CL') : '-')
+    + fila('Vinculada a', u.vinculadoA || '-');
+  document.getElementById('drawer').classList.remove('hidden');
+}
+
+function render() {
+  document.querySelectorAll('.viewbtn').forEach(b => {
+    const on = b.dataset.view === S.view;
+    b.className = 'viewbtn px-4 py-1.5 text-sm font-bold rounded-md ' + (on ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-gray-800');
+  });
+  document.getElementById('view-resumen').classList.toggle('hidden', S.view !== 'resumen');
+  document.getElementById('view-performance').classList.toggle('hidden', S.view !== 'performance');
+  document.getElementById('f-compare').disabled = S.periodo === 'all';
+  document.getElementById('f-compare').classList.toggle('opacity-40', S.periodo === 'all');
+  renderChips();
+  if (S.view === 'resumen') renderResumen(); else renderPerformance();
+}
+
+const selVend = document.getElementById('f-vendedor');
+VENDEDORES.forEach(v => { const o = document.createElement('option'); o.value = v.id; o.textContent = v.name; selVend.appendChild(o); });
+
+document.getElementById('f-proyecto').addEventListener('change', e => { S.proyecto = e.target.value; S.cruce = { estado: null, piso: null, tipologia: null, banco: null }; render(); });
+document.getElementById('f-periodo').addEventListener('change', e => { S.periodo = e.target.value; if (S.periodo === 'all') S.compare = 'none', document.getElementById('f-compare').value = 'none'; render(); });
+document.getElementById('f-compare').addEventListener('change', e => { S.compare = e.target.value; render(); });
+selVend.addEventListener('change', e => { S.vendedor = e.target.value; render(); });
+document.querySelectorAll('.viewbtn').forEach(b => b.addEventListener('click', () => { S.view = b.dataset.view; render(); }));
+
+document.body.addEventListener('click', ev => {
+  const clear = ev.target.closest('[data-clear]');
+  if (clear) {
+    const k = clear.dataset.clear;
+    if (k === 'todo') S.cruce = { estado: null, piso: null, tipologia: null, banco: null };
+    else S.cruce[k] = null;
+    return render();
+  }
+  const est = ev.target.closest('[data-estado]');
+  if (est) { S.cruce.estado = S.cruce.estado === est.dataset.estado ? null : est.dataset.estado; return render(); }
+  const piso = ev.target.closest('[data-piso]');
+  if (piso) { const p = Number(piso.dataset.piso); S.cruce.piso = S.cruce.piso === p ? null : p; return render(); }
+  const tip = ev.target.closest('[data-tipologia]');
+  if (tip) { S.cruce.tipologia = S.cruce.tipologia === tip.dataset.tipologia ? null : tip.dataset.tipologia; return render(); }
+  const banco = ev.target.closest('[data-banco]');
+  if (banco) { S.cruce.banco = S.cruce.banco === banco.dataset.banco ? null : banco.dataset.banco; return render(); }
+  const vend = ev.target.closest('[data-vendedor]');
+  if (vend) { S.vendedor = S.vendedor === vend.dataset.vendedor ? 'all' : vend.dataset.vendedor; document.getElementById('f-vendedor').value = S.vendedor; return render(); }
+  const vt = ev.target.closest('[data-vendedorTabla]');
+  if (vt) { const id = vt.getAttribute('data-vendedorTabla'); S.vendedor = S.vendedor === id ? 'all' : id; document.getElementById('f-vendedor').value = S.vendedor; return render(); }
+  const uni = ev.target.closest('[data-unidad]');
+  if (uni) return abrirFicha(uni.dataset.unidad);
+  if (ev.target.id === 'btn-export') return alert('En la aplicacion real esto descarga el Excel con las unidades de la seleccion actual, no el proyecto completo.');
+});
+document.getElementById('drawer-close').addEventListener('click', () => document.getElementById('drawer').classList.add('hidden'));
+document.getElementById('drawer-bg').addEventListener('click', () => document.getElementById('drawer').classList.add('hidden'));
+
+render();
+</script>
+</body>
+</html>
