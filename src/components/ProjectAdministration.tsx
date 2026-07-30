@@ -120,7 +120,7 @@ export const ProjectAdministration: React.FC<ProjectAdministrationProps> = ({
           <button
             onClick={() => { setDeleting(project); setConfirmText(''); }}
             disabled={ocupado || !project.archivado}
-            title={project.archivado ? 'Eliminar definitivamente' : 'Primero marcá el proyecto como terminado'}
+            title={project.archivado ? 'Eliminar definitivamente' : 'Primero marca el proyecto como terminado'}
             className="px-3 py-2 text-sm font-medium rounded-lg text-red-600 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent flex items-center gap-2 transition-colors"
           >
             <Trash2 className="w-4 h-4" /> Eliminar
