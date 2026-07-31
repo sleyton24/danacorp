@@ -1445,9 +1445,43 @@ app.get('/api/payment-plans', requireAuth, async (req, res) => {
   res.json(rows.map(mapRow));
 });
 
-// Stub para compatibilidad con Quoter.tsx
-app.get('/api/quotation-drafts/:id/check-approvals', requireAuth, async (_req, res) => {
-  res.json({ pending: [], rejected: [] });
+// Revalida el estado real de los descuentos solicitados para las unidades de un
+// borrador (respaldo server-side: el frontend ya no puede confiar solo en su
+// propio estado en memoria, que se pierde al recargar la página).
+app.get('/api/quotation-drafts/:id/check-approvals', requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const userId = (req as AuthenticatedRequest).userId;
+  const userRole = (req as AuthenticatedRequest).userRole;
+
+  const draft = (['Admin', 'Supervisor', 'JefeSala'].includes(userRole))
+    ? await db.prepare('SELECT id, project_id, user_id, data FROM quotation_drafts WHERE id = ?').get(id) as { id: string; project_id: string | null; user_id: string; data: string } | undefined
+    : await db.prepare('SELECT id, project_id, user_id, data FROM quotation_drafts WHERE id = ? AND user_id = ?').get(id, userId) as { id: string; project_id: string | null; user_id: string; data: string } | undefined;
+  if (!draft) { res.status(404).json({ error: 'Borrador no encontrado o sin permisos' }); return; }
+
+  const data = (() => { try { return JSON.parse(draft.data || '{}'); } catch { return {}; } })() as
+    { selectedUnits?: Array<{ id: string }> };
+  const unitIds = (data.selectedUnits ?? []).map(u => u.id).filter(Boolean);
+  if (unitIds.length === 0) { res.json({ pending: [], rejected: [] }); return; }
+
+  const placeholders = unitIds.map(() => '?').join(',');
+  const rows = await db.prepare(
+    `SELECT * FROM discount_requests WHERE unit_id IN (${placeholders}) AND project_id = ? AND vendedor_id = ? ORDER BY created_at DESC`
+  ).all(...unitIds, draft.project_id, draft.user_id) as Array<Record<string, unknown>>;
+
+  const latestByUnit = new Map<string, Record<string, unknown>>();
+  for (const r of rows) {
+    const uid = r.unit_id as string;
+    if (!latestByUnit.has(uid)) latestByUnit.set(uid, r);
+  }
+
+  const pending: Array<{ unitId: string; id: string; estado: string }> = [];
+  const rejected: Array<{ unitId: string; id: string; estado: string }> = [];
+  for (const [unitId, r] of latestByUnit) {
+    const estado = r.estado as string;
+    if (estado === 'Pendiente' || estado === 'AprobadoJefe') pending.push({ unitId, id: r.id as string, estado });
+    else if (estado === 'Rechazado') rejected.push({ unitId, id: r.id as string, estado });
+  }
+  res.json({ pending, rejected });
 });
 
 // ── Helper: Notification factory ─────────────────────────────────────────────
@@ -1641,6 +1675,10 @@ app.post('/api/discount-requests/:id/approve', requireAuth, requireRole('Admin',
   let newEstado = '';
 
   if (userRole === 'Admin') {
+    if (!['Pendiente', 'AprobadoJefe'].includes(dr.estado as string)) {
+      res.status(409).json({ error: 'La solicitud ya fue resuelta o cancelada' });
+      return;
+    }
     newEstado = 'Aprobado';
     await db.prepare(`
       UPDATE discount_requests SET estado = 'Aprobado',
@@ -1649,6 +1687,10 @@ app.post('/api/discount-requests/:id/approve', requireAuth, requireRole('Admin',
     `).run(userId, now, now, req.params.id);
 
   } else if (userRole === 'JefeSala') {
+    if (dr.estado !== 'Pendiente') {
+      res.status(409).json({ error: 'La solicitud ya fue procesada' });
+      return;
+    }
     if (descuentoPct <= discountCfg.jefeMaxPct) {
       // Banda 1: JefeSala aprueba directamente
       newEstado = 'Aprobado';
@@ -1731,6 +1773,11 @@ app.post('/api/discount-requests/:id/reject', requireAuth, requireRole('Admin', 
       res.status(403).json({ error: 'No tienes permiso sobre este proyecto' });
       return;
     }
+  }
+
+  if (!['Pendiente', 'AprobadoJefe'].includes(dr.estado as string)) {
+    res.status(409).json({ error: 'La solicitud ya fue resuelta o cancelada' });
+    return;
   }
 
   await db.prepare(`
@@ -1837,7 +1884,9 @@ app.post('/api/approval-requests/:id/aprobar', requireAuth, requireRole('Admin',
       let nextPlan = plan;
       if (datos.accion === 'agregar' && datos.pago) nextPlan = [...plan, datos.pago as Pago];
       else if (datos.accion === 'eliminar' && datos.pago) nextPlan = plan.filter(p => p.id !== datos.pago!.id);
-      else if (datos.accion === 'modificar' && datos.pago) nextPlan = plan.map(p => p.id === datos.pago!.id ? { ...p, ...datos.pago } : p);
+      // 'modificar' matchea por uid (identidad estable de la fila), no por id (label
+      // editable por el usuario, que puede ser justamente uno de los campos modificados).
+      else if (datos.accion === 'modificar' && datos.pago) nextPlan = plan.map(p => (p as { uid?: string }).uid === (datos.pago as { uid?: string }).uid ? { ...p, ...datos.pago } : p);
       await db.prepare('UPDATE units SET plan_pagos = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(nextPlan), now, ar.unit_id as string);
     }
   }
@@ -2764,6 +2813,23 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
   if ('estado' in body && body.estado === 'Disponible' && existing.estado === 'Promesado') {
     if (!['Admin', 'Supervisor'].includes(userRole)) {
       res.status(403).json({ error: 'Solo Admin o Supervisor pueden resciliar una unidad Promesada' });
+      return;
+    }
+  }
+
+  // Respaldo server-side: modificar una cuota existente del cronograma en una unidad
+  // Escriturada requiere aprobación (igual que agregar/eliminar). El frontend ya revierte
+  // los ítems modificados a su original antes de enviar, así que un guardado legítimo llega
+  // acá con el mismo contenido — solo se rechaza si de verdad difiere.
+  if ('planPagos' in body && (existing.estado as string) === 'Escriturado' && !['Admin', 'Supervisor'].includes(userRole)) {
+    const existingPlan = (() => { try { return JSON.parse((existing.plan_pagos as string) || '[]'); } catch { return []; } })() as Array<Record<string, unknown>>;
+    const sent = body.planPagos as Array<Record<string, unknown>>;
+    const byUid = (arr: typeof sent) => new Map(arr.map(p => [p.uid, p]));
+    const a = byUid(existingPlan), b = byUid(sent);
+    const sameKeys = a.size === b.size && [...a.keys()].every(k => b.has(k));
+    const sameContent = sameKeys && [...a.entries()].every(([k, v]) => JSON.stringify(v) === JSON.stringify(b.get(k)));
+    if (!sameContent) {
+      res.status(403).json({ error: 'El cronograma de una unidad Escriturada requiere aprobación (usa "Solicitar cambio")' });
       return;
     }
   }
