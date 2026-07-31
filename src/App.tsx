@@ -941,7 +941,12 @@ const App: React.FC = () => {
           />
         ) : (
           <>
-            {renderView === 'summary' && <SummaryDashboard units={currentProjectUnits} />}
+            {renderView === 'summary' && (
+              // key=currentProjectId: el cruce/período es estado local del componente: sin
+              // remount al cambiar de proyecto (el selector vive afuera, en el Sidebar)
+              // quedaría pegado un filtro que no tiene sentido para el proyecto nuevo.
+              <SummaryDashboard key={currentProjectId} units={currentProjectUnits} onSelectUnit={handleSelectUnitFromClient} />
+            )}
             {renderView === 'clients' && (
               <ClientList
                 proyectoTerminado={proyectoTerminado}
@@ -1068,6 +1073,7 @@ const App: React.FC = () => {
                   users={users}
                   projects={projects}
                   currentProjectId={currentProjectId}
+                  onSelectUnit={handleSelectUnitFromClient}
                 />
               </React.Suspense>
             )}
