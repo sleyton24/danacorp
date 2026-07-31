@@ -264,11 +264,23 @@ const App: React.FC = () => {
           const r2 = await fetch('/api/discount-requests/pending', {
             headers: { Authorization: `Bearer ${tok}` },
           });
+          let count = 0;
           if (r2.ok) {
             type DR = { estado: string };
             const drs = await r2.json() as DR[];
-            setPendingApprovalsCount(drs.filter(d => d.estado === 'Pendiente' || d.estado === 'AprobadoJefe').length);
+            count = drs.filter(d => d.estado === 'Pendiente' || d.estado === 'AprobadoJefe').length;
           }
+          // Reservas y cronograma_pago solo son visibles/resolubles por Admin/Supervisor
+          // (GET /api/approval-requests exige ese rol) — JefeSala queda fuera de este fetch.
+          if (['Admin', 'Supervisor'].includes(currentUser.role)) {
+            const [rCrono, rReserva] = await Promise.all([
+              fetch('/api/approval-requests?tipo=cronograma_pago&estado=pendiente', { headers: { Authorization: `Bearer ${tok}` } }),
+              fetch('/api/approval-requests?tipo=reserva&estado=pendiente', { headers: { Authorization: `Bearer ${tok}` } }),
+            ]);
+            if (rCrono.ok) count += (await rCrono.json() as unknown[]).length;
+            if (rReserva.ok) count += (await rReserva.json() as unknown[]).length;
+          }
+          setPendingApprovalsCount(count);
         }
       } catch { /* silencioso */ }
     };

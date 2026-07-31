@@ -846,9 +846,36 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
       ? inputVal
       : (formData.clienteId ? undefined : null);
 
+    // FIX 5: JefeSala/Ventas con la unidad Escriturada → modificar una cuota existente
+    // también requiere aprobación (agregar/eliminar ya la requerían). Se difiere en el
+    // guardado: las filas modificadas se revierten a su valor original y se dispara una
+    // solicitud de aprobación por cada una, en vez de aplicar el cambio directo.
+    let planPagosToSend = formData.planPagos;
+    if (formData.estado === 'Escriturado' && !canEditCronogramaEstructura) {
+      const originalByUid = new Map<string, PaymentItem>(unit.planPagos.map(p => [p.uid, p]));
+      let diffCount = 0;
+      planPagosToSend = formData.planPagos.map(p => {
+        const original = originalByUid.get(p.uid);
+        if (!original) return p; // fila nueva: no es responsabilidad de este guardado
+        const changed = original.id !== p.id || original.date !== p.date || original.amount !== p.amount ||
+          original.status !== p.status || (original.fechaPagoReal || '') !== (p.fechaPagoReal || '') ||
+          (original.observacion || '') !== (p.observacion || '');
+        if (changed) {
+          diffCount++;
+          void requestCronogramaApproval('modificar', p);
+          return original;
+        }
+        return p;
+      });
+      if (diffCount > 0) {
+        showToast?.(`${diffCount} cambio(s) de cronograma enviados a aprobación`, 'success');
+      }
+    }
+
     try {
       onUpdate({
           ...formData,
+          planPagos: planPagosToSend,
           descuentoCliente: descuentoClienteValue as any,
           pieCuotas: cantidadCuotasPie,
           observaciones: finalObservaciones

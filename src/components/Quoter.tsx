@@ -699,34 +699,23 @@ export const Quoter: React.FC<QuoterProps> = ({
             headers: { Authorization: `Bearer ${token}` },
           });
           if (approvalRes.ok) {
-            // For each unitId in adjustDrafts that has a discount, re-check status
-            const adjs2 = getAdj('adjustDrafts') as Record<string, AdjEntry> | undefined;
-            if (adjs2) {
-              const unitIds = Object.keys(adjs2).filter(uid => {
-                const e = adjs2[uid];
-                return e.applied && parseFloat(e.rawValue) > 0;
+            const { pending, rejected } = await approvalRes.json() as {
+              pending: Array<{ unitId: string; id: string; estado: string }>;
+              rejected: Array<{ unitId: string; id: string; estado: string }>;
+            };
+            setDiscountRequests(prev => {
+              const next = { ...prev };
+              for (const p of pending) next[p.unitId] = { id: p.id, estado: p.estado as DiscountRequest['estado'] };
+              for (const r of rejected) next[r.unitId] = { id: r.id, estado: 'Rechazado' };
+              return next;
+            });
+            if (rejected.length > 0) {
+              // Revert price adjustments for rejected discounts
+              setAdjustDrafts(prev => {
+                const n = { ...prev };
+                for (const r of rejected) delete n[r.unitId];
+                return n;
               });
-              for (const uid of unitIds) {
-                // Fetch individual discount request if we have its ID
-                const knownDr = discountRequests[uid];
-                if (knownDr?.id) {
-                  const drRes = await fetch(`/api/discount-requests/${knownDr.id}`, {
-                    headers: { Authorization: `Bearer ${token}` },
-                  });
-                  if (drRes.ok) {
-                    const dr = await drRes.json() as { id: string; estado: string };
-                    setDiscountRequests(prev => ({ ...prev, [uid]: { id: dr.id, estado: dr.estado as DiscountRequest['estado'] } }));
-                    if (dr.estado === 'Rechazado') {
-                      // Revert price for rejected discounts
-                      setAdjustDrafts(prev => {
-                        const n = { ...prev };
-                        delete n[uid];
-                        return n;
-                      });
-                    }
-                  }
-                }
-              }
             }
           }
         } catch { /* silencioso */ }
@@ -1536,7 +1525,7 @@ export const Quoter: React.FC<QuoterProps> = ({
       alert('Faltan datos obligatorios del cliente (nombre y RUT).');
       return;
     }
-    const hasPending = (Object.values(discountRequests) as DiscountRequest[]).some(r => r.estado === 'Pendiente');
+    const hasPending = (Object.values(discountRequests) as DiscountRequest[]).some(r => r.estado === 'Pendiente' || r.estado === 'AprobadoJefe');
     if (hasPending) {
       alert('Hay descuentos pendientes de autorización. Aguarda aprobación.');
       return;
@@ -1619,7 +1608,7 @@ export const Quoter: React.FC<QuoterProps> = ({
     initNewClient(); loadDraftsList();
   };
 
-  const hasPendingDiscount = (Object.values(discountRequests) as DiscountRequest[]).some(r => r.estado === 'Pendiente');
+  const hasPendingDiscount = (Object.values(discountRequests) as DiscountRequest[]).some(r => r.estado === 'Pendiente' || r.estado === 'AprobadoJefe');
 
   // ══════════════════════════════════════════════════════════════════════════
   // RENDER
