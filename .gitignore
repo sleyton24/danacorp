@@ -26,6 +26,10 @@ _*.json
 # Uploads de usuarios
 uploads/
 
+# Claude Code: permisos por máquina. .claude/settings.json SÍ se versiona (es la config
+# compartida del proyecto); el .local es de cada equipo y sus rutas no sirven en otro.
+.claude/settings.local.json
+
 # Editor
 .vscode/*
 !.vscode/extensions.json
