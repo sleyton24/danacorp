@@ -150,7 +150,7 @@ export interface RealEstateUnit {
   reservaCuotas?: number;
 
   creditoHipotecario: number;
-  tasaFinanciamiento?: number;
+  tasaFinanciamiento?: number | null;
   
   totalPagado: number;
   saldoPorPagar: number;
@@ -158,14 +158,27 @@ export interface RealEstateUnit {
   canalVenta?: 'Sala de Ventas' | 'Corredor' | 'Web' | 'Referido' | 'Otro';
   intermediario?: string;
   
-  banco?: string;
+  /**
+   * Hitos: Contado no admite bloque de crédito. Nullable a propósito — las unidades
+   * anteriores a este campo quedan "no declaradas" y siguen mostrando el crédito que ya
+   * tengan cargado, en vez de que se les invente una declaración. Ver aplicaCredito()
+   * en utils/hitosCredito.ts.
+   */
+  formaFinanciamiento?: 'Contado' | 'Financiamiento' | null;
+  /** Banco financista. La columna ya existía (la consumen Resumen y Descargas); desde
+   *  ahora también se edita en Hitos. */
+  banco?: string | null;
+  /** Plazo del crédito en años. Solo aplica con Financiamiento. */
+  plazoCreditoAnios?: number | null;
   notaria?: string;
   repertorio?: string;
-  
+
   fechaReserva?: string;
-  fechaPromesa?: string; 
-  fechaSolicitudCredito?: string;
-  fechaAprobacionCredito?: string;
+  fechaPromesa?: string;
+  // Las dos del bloque de crédito aceptan null: un guardado con Contado las vacía
+  // explícitamente (null viaja en el JSON, undefined no). Ver limpiarCamposCredito().
+  fechaSolicitudCredito?: string | null;
+  fechaAprobacionCredito?: string | null;
   fechaEscritura?: string;
   fechaTerminoPago?: string;
   fechaAlzamiento?: string; 
@@ -179,6 +192,13 @@ export interface RealEstateUnit {
   cbrFojas?: string;
   cbrNumero?: string;
   cbrAno?: string;
+  /**
+   * Hitos, posterior a la firma de Escritura. Ambas OPCIONALES: nunca son requisito para
+   * que el proceso de la unidad se considere completo. Si se completan, se valida el orden
+   * (escritura ≤ ingreso ≤ inscripción) en validarOrdenCBR().
+   */
+  fechaIngresoCBR?: string;
+  fechaInscripcionCBR?: string;
   
   planPagos: PaymentItem[];
   observaciones: string;

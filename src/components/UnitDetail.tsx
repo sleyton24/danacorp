@@ -14,6 +14,10 @@ import {
 } from 'lucide-react';
 import { AssetTagInput } from './AssetTagInput';
 import { calcResumenUnidad, calcFormaPagoFija, PROMESA_PCT_MIN } from '../utils/pricingUtils';
+import {
+  aplicaCredito, limpiarCamposCredito, porcentajeFinanciamiento, validarOrdenCBR,
+  type ErrorCBR,
+} from '../utils/hitosCredito';
 
 // Bloque C: normaliza el cronograma al cargar — (1) asegura un uid estable en cada
 // fila (backfill en memoria de filas legacy; se persiste al próximo guardado, ya que
@@ -178,6 +182,9 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     setFpPromesaPct(n);
   };
   const [pendingEstado, setPendingEstado] = useState<string | null>(null);
+  // Hitos: error inline del orden de las fechas CBR (mismo patrón rechazar+error que
+  // promesaError). Se rechaza el guardado, no se autocorrige la fecha.
+  const [cbrError, setCbrError] = useState<ErrorCBR | null>(null);
 
   // ── Panel de descuento ─────────────────────────────────────────────────────
   const [discountCfg, setDiscountCfg] = useState<{ jefeMaxPct: number; supervisorMaxPct: number }>({ jefeMaxPct: 3, supervisorMaxPct: 7 });
@@ -800,6 +807,16 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   // fieldMap sin verificar que no hay UI que los use. Verificar el modal
   // conservar/descartar después de cualquier cambio en el componente.
   const performSave = () => {
+    // Hitos: el orden de las fechas CBR se valida ANTES de cualquier otra cosa y aborta
+    // el guardado completo. Se rechaza en vez de autocorregir; el backend lo revalida.
+    const errorCBR = validarOrdenCBR(formData);
+    if (errorCBR) {
+      setCbrError(errorCBR);
+      showToast?.(errorCBR.mensaje, 'error');
+      return;
+    }
+    setCbrError(null);
+
     const logs: string[] = [];
     const now = new Date().toLocaleString('es-CL', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     const userHeader = `[SISTEMA ${now} - ${currentUser.name}]`;
@@ -872,14 +889,20 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
       }
     }
 
+    // Hitos: con Contado, el bloque de crédito no aplica y tampoco se guarda con datos.
+    // El backend lo normaliza igual (defensa en profundidad), pero limpiarlo acá deja el
+    // formData coherente con lo que se acaba de enviar.
+    const aEnviar = {
+      ...formData,
+      planPagos: planPagosToSend,
+      descuentoCliente: descuentoClienteValue as any,
+      pieCuotas: cantidadCuotasPie,
+      observaciones: finalObservaciones,
+    };
+    const payload = aplicaCredito(formData.formaFinanciamiento) ? aEnviar : limpiarCamposCredito(aEnviar);
+
     try {
-      onUpdate({
-          ...formData,
-          planPagos: planPagosToSend,
-          descuentoCliente: descuentoClienteValue as any,
-          pieCuotas: cantidadCuotasPie,
-          observaciones: finalObservaciones
-      });
+      onUpdate(payload as RealEstateUnit);
       showToast?.('Cambios guardados');
     } catch {
       showToast?.('Error al guardar', 'error');
@@ -940,6 +963,20 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
           // C.1: se inserta en su posición cronológica, sin cascada.
           return { ...prev, planPagos: insertarFilaOrdenada(prev.planPagos, newItem) };
       });
+  };
+
+  /**
+   * Hitos: cambio de forma de financiamiento. Al pasar a Contado se limpian los campos
+   * de crédito en el acto (no recién al guardar): el bloque desaparece de pantalla, y
+   * dejar datos invisibles listos para persistirse sería un dato fantasma.
+   */
+  const handleFormaFinanciamientoChange = (valor: string) => {
+    if (isReadOnly) return;
+    const forma = valor === '' ? null : (valor as 'Contado' | 'Financiamiento');
+    setFormData(prev => {
+      const conForma = { ...prev, formaFinanciamiento: forma };
+      return aplicaCredito(forma) ? conForma : limpiarCamposCredito(conForma);
+    });
   };
 
   const handleLimpiarCronograma = () => {
@@ -1640,42 +1677,120 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                             )}
                         </div>
                     </div>
+                    {/* Hitos: Forma de financiamiento gobierna todo el bloque de crédito.
+                        Con Contado esos campos no aplican y tampoco se guardan con datos. */}
                     <div>
-                        <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">Solicitud Crédito</label>
+                        <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">Forma de Financiamiento</label>
                         <div className="relative">
-                            <Landmark className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300" />
-                            <input disabled={isReadOnly} type="date" value={formData.fechaSolicitudCredito || ''} onChange={(e) => handleChange('fechaSolicitudCredito', e.target.value)} className="w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100" />
-                        </div>
-                    </div>
-                    <div>
-                        <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">Aprobación Crédito</label>
-                        <div className="relative">
-                            <CheckCircle2 className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 ${!formData.fechaSolicitudCredito ? 'text-gray-200' : 'text-gray-300'}`} />
-                            <input 
-                                disabled={isReadOnly || !formData.fechaSolicitudCredito} 
-                                title={!formData.fechaSolicitudCredito ? "Primero registre la fecha de solicitud" : ""}
-                                type="date" 
-                                value={formData.fechaAprobacionCredito || ''} 
-                                onChange={(e) => handleChange('fechaAprobacionCredito', e.target.value)} 
-                                className={`w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100 ${!formData.fechaSolicitudCredito ? 'cursor-not-allowed opacity-50' : ''}`} 
-                            />
+                            <Banknote className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300 z-10" />
+                            <select
+                                disabled={isReadOnly}
+                                value={formData.formaFinanciamiento || ''}
+                                onChange={(e) => handleFormaFinanciamientoChange(e.target.value)}
+                                className="w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold text-gray-700 outline-none focus:ring-2 focus:ring-blue-100 cursor-pointer disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                                <option value="">— Seleccionar —</option>
+                                <option value="Contado">Contado</option>
+                                <option value="Financiamiento">Financiamiento</option>
+                            </select>
                         </div>
                     </div>
 
-                    <div>
-                        <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">Monto Crédito (UF)</label>
-                        <div className="relative">
-                            <Coins className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300" />
-                            <FormattedInput disabled={isReadOnly} value={formData.creditoHipotecario || 0} onChange={(val) => handleChange('creditoHipotecario', val)} className="w-full pl-9 pr-3 py-2 bg-blue-50/50 border border-blue-100 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100" />
+                    {aplicaCredito(formData.formaFinanciamiento) ? (
+                      <>
+                        <div>
+                            <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">Banco Financista</label>
+                            <div className="relative">
+                                <Landmark className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300" />
+                                <input
+                                    disabled={isReadOnly}
+                                    type="text"
+                                    value={formData.banco || ''}
+                                    onChange={(e) => handleChange('banco', e.target.value)}
+                                    placeholder="Ej: Banco de Chile"
+                                    className="w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100 placeholder:font-medium placeholder:text-gray-300"
+                                />
+                            </div>
                         </div>
-                    </div>
-                    <div>
-                        <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">Tasa de Financiamiento (%)</label>
-                        <div className="relative">
-                            <Percent className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300" />
-                            <FormattedInput disabled={isReadOnly} format="PERCENT" value={formData.tasaFinanciamiento || 0} onChange={(val) => handleChange('tasaFinanciamiento', val)} className="w-full pl-9 pr-3 py-2 bg-blue-50/50 border border-blue-100 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100" />
+                        <div>
+                            <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">Solicitud Crédito</label>
+                            <div className="relative">
+                                <Landmark className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300" />
+                                <input disabled={isReadOnly} type="date" value={formData.fechaSolicitudCredito || ''} onChange={(e) => handleChange('fechaSolicitudCredito', e.target.value)} className="w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100" />
+                            </div>
                         </div>
-                    </div>
+                        <div>
+                            <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">Aprobación Crédito</label>
+                            <div className="relative">
+                                <CheckCircle2 className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 ${!formData.fechaSolicitudCredito ? 'text-gray-200' : 'text-gray-300'}`} />
+                                <input
+                                    disabled={isReadOnly || !formData.fechaSolicitudCredito}
+                                    title={!formData.fechaSolicitudCredito ? "Primero registre la fecha de solicitud" : ""}
+                                    type="date"
+                                    value={formData.fechaAprobacionCredito || ''}
+                                    onChange={(e) => handleChange('fechaAprobacionCredito', e.target.value)}
+                                    className={`w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100 ${!formData.fechaSolicitudCredito ? 'cursor-not-allowed opacity-50' : ''}`}
+                                />
+                            </div>
+                        </div>
+
+                        <div>
+                            <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">Monto Crédito (UF)</label>
+                            <div className="relative">
+                                <Coins className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300" />
+                                <FormattedInput disabled={isReadOnly} value={formData.creditoHipotecario || 0} onChange={(val) => handleChange('creditoHipotecario', val)} className="w-full pl-9 pr-3 py-2 bg-blue-50/50 border border-blue-100 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100" />
+                            </div>
+                        </div>
+                        {/* Solo lectura: espeja el "Crédito Banco" de los detalles financieros.
+                            Lee fpCreditoPct, el MISMO estado que alimenta ese input — no un
+                            recálculo propio, para que no puedan divergir. */}
+                        <div>
+                            <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">% de Financiamiento</label>
+                            <div className="relative">
+                                <Percent className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-200" />
+                                <input
+                                    disabled
+                                    readOnly
+                                    type="text"
+                                    data-testid="pct-financiamiento"
+                                    value={`${(porcentajeFinanciamiento(formData.formaFinanciamiento, fpCreditoPct) ?? 0).toFixed(1)} %`}
+                                    className="w-full pl-9 pr-3 py-2 bg-gray-100 border border-gray-200 rounded-xl text-xs font-bold text-gray-500 outline-none cursor-not-allowed"
+                                />
+                            </div>
+                            <p className="text-[9px] text-gray-400 mt-1">Igual a "Crédito Banco" en detalles financieros</p>
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">Plazo del Crédito (años)</label>
+                            <div className="relative">
+                                <Clock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300" />
+                                <input
+                                    disabled={isReadOnly}
+                                    type="number"
+                                    min={0}
+                                    max={40}
+                                    step={1}
+                                    value={formData.plazoCreditoAnios ?? ''}
+                                    onChange={(e) => handleChange('plazoCreditoAnios', e.target.value === '' ? null : Number(e.target.value))}
+                                    placeholder="Ej: 20"
+                                    className="w-full pl-9 pr-3 py-2 bg-blue-50/50 border border-blue-100 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100 placeholder:font-medium placeholder:text-gray-300"
+                                />
+                            </div>
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">Tasa de Financiamiento (%)</label>
+                            <div className="relative">
+                                <Percent className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300" />
+                                <FormattedInput disabled={isReadOnly} format="PERCENT" value={formData.tasaFinanciamiento || 0} onChange={(val) => handleChange('tasaFinanciamiento', val)} className="w-full pl-9 pr-3 py-2 bg-blue-50/50 border border-blue-100 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100" />
+                            </div>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="md:col-span-2 flex items-center">
+                        <p className="text-[11px] text-gray-400 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 w-full">
+                          Compra al contado: no aplican banco, fechas de crédito, monto, % ni plazo.
+                        </p>
+                      </div>
+                    )}
 
                     <div>
                         <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">Fecha Entrega</label>
@@ -1695,16 +1810,57 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                         <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">Fecha Alzamiento</label>
                         <div className="relative">
                             <RefreshCw className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 ${!formData.fechaEscritura ? 'text-gray-200' : 'text-gray-300'}`} />
-                            <input 
-                                disabled={isReadOnly || !formData.fechaEscritura} 
+                            <input
+                                disabled={isReadOnly || !formData.fechaEscritura}
                                 title={!formData.fechaEscritura ? "Primero registre la fecha de escritura" : ""}
-                                type="date" 
-                                value={formData.fechaAlzamiento || ''} 
-                                onChange={(e) => handleChange('fechaAlzamiento', e.target.value)} 
-                                className={`w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100 ${!formData.fechaEscritura ? 'cursor-not-allowed opacity-50' : ''}`} 
+                                type="date"
+                                value={formData.fechaAlzamiento || ''}
+                                onChange={(e) => handleChange('fechaAlzamiento', e.target.value)}
+                                className={`w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100 ${!formData.fechaEscritura ? 'cursor-not-allowed opacity-50' : ''}`}
                             />
                         </div>
                     </div>
+
+                    {/* CBR: posterior a la firma de Escritura. AMBOS OPCIONALES — nunca son
+                        requisito para que el proceso de la unidad se considere completo. Si se
+                        completan, se valida el orden al guardar (rechaza, no autocorrige). */}
+                    <div>
+                        <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">Fecha Ingreso al CBR</label>
+                        <div className="relative">
+                            <FileSignature className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300" />
+                            <input
+                                disabled={isReadOnly}
+                                type="date"
+                                data-testid="fecha-ingreso-cbr"
+                                value={formData.fechaIngresoCBR || ''}
+                                onChange={(e) => { setCbrError(null); handleChange('fechaIngresoCBR', e.target.value); }}
+                                className={`w-full pl-9 pr-3 py-2 border rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100 ${cbrError?.campo === 'fechaIngresoCBR' ? 'border-red-300 bg-red-50' : 'bg-gray-50 border-gray-200'}`}
+                            />
+                        </div>
+                        <p className="text-[9px] text-gray-400 mt-1">Opcional</p>
+                    </div>
+                    <div>
+                        <label className="text-[10px] font-black text-gray-400 mb-1 block uppercase">Fecha de Inscripción CBR</label>
+                        <div className="relative">
+                            <FileCheck className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300" />
+                            <input
+                                disabled={isReadOnly}
+                                type="date"
+                                data-testid="fecha-inscripcion-cbr"
+                                value={formData.fechaInscripcionCBR || ''}
+                                onChange={(e) => { setCbrError(null); handleChange('fechaInscripcionCBR', e.target.value); }}
+                                className={`w-full pl-9 pr-3 py-2 border rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-100 ${cbrError?.campo === 'fechaInscripcionCBR' ? 'border-red-300 bg-red-50' : 'bg-gray-50 border-gray-200'}`}
+                            />
+                        </div>
+                        <p className="text-[9px] text-gray-400 mt-1">Opcional</p>
+                    </div>
+                    {cbrError && (
+                      <div className="md:col-span-3">
+                        <p data-testid="cbr-error" className="text-[11px] text-red-600 font-medium flex items-center gap-1">
+                          <AlertTriangle className="w-3 h-3 shrink-0" /> {cbrError.mensaje}
+                        </p>
+                      </div>
+                    )}
                 </div>
             </div>
 

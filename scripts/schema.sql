@@ -122,6 +122,16 @@ CREATE TABLE IF NOT EXISTS units (
   cbr_fojas TEXT,
   cbr_numero TEXT,
   cbr_ano TEXT,
+  -- Hitos: forma de financiamiento. NULLABLE A PROPÓSITO (sin DEFAULT): null = "no
+  -- declarado", que es el estado de las unidades anteriores a este campo. Solo 'Contado'
+  -- oculta el bloque de crédito; null y 'Financiamiento' lo muestran, para no esconder
+  -- datos de crédito ya cargados. Ver aplicaCredito() en src/utils/hitosCredito.ts.
+  forma_financiamiento TEXT,
+  plazo_credito_anios INTEGER,
+  -- Fechas posteriores a la firma de Escritura. Opcionales: nunca son requisito para que
+  -- el proceso de la unidad se considere completo. Orden validado en validarOrdenCBR().
+  fecha_ingreso_cbr TEXT,
+  fecha_inscripcion_cbr TEXT,
   plan_pagos TEXT DEFAULT '[]' NOT NULL,
   observaciones TEXT DEFAULT '' NOT NULL,
   documents TEXT DEFAULT '[]' NOT NULL,
