@@ -2669,6 +2669,10 @@ app.get('/api/units', requireAuth, async (req, res) => {
     cbrFojas: r.cbr_fojas,
     cbrNumero: r.cbr_numero,
     cbrAno: r.cbr_ano,
+    formaFinanciamiento: r.forma_financiamiento,
+    plazoCreditoAnios: r.plazo_credito_anios,
+    fechaIngresoCBR: r.fecha_ingreso_cbr,
+    fechaInscripcionCBR: r.fecha_inscripcion_cbr,
     planPagos: (() => { try { const v = r.plan_pagos; if (Array.isArray(v)) return v; return JSON.parse((v as string) || '[]'); } catch { return []; } })(),
     observaciones: (r.observaciones as string) || '',
     documents: JSON.parse((r.documents as string) || '[]'),
@@ -2809,6 +2813,41 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
     }
   }
 
+  // ── Hitos: orden de las fechas CBR ──────────────────────────────────────────
+  // Respaldo server-side de la validación inline de UnitDetail (validarOrdenCBR en
+  // src/utils/hitosCredito.ts — se reimplementa acá porque server.ts no importa de src/;
+  // si cambia una regla hay que tocar los dos lados). Se valida el estado RESULTANTE
+  // (body sobre existing), no solo lo que viene en el body: un PATCH que manda una sola
+  // fecha igual puede violar el orden contra la que ya está guardada.
+  // Ambas fechas son opcionales: una vacía no valida nada contra ella.
+  {
+    const resultante = (jsKey: string, col: string) =>
+      ((jsKey in body ? body[jsKey] : existing[col]) as string | null) || '';
+    const escritura = resultante('fechaEscritura', 'fecha_escritura');
+    const ingreso = resultante('fechaIngresoCBR', 'fecha_ingreso_cbr');
+    const inscripcion = resultante('fechaInscripcionCBR', 'fecha_inscripcion_cbr');
+    // Comparación lexicográfica de 'YYYY-MM-DD' (válida para ISO). "No anterior" admite igual.
+    if (ingreso && escritura && ingreso < escritura) {
+      res.status(400).json({ error: 'La fecha de ingreso al CBR no puede ser anterior a la Escritura.' });
+      return;
+    }
+    if (inscripcion && ingreso && inscripcion < ingreso) {
+      res.status(400).json({ error: 'La fecha de inscripción CBR no puede ser anterior al ingreso al CBR.' });
+      return;
+    }
+  }
+
+  // ── Hitos: Contado no admite datos de crédito ───────────────────────────────
+  // El frontend ya los limpia al guardar; esto cubre las llamadas directas a la API.
+  // Se normaliza en vez de rechazar: el dato de crédito no aplica, no es un error del
+  // usuario. creditoHipotecario va a 0 y no a null porque su columna es NOT NULL.
+  if ((('formaFinanciamiento' in body ? body.formaFinanciamiento : existing.forma_financiamiento)) === 'Contado') {
+    for (const jsKey of ['banco', 'fechaSolicitudCredito', 'fechaAprobacionCredito', 'plazoCreditoAnios', 'tasaFinanciamiento']) {
+      body[jsKey] = null;
+    }
+    body.creditoHipotecario = 0;
+  }
+
   // Restrict resciliación (Promesado → Disponible) to Admin/Supervisor
   if ('estado' in body && body.estado === 'Disponible' && existing.estado === 'Promesado') {
     if (!['Admin', 'Supervisor'].includes(userRole)) {
@@ -2857,6 +2896,8 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
     facturaNumero: 'factura_numero', facturaFecha: 'factura_fecha',
     recepcionMunicipalNumero: 'recepcion_municipal_numero', recepcionMunicipalFecha: 'recepcion_municipal_fecha',
     cbrFojas: 'cbr_fojas', cbrNumero: 'cbr_numero', cbrAno: 'cbr_ano',
+    formaFinanciamiento: 'forma_financiamiento', plazoCreditoAnios: 'plazo_credito_anios',
+    fechaIngresoCBR: 'fecha_ingreso_cbr', fechaInscripcionCBR: 'fecha_inscripcion_cbr',
     observaciones: 'observaciones', descuentoPct: 'descuento_pct',
     descuentoCliente: 'descuento_cliente',
     descuentoSolicitudId: 'descuento_solicitud_id', clienteId: 'cliente_id',
@@ -3359,6 +3400,16 @@ if (isMain) {
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS descuento_cliente NUMERIC(5,2)`).run();
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS ejecutivo_id TEXT`).run();
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS terraza DOUBLE PRECISION`).run();
+      // ── Hitos: forma de financiamiento + plazo + fechas CBR ────────────────
+      // SIN DEFAULT a propósito: en Postgres un DEFAULT rellenaría TODAS las filas
+      // existentes, inventando una declaración que nadie hizo para las unidades ya
+      // cargadas (incluidas las pagadas al contado). null = "no declarado" y el bloque
+      // de crédito se sigue mostrando, así ninguna unidad pierde de vista datos que ya
+      // tiene. Solo 'Contado' explícito lo oculta (aplicaCredito en hitosCredito.ts).
+      await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS forma_financiamiento TEXT`).run();
+      await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS plazo_credito_anios INTEGER`).run();
+      await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS fecha_ingreso_cbr TEXT`).run();
+      await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS fecha_inscripcion_cbr TEXT`).run();
       await db.prepare(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS eliminada INTEGER DEFAULT 0`).run();
       // ── 4.1: flag `activo` en users + desactivar la cuenta muerta lectura@danacorp.cl ──
       await db.prepare(`ALTER TABLE users ADD COLUMN IF NOT EXISTS activo BOOLEAN NOT NULL DEFAULT true`).run();
