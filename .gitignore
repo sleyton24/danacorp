@@ -4,14 +4,16 @@ logs
 npm-debug.log*
 
 node_modules
-dist
 dist-ssr
 dist-server
+
+# dist/ SÍ se versiona: el despliegue toma el build del repo y Express lo sirve
+# desde dist/ (ver server.ts). Regenerar con `npm run build` ANTES de commitear,
+# o se publica una interfaz vieja aunque el fuente esté al día.
 
 # Secrets — NUNCA versionar
 .env
 .env.local
-*.local
 
 # Bases de datos SQLite locales (nunca versionar — contienen datos/PII)
 *.db
@@ -19,7 +21,9 @@ dist-server
 *.db-wal
 
 # Artefactos temporales de scripts / OneDrive
-_*.json
+# Solo en la raíz: sin la barra inicial esto se tragaría cualquier _algo.json
+# dentro de src/, sin avisar.
+/_*.json
 .849*
 .codex-inspect/
 
