@@ -1,0 +1,24 @@
+# El fuente se normaliza a LF en el repo (el VPS es Linux), y cada quien lo ve con
+# los fines de línea de su plataforma en el working copy.
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.md text eol=lf
+*.sql text eol=lf
+
+# Scripts que corren en el VPS: LF obligatorio o bash falla con ^M.
+*.sh text eol=lf
+deploy/Caddyfile text eol=lf
+deploy/danacorp.service text eol=lf
+
+# ATENCIÓN: esta regla va AL FINAL a propósito. En gitattributes gana la última
+# línea que matchea, así que si se sube arriba, los *.js/*.html de arriba la pisan.
+#
+# dist/ contiene el build compilado que se versiona y se despliega tal cual. Con
+# core.autocrlf=true (default en Windows) git le cambiaría los fines de línea al
+# checkoutear, y el archivo desplegado dejaría de ser byte a byte lo que emitió
+# vite. -text desactiva toda conversión para esos artefactos.
+dist/** -text
