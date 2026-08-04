@@ -8,9 +8,9 @@ tiene que hacer alguien con su propia cuenta. Este documento es todo lo que hace
 
 | | |
 |---|---|
-| `master` local | `82c4429` — trabajo al día, working tree limpio |
+| `master` local | al día, working tree limpio (el tip es el que trae el bundle) |
 | `origin/master` en GitHub | `49568ca` — del **2026-07-14** |
-| divergencia | **44 commits adelante, 29 atrás** |
+| divergencia | **más de 40 commits adelante, 29 atrás** |
 | ancestro común | `a51b1a8` (2026-06-22) |
 
 `master` local pasa typecheck (servidor y web) y la suite completa: 16 archivos,
@@ -49,7 +49,8 @@ Está un nivel arriba de la carpeta del proyecto, en la misma carpeta de OneDriv
 ```bash
 git remote add traspaso /ruta/al/danacorp-master-20260804.bundle
 git fetch traspaso 'refs/heads/*:refs/heads/traspaso/*'
-git log --oneline traspaso/master -5      # debe terminar en 82c4429
+git bundle list-heads /ruta/al/danacorp-master-20260804.bundle | grep 'refs/heads/master$'
+git log --oneline traspaso/master -5      # el tip debe coincidir con la línea de arriba
 ```
 
 ### 2. Preservar la historia vieja de GitHub (recomendado, es gratis)
