@@ -50,10 +50,14 @@ Ver `.env.example`. Claves principales: `JWT_SECRET` (obligatorio), `PGHOST/PGPO
    ```bash
    npm run migrate
    ```
-4. **Build del frontend** (Express lo sirve same-origin desde `dist/`):
+4. **Frontend**: `dist/` **viene versionado en el repo** y Express lo sirve same-origin,
+   así que un `git pull` ya trae la interfaz compilada y no hace falta compilar en el VPS.
+   Solo si querés regenerarlo ahí:
    ```bash
    npm run build
    ```
+   > ⚠️ La contracara: quien cambie el frontend tiene que correr `npm run build` **antes
+   > de commitear**, o se despliega la interfaz vieja aunque el fuente esté al día.
 5. **Proceso** con systemd (reinicio automático, instancia única):
    - copiar [`deploy/danacorp.service`](deploy/danacorp.service) a `/etc/systemd/system/`, ajustar rutas/usuario
    - `sudo systemctl daemon-reload && sudo systemctl enable --now danacorp`
