@@ -30,7 +30,7 @@ set -euo pipefail
 # valor fijo y verificable. El tip queda pinneado igual, porque además se exige
 # que sea exactamente un commit por encima del padre y que su árbol traiga el
 # build nuevo (ver VERIFICACIÓN DE CONTENIDO más abajo).
-TIP_PADRE_ESPERADO="__PENDIENTE__"
+TIP_PADRE_ESPERADO="86e0eaf0b6594dd7480b80461101443828698de8"
 
 # Tip actual de GitHub al momento de preparar el traspaso (2026-07-14).
 # Si origin/master ya no es esto, alguien pusheó después y hay que revisar a mano.
