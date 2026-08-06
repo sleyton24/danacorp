@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { RealEstateUnit, Client, User } from '../types';
+import { formatUF } from '../utils/format';
 import {
   Search, Home, LayoutGrid, Car, Package, List,
   Layers, Bed, Bath, Ruler, Filter, ChevronRight, User as UserIcon, Link as LinkIcon, X, Compass, Unlock
@@ -207,9 +208,7 @@ export const UnitList: React.FC<UnitListProps> = ({ units, clients, currentUser,
       });
   }, [units, searchTerm, filterType, filterOrientacion, filterPiso, filterDormitorios, filterBanos]);
 
-  const formatPrice = (price: number) => {
-      return price.toLocaleString('es-CL', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-  };
+  const formatPrice = formatUF;
 
   return (
     <div className="space-y-6 animate-fade-in">

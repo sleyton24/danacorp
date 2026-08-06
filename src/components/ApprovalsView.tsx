@@ -4,6 +4,7 @@ import {
   CheckSquare, Check, X, Clock, AlertTriangle, ChevronDown,
   RefreshCw, User as UserIcon, Building, Percent,
 } from 'lucide-react';
+import { formatUF as formatUFShared, formatPct } from '../utils/format';
 
 interface DiscountRow {
   id: string;
@@ -45,7 +46,7 @@ interface ApprovalsViewProps {
 
 type FilterType = 'pending' | 'approved' | 'rejected' | 'all';
 
-const formatUF = (v: number) => v.toLocaleString('es-CL', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const formatUF = formatUFShared;
 const formatDate = (s: string | null) => s ? new Date(s).toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'short' }) : '—';
 
 export const ApprovalsView: React.FC<ApprovalsViewProps> = ({ currentUser }) => {
@@ -356,7 +357,7 @@ export const ApprovalsView: React.FC<ApprovalsViewProps> = ({ currentUser }) => 
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1 text-red-600 font-black text-sm">
-                        <Percent className="w-3.5 h-3.5" /> {r.descuento_pct.toFixed(1)}%
+                        <Percent className="w-3.5 h-3.5" /> {formatPct(r.descuento_pct)}%
                       </div>
                       <div className="text-[10px] text-gray-400 font-mono">-{formatUF(r.descuento_monto)} UF</div>
                     </td>

@@ -1,4 +1,5 @@
 import React from 'react';
+import { formatUF } from '../../utils/format';
 
 export interface FilaDensa {
   key: string;
@@ -26,7 +27,7 @@ interface TablaDensaProps {
   filaExpandida?: (key: string) => React.ReactNode;
 }
 
-const fmt = (n: number) => n.toLocaleString('es-CL', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+const fmt = formatUF;
 
 /**
  * Tabla monoespaciada de nivel 2 ("consola"): label, col/tot (o sel/tot con cruce activo),

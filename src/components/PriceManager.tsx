@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { RealEstateUnit, User } from '../types';
 import { Search, Edit2, Check, X, ArrowUp, ArrowDown, Filter, Compass, Layers, Bed, Bath, Car, Package, Home, LayoutGrid, Lock, Ruler, Tag, List, Link as LinkIcon, TrendingDown, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react';
+import { formatUF } from '../utils/format';
 
 interface PriceManagerProps {
   units: RealEstateUnit[];
@@ -39,9 +40,7 @@ export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit,
   const uniqueBaths = useMemo(() => Array.from(new Set(units.map(u => u.banos).filter((v): v is number => typeof v === 'number'))).sort((a: number, b: number) => a - b), [units]);
   const uniqueOrientations = useMemo(() => Array.from(new Set(units.filter(u => u.orientacion).map(u => u.orientacion))).sort(), [units]);
 
-  const formatPrice = (price: number) => {
-      return price.toLocaleString('es-CL', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-  };
+  const formatPrice = formatUF;
 
   /**
    * Lógica Centralizada de Estado (Tarea Puntual)
@@ -189,7 +188,7 @@ export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit,
 
   const handlePriceChange = (delta: number) => {
     const current = parseFloat(tempPrice) || 0;
-    setTempPrice((current + delta).toFixed(1));
+    setTempPrice((current + delta).toFixed(2));
   };
 
   const handleSave = () => {

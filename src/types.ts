@@ -143,6 +143,14 @@ export interface RealEstateUnit {
   pieFormaPago?: 'Contado' | 'Cuotas';
   pieCuotas?: number;
 
+  /**
+   * Día del mes (1..31) en que vencen las cuotas que genera el cronograma. Los meses más
+   * cortos toman su último día y los fines de semana se adelantan al viernes; ver
+   * fechaCuota() en utils/cronogramaUtils.ts. Opcional: las unidades anteriores al campo
+   * caen en DIA_PAGO_DEFAULT.
+   */
+  diaPago?: number;
+
   bonoDescuento: number;
   reservaMonto: number;
   

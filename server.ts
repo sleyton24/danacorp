@@ -2640,6 +2640,7 @@ app.get('/api/units', requireAuth, async (req, res) => {
     pie: r.pie,
     pieFormaPago: r.pie_forma_pago,
     pieCuotas: r.pie_cuotas,
+    diaPago: (r.dia_pago as number | null) ?? undefined,
     bonoDescuento: r.bono_descuento,
     reservaMonto: r.reserva_monto,
     reservaFormaPago: r.reserva_forma_pago,
@@ -2883,6 +2884,7 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
   const fieldMap: Record<string, string> = {
     estado: 'estado', precioLista: 'precio_lista', precioVenta: 'precio_venta',
     pie: 'pie', pieFormaPago: 'pie_forma_pago', pieCuotas: 'pie_cuotas',
+    diaPago: 'dia_pago',
     bonoDescuento: 'bono_descuento', reservaMonto: 'reserva_monto',
     reservaFormaPago: 'reserva_forma_pago', reservaCuotas: 'reserva_cuotas',
     creditoHipotecario: 'credito_hipotecario', tasaFinanciamiento: 'tasa_financiamiento',
@@ -3408,6 +3410,16 @@ if (isMain) {
       // tiene. Solo 'Contado' explícito lo oculta (aplicaCredito en hitosCredito.ts).
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS forma_financiamiento TEXT`).run();
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS plazo_credito_anios INTEGER`).run();
+      // ── Cronograma: día de pago de las cuotas ──────────────────────────────
+      // SIN DEFAULT: null = "nunca se declaró" y la UI cae en DIA_PAGO_DEFAULT (1),
+      // que es la fecha que usaba el generador anterior. Así ninguna unidad ya cargada
+      // cambia de comportamiento por la migración.
+      await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS dia_pago INTEGER`).run();
+      // El descuento pasa a poder derivarse de un precio tipeado a mano, que puede dar
+      // un porcentaje no representable en 2 decimales (16,666…%). NUMERIC(5,2) lo
+      // truncaba y el precio no sobrevivía al guardar; DOUBLE PRECISION lo conserva,
+      // igual que descuento_pct. Ensancha el tipo: ninguna fila existente se pierde.
+      await db.prepare(`ALTER TABLE units ALTER COLUMN descuento_cliente TYPE DOUBLE PRECISION`).run();
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS fecha_ingreso_cbr TEXT`).run();
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS fecha_inscripcion_cbr TEXT`).run();
       await db.prepare(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS eliminada INTEGER DEFAULT 0`).run();
