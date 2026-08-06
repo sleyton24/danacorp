@@ -1,6 +1,7 @@
 import React from 'react';
 import { RealEstateUnit } from '../../types';
 import { tipologia } from '../../utils/analiticaFiltros';
+import { formatUF } from '../../utils/format';
 
 interface TablaUnidadesProps {
   units: RealEstateUnit[];
@@ -10,6 +11,7 @@ interface TablaUnidadesProps {
   vacio?: string;
 }
 
+// Superficie en m²: no es precio, conserva 1 decimal. Los precios usan formatUF (2 dec).
 const fmt1 = (n: number) => n.toLocaleString('es-CL', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
 const estiloEstado: Record<string, string> = {
@@ -58,7 +60,7 @@ export const TablaUnidades: React.FC<TablaUnidadesProps> = ({ units, total, onSe
                   <td className="py-1.5 px-2 text-xs text-gray-500">{u.type === 'Departamento' ? tipologia(u) : '—'}</td>
                   <td className="py-1.5 px-2 text-xs text-gray-500 font-mono">{u.superficie ? fmt1(u.superficie) : '—'}</td>
                   <td className={`py-1.5 px-2 text-xs font-bold ${estiloEstado[u.estado] ?? 'text-gray-500'}`}>{u.estado}</td>
-                  <td className="py-1.5 px-4 text-right text-xs font-bold text-gray-800 font-mono">{fmt1(u.precioVenta)}</td>
+                  <td className="py-1.5 px-4 text-right text-xs font-bold text-gray-800 font-mono">{formatUF(u.precioVenta)}</td>
                 </tr>
               ))}
             </tbody>

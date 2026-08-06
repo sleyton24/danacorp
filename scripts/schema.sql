@@ -149,8 +149,14 @@ CREATE TABLE IF NOT EXISTS units (
   reserva_expira TEXT,
   historial_ocupacion TEXT DEFAULT '[]',
   precio_lista_original REAL,
-  descuento_cliente NUMERIC(5,2),
-  ejecutivo_id TEXT
+  -- DOUBLE PRECISION, no NUMERIC(5,2): el descuento puede derivarse de un precio tipeado
+  -- a mano y dar un porcentaje no representable en 2 decimales (16,666…%). Truncarlo haría
+  -- que el precio no sobreviviera al guardado. Ver descuentoDesdePrecio() en pricingUtils.
+  descuento_cliente DOUBLE PRECISION,
+  ejecutivo_id TEXT,
+  -- Día del mes (1..31) en que vencen las cuotas generadas. NULL = no declarado → la UI
+  -- usa DIA_PAGO_DEFAULT. Ver fechaCuota() en utils/cronogramaUtils.ts.
+  dia_pago INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS quotation_drafts (

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { RealEstateUnit, Client, User, Project, ClientDocument, DiscountConfig, ProjectConfig } from '../types';
 import { calcValorTotal, calcBonificacion, calcFormaPagoFija, PROMESA_PCT_MIN } from '../utils/pricingUtils';
+import { formatUF as formatUFShared, formatCLP as formatCLPShared, formatPct as formatPctShared } from '../utils/format';
 import {
   Search, Trash2, CheckCircle, FileText, Calendar,
   Building, Car, Package, Calculator, Save, AlertTriangle,
@@ -61,15 +62,10 @@ interface QuoterProps {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-const formatUF = (val: number) =>
-  val.toLocaleString('es-CL', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-const formatCLP = (val: number) =>
-  val.toLocaleString('es-CL', { style: 'currency', currency: 'CLP', minimumFractionDigits: 0 });
-
-// Porcentaje con 1 decimal y coma (formato chileno): 3 → "3,0", 1.6 → "1,6", 80 → "80,0"
-const formatPct = (val: number) =>
-  val.toLocaleString('es-CL', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+// Precios, montos y porcentajes: 2 decimales con coma (formato chileno). Ver utils/format.ts.
+const formatUF = formatUFShared;
+const formatCLP = formatCLPShared;
+const formatPct = formatPctShared;
 
 // ── Características (Piso + orientación) por unidad (Cambio 4/5) ───────────────
 const unitCaracteristicas = (u: RealEstateUnit): string => {
@@ -430,18 +426,21 @@ export const Quoter: React.FC<QuoterProps> = ({
   // PRECIO DE VENTA = totalFinal = sum(unitFinalPrice) = PRECIO DE LISTA - suma descuentos
   const precioVentaFinal = totalFinal;  // base para Forma de Pago y Simulador
 
-  // precioConDescuentoDepto: base para Compra Segura = unitFinalPrice del depto
-  const precioConDescuentoDepto = useMemo(() => {
-    const dep = selectedUnits.find(u => u.type === 'Departamento');
-    return dep ? unitFinalPrice(dep, adjustDrafts) : 0;
-  }, [selectedUnits, adjustDrafts]);
+  // Compra Segura = el bono pie, calculado POR UNIDAD con la fórmula canónica: se divide el
+  // precio de la unidad por (1 − bono%) y al resultado se le aplica el bono%. Es exactamente
+  // lo que ya hace calcUnitBonoPie para el desglose de arriba, así que se reusa su total en
+  // vez de recalcularlo: antes esta línea usaba base × bono% y contaba solo el depto, o sea
+  // daba un número distinto al `totalBonificacion` que la propia cotización mostraba.
+  //
+  // Ojo: como precioVentaFinal va SIN inflar, esta línea no da el bono% exacto sobre el
+  // total (con bono 10% da 11,11%). Es correcto y esperado — el bono es un % del precio
+  // publicado, no del precio de venta.
+  const compraSeguraUF = includeBonoPie ? Math.round(bonoPieBreakdown.totalBonificacion * 100) / 100 : 0;
 
   // Forma de Pago usa PRECIO DE VENTA como base (Bloque E: cálculo fijo, sin redistribución)
   const formaCalc = calcFormaPagoFija({
     precioVenta: precioVentaFinal,
-    precioConDescuentoDepto,
-    aplicaBono: includeBonoPie,
-    bonoPct,
+    compraSeguraUF,
     creditoPct,
     promesaPct,
     cuotasPct,
@@ -453,7 +452,6 @@ export const Quoter: React.FC<QuoterProps> = ({
   const escrituraUF       = formaCalc.escrituraUF;
   const creditoUF         = formaCalc.creditoUF;
   const cuotaIndividualUF = formaCalc.cuotaIndividualUF;
-  const compraSeguraUF    = formaCalc.compraSeguraUF;
   const compraSeguaPct    = formaCalc.compraSeguraPct;
   const promesaPctM       = formaCalc.promesaPct;
   const cuotasPctM        = formaCalc.cuotasPct;
@@ -871,8 +869,8 @@ export const Quoter: React.FC<QuoterProps> = ({
       }
 
       const nivel = pct > dcfg.jefeMaxPct
-        ? `Descuento ${pct.toFixed(1)}% — requiere aprobación de JefeSala y Supervisor.`
-        : `Descuento ${pct.toFixed(1)}% — requiere aprobación de JefeSala.`;
+        ? `Descuento ${formatPct(pct)}% — requiere aprobación de JefeSala y Supervisor.`
+        : `Descuento ${formatPct(pct)}% — requiere aprobación de JefeSala.`;
       setDiscountError(prev => ({ ...prev, [unitId]: nivel }));
     }
   };
@@ -1078,10 +1076,10 @@ export const Quoter: React.FC<QuoterProps> = ({
       if (hasDcto) {
         const descMonto = Math.round(valorTotal * dctoP / 100 * 100) / 100;
         const dctoLbl = u.type === 'Departamento'
-          ? `${dctoP % 1 === 0 ? dctoP.toFixed(0) : dctoP.toFixed(1)}% Dscto. en Depto.`
+          ? `${formatPct(dctoP)}% Dscto. en Depto.`
           : u.type === 'Bodega'
-            ? `${dctoP % 1 === 0 ? dctoP.toFixed(0) : dctoP.toFixed(1)}% Dscto. en Bodega N°${u.numero}`
-            : `${dctoP % 1 === 0 ? dctoP.toFixed(0) : dctoP.toFixed(1)}% Dscto. en Estac. N°${u.numero}`;
+            ? `${formatPct(dctoP)}% Dscto. en Bodega N°${u.numero}`
+            : `${formatPct(dctoP)}% Dscto. en Estac. N°${u.numero}`;
         // Fila de descuento destacada (verde) — Cambio 2
         unitRowsPDF.push([
           { content: dctoLbl, styles: { textColor: greenTxt, fillColor: greenBg } },
@@ -2335,7 +2333,7 @@ export const Quoter: React.FC<QuoterProps> = ({
                         <div className="flex items-center gap-2">
                           <span className="w-44 shrink-0 text-gray-600">Compra Segura</span>
                           <div className="w-16 p-1.5 bg-gray-50 border border-gray-200 rounded text-sm font-mono text-right text-gray-500">
-                            {compraSeguaPct.toFixed(1)}
+                            {formatPct(compraSeguaPct)}
                           </div>
                           <span className="text-gray-400">%</span>
                           <span className="ml-auto font-mono font-bold text-gray-700">{formatUF(compraSeguraUF)} UF</span>
@@ -2577,10 +2575,10 @@ export const Quoter: React.FC<QuoterProps> = ({
                       let tipoDesc = u.type;
                       if (u.type === 'Departamento' && u.dormitorios && u.banos) tipoDesc = `Departamento (${u.dormitorios}D-${u.banos}B)`;
                       const dctoLbl = u.type === 'Departamento'
-                        ? `${dctoP % 1 === 0 ? dctoP.toFixed(0) : dctoP.toFixed(1)}% Dscto. en Depto.`
+                        ? `${formatPct(dctoP)}% Dscto. en Depto.`
                         : u.type === 'Bodega'
-                          ? `${dctoP % 1 === 0 ? dctoP.toFixed(0) : dctoP.toFixed(1)}% Dscto. en Bodega N°${u.numero}`
-                          : `${dctoP % 1 === 0 ? dctoP.toFixed(0) : dctoP.toFixed(1)}% Dscto. en Estac. N°${u.numero}`;
+                          ? `${formatPct(dctoP)}% Dscto. en Bodega N°${u.numero}`
+                          : `${formatPct(dctoP)}% Dscto. en Estac. N°${u.numero}`;
                       const descMonto = hasDcto ? Math.round(valorTotal * dctoP / 100 * 100) / 100 : 0;
                       return (
                         <React.Fragment key={u.id}>

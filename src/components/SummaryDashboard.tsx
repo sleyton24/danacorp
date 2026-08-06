@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { RealEstateUnit } from '../types';
 import { Car, Package } from 'lucide-react';
+import { formatUF } from '../utils/format';
 import {
   esComprometido, estaTomado, sumarUF, sumarPagado,
   crearIndiceVinculos, estadoEfectivoUnidad, fechaHitoUnidad, type Periodo,
@@ -24,7 +25,9 @@ const COLOR_ESTADO: Record<string, string> = {
   Disponible: '#e5e7eb', Reservado: '#c7d2fe', Promesado: '#818cf8', Escriturado: '#4338ca',
 };
 
-const fmt = (n: number) => n.toLocaleString('es-CL', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+// Montos en UF: 2 decimales, igual que en el resto de la app (utils/format.ts).
+const fmt = formatUF;
+// % de avance de obra: no es precio ni descuento, conserva 1 decimal.
 const fmt1 = (n: number) => n.toLocaleString('es-CL', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
 export const SummaryDashboard: React.FC<SummaryDashboardProps> = ({ units, onSelectUnit }) => {
@@ -310,7 +313,7 @@ export const SummaryDashboard: React.FC<SummaryDashboardProps> = ({ units, onSel
         <TarjetaKpi label="UF escriturada" valor={fmt(stock.ufEscriturada)} sub="acumulado, todos los tipos" />
         <TarjetaKpi label="Pipeline UF" valor={fmt(stock.ufPipeline)} sub="promesado + reservado" />
         <TarjetaKpi label="Recaudado" valor={fmt(stock.recaudado)} sub="cuotas pagadas" />
-        <TarjetaKpi label="UF/m² cerrada" valor={fmt1(stock.ufM2Cerrada)} sub={`stock ${fmt1(stock.ufM2Stock)}`} />
+        <TarjetaKpi label="UF/m² cerrada" valor={fmt(stock.ufM2Cerrada)} sub={`stock ${fmt(stock.ufM2Stock)}`} />
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

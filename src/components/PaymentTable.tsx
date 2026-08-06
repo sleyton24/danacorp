@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { PaymentItem } from '../types';
 import { Calendar, Plus, Check, X } from 'lucide-react';
+import { formatUF as formatUFShared } from '../utils/format';
 
 interface PaymentTableProps {
   payments: PaymentItem[];
@@ -17,9 +18,7 @@ export const PaymentTable: React.FC<PaymentTableProps> = ({ payments, onAddPayme
     status: 'Pendiente'
   });
 
-  const formatUF = (val: number) => {
-      return val.toLocaleString('es-CL', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-  };
+  const formatUF = formatUFShared;
 
   const handleSave = () => {
     if (newPayment.date && newPayment.amount && onAddPayment) {

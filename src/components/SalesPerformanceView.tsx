@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { RealEstateUnit, Client, User, Project } from '../types';
 import { TrendingUp } from 'lucide-react';
+import { formatUF } from '../utils/format';
 import {
   estaTomado, esRolVendedor,
   sumarUF, parseFechaFlexible, bucketMes, enPeriodo, type Periodo,
@@ -22,7 +23,7 @@ interface SalesPerformanceViewProps {
   onSelectUnit?: (unit: RealEstateUnit) => void;
 }
 
-const fmtUF = (v: number) => v.toLocaleString('es-CL', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const fmtUF = formatUF;
 
 export const SalesPerformanceView: React.FC<SalesPerformanceViewProps> = ({
   currentUser, units, clients, users, projects, currentProjectId, onSelectUnit,
