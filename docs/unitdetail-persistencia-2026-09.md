@@ -85,6 +85,25 @@ patrón rechazar + error inline. `redistribuirPctReales` sigue pura e idempotent
 `useEffect` de red de seguridad la vuelve a llamar en cada render y si no es idempotente
 cicla.
 
+Los cinco campos del cuadro, en el caso normal: las tres componentes encendidas y sin bono
+pie. **Esta tabla existe porque los dos nombres se confundieron en la práctica** — al
+aprobar el cambio del `% Bono Pie` hubo que aclarar que no era el "% de pie", que es otro
+campo. No es exceso de celo: es la respuesta a un tropiezo real.
+
+| Campo | Estado |
+|---|---|
+| Promesa (el pie) | editable, piso 3% |
+| Cuotas | editable |
+| Escritura | derivada |
+| Crédito Banco | editable |
+| % Bono Pie | solo lectura — se cambia en la config del proyecto |
+
+No son cinco reglas independientes. La única regla es que **la última componente activa del
+orden de prelación es la derivada**, y con las tres encendidas esa es Escritura; apagarla
+mueve el rol a Cuotas, que pasa a mostrarse derivada (ver la tabla de arriba). El
+`% Bono Pie` queda fuera de esa regla porque no es una componente del reparto: es el % de
+Compra Segura, que infla el precio publicado.
+
 ## Un solo criterio de "pagado"
 
 `sumarPagado()` y su par nuevo `sumarComprometido()`, ambos en `analytics.ts`, con el parser
