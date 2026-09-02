@@ -123,19 +123,19 @@ Entre los dos archivos nuevos, 32 casos.
 
 ## Al desplegar
 
-La vía real, según Nicholas: **el commit se hace en esta carpeta local y Sebastián (Sleyton)
-toma el último commit y hace el push él mismo desde su clon** — Nicholas no puede pushear,
-su Git Credential Manager exige un diálogo interactivo (ver el doc del traspaso de agosto).
-Desde ahí el VPS toma el código; el último tramo en el servidor está descrito en el doc de
-agosto como `git pull && npm ci && sudo systemctl restart danacorp`.
+La cadena es: **commit en esta carpeta local → push de Sebastián (Sleyton) desde su clon →
+`deploy/traspaso/desplegar-vps.sh` en el VPS.** Nicholas no puede pushear: su Git Credential
+Manager exige un diálogo interactivo. El tramo del servidor no hace falta describirlo a mano
+—el script es ejecutable y no puede quedar desfasado—: `git fetch` + actualizar master **sin
+build**, `npm ci`, restart del servicio, y espera hasta 90 s a que `/api/health` devuelva 200.
 
-**Contradicción viva en el repo, a corregir:** el `CLAUDE.md` afirma que "el despliegue NO
-sale de GitHub, sale de esta carpeta local", mientras el `README.md` y el doc del traspaso
-describen el VPS tirando por `git pull`. Con lo que Nicholas describe, GitHub sí está en el
-camino y la línea del `CLAUDE.md` es la desactualizada. Conviene alinear los tres textos
-antes de que alguien despliegue por una vía que no está conectada.
+**Un commit local sin ese push no está desplegado.** Verificarlo requiere `fetch`:
+`git log origin/master` a secas muestra el último estado traído, no el del remoto.
 
-Lo que es cierto en cualquiera de las variantes:
+El `CLAUDE.md` afirmaba lo contrario ("el despliegue NO sale de GitHub", "el working tree ES
+producción", "el push es solo respaldo"); quedó corregido junto con esta bitácora.
+
+Dos reglas operativas que valen siempre:
 
 - `dist/` está versionado y el servidor **no compila**: hay que correr `npm run build` antes
   de commitear, y el `dist/` que viaja tiene que ser posterior a la última edición de

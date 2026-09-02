@@ -16,9 +16,10 @@ por el usuario, SIEMPRE realizar este flujo:
 3. Esperar la respuesta del usuario antes de seguir.
 
 4. Según la respuesta:
-   - Si [S]: ejecutar:
-       git add -A
-       git commit -m "<mensaje sugerido>"
+   - Si [S]: agregar los paths explícitos de lo que se tocó
+       (NUNCA `git add -A`: puede haber archivos de trabajo sin trackear
+        que no van al repo — mostrar `git status` antes de commitear)
+       y luego: git commit -m "<mensaje sugerido>"
    - Si [E]: pedir el mensaje editado, luego ejecutar commit
    - Si [N]: continuar sin commit, pero advertir:
        "⚠️ Los cambios no están en git — si se rompen, hay que
@@ -27,25 +28,51 @@ por el usuario, SIEMPRE realizar este flujo:
 5. Después del commit: DETENERSE. No hacer push. Ver la regla de
    despliegue más abajo.
 
-## Regla de despliegue (CRÍTICA — leer antes de tocar ramas)
+## Regla de despliegue (CRÍTICA — leer antes de dar algo por desplegado)
 
-**El despliegue NO sale de GitHub. Sale de ESTA carpeta local.** Sleyton
-despliega tomando el contenido del directorio de trabajo, no haciendo
-`git pull` desde origin.
+**Producción es `origin/master`, no esta carpeta.** La cadena completa:
 
-Consecuencias, todas importantes:
+    commit local  →  push de Sebastián (Sleyton) desde su clon  →  deploy/traspaso/desplegar-vps.sh en el VPS
 
-- **El working tree ES producción.** Lo que esté checkouteado acá es lo
-  que se puede desplegar en cualquier momento. `master` tiene que quedar
-  siempre en un estado publicable: typecheck y suite en verde.
-- **Cambiar de rama en esta carpeta expone la rama al despliegue.** Una
-  rama NO aísla el trabajo en curso. Para trabajo experimental usar un
-  **git worktree en otro directorio**, dejando esta carpeta en `master`.
-- **El push a origin no es el mecanismo de release**, así que no es
-  urgente ni se hace automáticamente. Preguntar antes; es solo respaldo
-  y sincronización con GitHub (sleyton24/danacorp).
-- El push HTTPS pide autenticación interactiva por Git Credential
-  Manager, que no se puede completar de forma no interactiva.
+Ese script corre EN EL VPS desde `/opt/danacorp`: `git fetch` + actualizar
+master (sin build), `npm ci`, restart del servicio, y espera hasta 90 s a que
+`/api/health` devuelva 200.
+
+> **Un commit local sin el push de Sebastián NO está desplegado.**
+> Nunca dar por publicado un cambio por haberlo commiteado. Cuando haga falta
+> saberlo con certeza, el `fetch` es parte del procedimiento y no un paso
+> implícito: `git log origin/master` a secas muestra el último estado
+> **traído**, así que sin fetch un commit ya pusheado puede no aparecer y uno
+> viejo puede parecer vigente. El repo es público, así que el fetch de lectura
+> no pide credenciales:
+>
+>     git fetch origin && git branch -r --contains <hash> | grep origin/master
+
+Consecuencias:
+
+- **El working tree NO es producción.** Cambiar de rama acá ya no expone nada
+  al despliegue, y por ese motivo la regla del worktree separado deja de ser
+  necesaria. Pero `master` es exactamente lo que se pushea, así que tiene que
+  quedar siempre publicable: **typecheck (web + server) y suite completa en
+  verde antes de commitear.** Y el working tree sigue siendo el único lugar
+  donde existe lo que todavía no se pusheó — con esta carpeta sincronizando
+  por OneDrive.
+- **El push ES el mecanismo de release**, no un respaldo. Que lo ejecute
+  Sebastián y no Nicholas no cambia su función.
+- **Claude no pushea.** No es una política: el push HTTPS pide autenticación
+  interactiva por Git Credential Manager y no se puede completar de forma no
+  interactiva desde acá.
+- **`npm run build` ANTES de commitear, siempre que se toque el frontend.**
+  `dist/` está versionado y `desplegar-vps.sh` **no compila**: despliega el
+  `dist/` tal como venga en el commit, así que el que viaja tiene que ser
+  posterior a la última edición de fuente.
+  El porqué es verificable, no un pedido de fe: el script trae un guard que
+  revisa que el `dist/` desplegado contenga marcadores de texto del rediseño
+  de Resumen y Performance, y **aborta** si detecta un build viejo. Nació de
+  un incidente real — el VPS sirviendo un build del 31-07-2026 con el código
+  nuevo ya commiteado. Un `dist/` desfasado no rompe nada visible: deja el
+  frontend viejo en producción con el código nuevo en git, que es un debug
+  ciego.
 
 ## Reglas adicionales
 
