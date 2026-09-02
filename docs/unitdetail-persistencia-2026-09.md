@@ -167,3 +167,12 @@ Con esto queda cerrada la lista de campos del Unit Detail que se perdían al gua
 `formaFinanciamiento`, `plazoCreditoAnios`, las fechas CBR, `terraza` ni las columnas nuevas
 — está marcado como "el frontend no lo usa, se mantiene para administración/depuración".
 Y `percentPaid` en `UnitDetail.tsx` es código muerto.
+
+## Pendiente de decisión
+
+**Permisos del bono para Supervisor.** Antes de `3f37923` el input de `% Bono` en Unit
+Detail lo podían tocar Admin y Supervisor (`canEditBono`); ahora el `bonoPiePct` solo lo
+cambia un Admin, desde Administración de Perfiles. Supervisor perdió una capacidad
+aparente — que nunca funcionó, porque el valor no se persistía, pero estaba en pantalla.
+Si debe recuperarla, el cambio va en los permisos de `ProfileAdministration`, no
+devolviendo el input editable a Unit Detail. Sin decidir.
