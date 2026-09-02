@@ -792,8 +792,6 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     return r2l(deptoVenta + storagesVenta + parkingsVenta);
   }, [bonoCalcDepto, linkedAssets, linkedDiscounts, linkedBono, bonoPct]);
 
-  const canEditBono = ['Admin', 'Supervisor'].includes(currentUser.role);
-
   // Compra Segura = el bono pie, sumado POR UNIDAD con la fórmula canónica: el precio de
   // cada unidad se divide por (1 − bono%) y al resultado se le aplica el bono%. Eso es
   // justamente lo que devuelve calcResumenUnidad().bonificacion, la misma función que usa
@@ -2527,20 +2525,10 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                       className="w-16 px-1.5 py-1 bg-white border border-gray-200 rounded text-xs font-mono text-right outline-none focus:ring-1 focus:ring-blue-200 disabled:opacity-60"
                     />
                   </div>
-                  {canEditBono && canEditFinanciero ? (
-                    <div className="flex items-center gap-1">
-                      <span className="text-[10px] text-gray-400 uppercase">% Bono</span>
-                      <input
-                        type="number" min="0" max="50" step="0.5"
-                        value={bonoPct}
-                        onChange={e => setBonoPct(Number(e.target.value))}
-                        className="w-14 px-1.5 py-1 bg-white border border-gray-200 rounded text-xs font-mono text-right outline-none focus:ring-1 focus:ring-blue-200"
-                      />
-                      <span className="text-[10px] text-gray-400">%</span>
-                    </div>
-                  ) : (
-                    <span className="text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded">{bonoPct}%</span>
-                  )}
+                  {/* Solo lectura: el % de bono es política comercial DEL PROYECTO
+                      (discountConfig.bonoPiePct), no de esta unidad — editarlo acá movería
+                      el precio publicado de todas. Se cambia en Administración de Perfiles. */}
+                  <span title="Definido por proyecto en Administración de Perfiles" className="text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded">{bonoPct}%</span>
                   {canEditFinanciero && hasClient && (
                     <div className="flex gap-1">
                       <button

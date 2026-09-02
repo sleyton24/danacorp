@@ -146,15 +146,24 @@ Dos reglas operativas que valen siempre:
   obligatorio**. Sin restart, el frontend nuevo le pega a una tabla sin `promesa_pct` y
   compañía.
 
-## Pendiente decidido, no hecho
+## `bonoPct` — resuelto: solo lectura
 
-**`bonoPct`** (el "% Bono" del bloque Bono Pie) es configuración del proyecto: sale de
-`discountConfig.bonoPiePct`, el input de Unit Detail escribe solo estado local y nada lo
-manda a ningún lado. Se dejó fuera a propósito. Hay que decidir si se persiste en la config
-del proyecto o si el input queda de solo lectura ahí — hoy es un campo editable que se
-pierde, del mismo tipo que los que se arreglaron acá.
+El "% Bono" del bloque Bono Pie quedó de **solo lectura** en Unit Detail. Sale de
+`discountConfig.bonoPiePct`, que es política comercial **del proyecto**: editarlo desde la
+ficha de una unidad habría movido el bono —y con él el precio publicado— de TODAS las
+unidades del proyecto, sin que la pantalla lo advirtiera. Un campo que aparenta ser del
+negocio puntual pero es global es peor que uno que no se puede editar ahí.
 
-Otros dos, menores: `GET /api/sync/app_state` (`buildAppStateFromTables`) no mapea `diaPago`,
+Se cambia en Administración de Perfiles (`ProfileAdministration.tsx`, "% Bono Pie", por
+proyecto, vista solo-Admin). `bonoPct` sigue siendo estado local alimentado por
+`/api/projects/:id/config`; lo único que se eliminó es la posibilidad de escribirlo desde
+Unit Detail, junto con la constante `canEditBono`, que no gobernaba nada más.
+
+Con esto queda cerrada la lista de campos del Unit Detail que se perdían al guardar.
+
+## Pendientes menores
+
+`GET /api/sync/app_state` (`buildAppStateFromTables`) no mapea `diaPago`,
 `formaFinanciamiento`, `plazoCreditoAnios`, las fechas CBR, `terraza` ni las columnas nuevas
 — está marcado como "el frontend no lo usa, se mantiene para administración/depuración".
 Y `percentPaid` en `UnitDetail.tsx` es código muerto.
