@@ -31,6 +31,16 @@ import { canViewView, vistaInicial } from './utils/viewAccess';
 // Lazy-loaded heavy module — jsPDF only downloads when user opens the Quoter
 const Quoter = React.lazy(() => import('./components/Quoter').then(m => ({ default: m.Quoter })));
 
+/**
+ * Resultado de un guardado contra la API.
+ *
+ * `error` es opcional en vez de un union discriminado por `ok` a propósito:
+ * tsconfig.json (el del frontend) no tiene `strict`, y sin strictNullChecks el narrowing
+ * sobre un discriminante booleano no es confiable en el punto de uso — el mismo motivo
+ * que documenta validarOrdenCBR() en utils/hitosCredito.ts.
+ */
+type ResultadoGuardado = { ok: boolean; error?: string };
+
 const LazyFallback = () => (
   <div className="flex items-center justify-center h-64 gap-3 text-gray-400">
     <div className="w-5 h-5 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin" />
@@ -356,14 +366,44 @@ const App: React.FC = () => {
     }).catch(() => {});
   };
 
-  const persistUnit = async (unit: RealEstateUnit) => {
+  /**
+   * PATCH de una unidad. Devuelve el resultado REAL del backend en vez de tragarse todo
+   * con `.catch(() => {})`: antes, un 400/403/409 (rol sin permiso, cronograma que
+   * requiere aprobación, proyecto terminado) terminaba igual con el toast "Cambios
+   * guardados" y el usuario se iba creyendo que había guardado.
+   */
+  const persistUnit = async (unit: RealEstateUnit): Promise<ResultadoGuardado> => {
     const tok = tokenRef.current;
-    if (!tok) return;
-    await fetch(`/api/units/${unit.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
-      body: JSON.stringify(unit),
-    }).catch(() => {});
+    if (!tok) return { ok: false, error: 'Sesión expirada: vuelve a iniciar sesión.' };
+    try {
+      const res = await fetch(`/api/units/${unit.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+        body: JSON.stringify(unit),
+      });
+      if (res.ok) return { ok: true };
+      // El backend responde { error } en texto plano de negocio; si no se puede leer,
+      // el código HTTP es mejor que un mensaje genérico inventado.
+      let mensaje = `El servidor rechazó el guardado (HTTP ${res.status}).`;
+      try {
+        const body = await res.json() as { error?: string };
+        if (body?.error) mensaje = body.error;
+      } catch { /* respuesta sin JSON: se queda el mensaje con el código */ }
+      return { ok: false, error: mensaje };
+    } catch {
+      return { ok: false, error: 'No se pudo conectar con el servidor. Los cambios NO se guardaron.' };
+    }
+  };
+
+  /**
+   * Guarda una unidad sin toasts ni bitácora: la usa UnitDetail para las bodegas y
+   * estacionamientos vinculados, que se persisten junto con el departamento y reportan
+   * sus errores en un solo toast agrupado.
+   */
+  const persistUnitSilently = async (unit: RealEstateUnit) => {
+    const r = await persistUnit(unit);
+    if (r.ok) setUnits(prev => prev.map(u => u.id === unit.id ? unit : u));
+    return r;
   };
 
   const createUnit = async (unit: RealEstateUnit) => {
@@ -435,21 +475,33 @@ const App: React.FC = () => {
     setClients(prev => syncClientsStates(units, prev));
   }, [units, syncClientsStates]);
 
-  const handleUpdateUnit = (updatedUnit: RealEstateUnit) => {
-    try {
-      const oldUnit = units.find(u => u.id === updatedUnit.id);
-      setUnits(prev => prev.map(u => u.id === updatedUnit.id ? updatedUnit : u));
-      if (selectedUnit?.id === updatedUnit.id) setSelectedUnit(updatedUnit);
-      persistUnit(updatedUnit);
-      if (oldUnit && oldUnit.estado !== updatedUnit.estado) {
-          addAuditLog('Inventario', 'Cambio Estado', `${updatedUnit.type} ${updatedUnit.numero}`, `Estado actualizado: ${oldUnit.estado} → ${updatedUnit.estado}`);
-      } else {
-          addAuditLog('Inventario', 'Actualización', `${updatedUnit.type} ${updatedUnit.numero}`, `Datos de la unidad modificados.`);
-      }
-      showToast('Unidad actualizada');
-    } catch {
-      showToast('Error al actualizar unidad', 'error');
+  /**
+   * Devuelve true solo si el backend confirmó el guardado.
+   *
+   * El estado en memoria se actualiza DESPUÉS de la confirmación, no antes: con el
+   * update optimista, un rechazo del backend dejaba a la UI mostrando datos que no
+   * existen en la BD y, peor, hacía que UnitDetail considerara los cambios como
+   * guardados (compara formData contra la unidad que vive acá) y dejara de avisar al
+   * salir. Revertir el optimismo tampoco servía: al reponer la unidad vieja se dispara
+   * el efecto de re-sincronización de UnitDetail y se perderían las ediciones del
+   * usuario, que es justo lo que hay que conservar para que pueda reintentar.
+   */
+  const handleUpdateUnit = async (updatedUnit: RealEstateUnit): Promise<boolean> => {
+    const oldUnit = units.find(u => u.id === updatedUnit.id);
+    const r = await persistUnit(updatedUnit);
+    if (!r.ok) {
+      showToast(r.error, 'error');
+      return false;
     }
+    setUnits(prev => prev.map(u => u.id === updatedUnit.id ? updatedUnit : u));
+    if (selectedUnit?.id === updatedUnit.id) setSelectedUnit(updatedUnit);
+    if (oldUnit && oldUnit.estado !== updatedUnit.estado) {
+        addAuditLog('Inventario', 'Cambio Estado', `${updatedUnit.type} ${updatedUnit.numero}`, `Estado actualizado: ${oldUnit.estado} → ${updatedUnit.estado}`);
+    } else {
+        addAuditLog('Inventario', 'Actualización', `${updatedUnit.type} ${updatedUnit.numero}`, `Datos de la unidad modificados.`);
+    }
+    showToast('Unidad actualizada');
+    return true;
   };
 
   const refreshUnits = async () => {
@@ -927,6 +979,7 @@ const App: React.FC = () => {
             client={clients.find(c => c.id === selectedUnit.clienteId)}
             onBack={() => { setSelectedUnit(null); setUnitDetailHasChanges(false); }}
             onUpdate={handleUpdateUnit}
+            onPersistUnitSilently={persistUnitSilently}
             allUnits={currentProjectUnits}
             currentUser={currentUser}
             clients={clients}

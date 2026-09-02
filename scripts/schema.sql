@@ -156,7 +156,21 @@ CREATE TABLE IF NOT EXISTS units (
   ejecutivo_id TEXT,
   -- Día del mes (1..31) en que vencen las cuotas generadas. NULL = no declarado → la UI
   -- usa DIA_PAGO_DEFAULT. Ver fechaCuota() en utils/cronogramaUtils.ts.
-  dia_pago INTEGER
+  dia_pago INTEGER,
+  -- Forma de pago del cuadro financiero (bloque "Distribución del Pago" de UnitDetail).
+  -- SIN DEFAULT a propósito, igual que dia_pago y forma_financiamiento: NULL = "nunca se
+  -- declaró". Con NULL, UnitDetail cae al plan de la última cotización y después al
+  -- default del proyecto; poner un DEFAULT le inventaría una forma de pago a todas las
+  -- unidades ya cargadas. Los *_pct son los porcentajes REALES (suman 100 con el crédito)
+  -- cuando no hay bono pie; ver redistribuirPctReales() en src/utils/pricingUtils.ts.
+  promesa_pct DOUBLE PRECISION,
+  cuotas_pct DOUBLE PRECISION,
+  escritura_pct DOUBLE PRECISION,
+  credito_pct DOUBLE PRECISION,
+  -- Componente activada/apagada. Apagada aporta 0 y queda fuera del reparto.
+  promesa_on BOOLEAN,
+  cuotas_on BOOLEAN,
+  escritura_on BOOLEAN
 );
 
 CREATE TABLE IF NOT EXISTS quotation_drafts (

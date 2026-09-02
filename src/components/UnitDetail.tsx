@@ -18,13 +18,14 @@ import {
 } from 'lucide-react';
 import { AssetTagInput } from './AssetTagInput';
 import {
-  calcResumenUnidad, calcFormaPagoFija,
+  calcResumenUnidad, calcFormaPagoFija, componentePlugForma,
   descuentoDesdePrecio, redistribuirPctReales, PROMESA_PCT_MIN,
 } from '../utils/pricingUtils';
 import {
   aplicaCredito, limpiarCamposCredito, porcentajeFinanciamiento, validarOrdenCBR,
   type ErrorCBR,
 } from '../utils/hitosCredito';
+import { sumarPagado, sumarComprometido } from '../utils/analytics';
 
 // Normaliza el cronograma al cargar: asegura un uid estable en cada fila (backfill en
 // memoria de filas legacy; se persiste al próximo guardado, ya que planPagos es un blob
@@ -34,11 +35,34 @@ function normalizarPlanPagos(filas: PaymentItem[]): PaymentItem[] {
   return filas.map(p => (p.uid ? p : { ...p, uid: crypto.randomUUID() }));
 }
 
+/**
+ * Descuento efectivo GUARDADO de una unidad: el override por cliente si existe, y si no
+ * el implícito del Price Manager (la diferencia entre el precio de lista original y el
+ * vigente). Es el valor con el que se precarga el cuadro financiero, así que también es
+ * la referencia contra la que se decide si el usuario lo cambió y hay que persistirlo.
+ */
+function descuentoVigenteUnidad(u: RealEstateUnit): number {
+  const pm = (u.precioListaOriginal && u.precioLista && u.precioListaOriginal !== u.precioLista)
+    ? Math.round((1 - u.precioLista / u.precioListaOriginal) * 100 * 10) / 10
+    : 0;
+  return (u.descuentoCliente != null && u.descuentoCliente > 0) ? u.descuentoCliente : pm;
+}
+
 interface UnitDetailProps {
   unit: RealEstateUnit;
   client?: Client;
   onBack: () => void;
-  onUpdate: (unit: RealEstateUnit) => void;
+  /**
+   * Guarda la unidad. Devuelve false cuando el backend RECHAZÓ el guardado (el padre ya
+   * mostró el error): en ese caso el detalle no debe dar los cambios por guardados.
+   * El tipo admite `void` para los llamadores viejos que no informan resultado.
+   */
+  onUpdate: (unit: RealEstateUnit) => void | boolean | Promise<void | boolean>;
+  /**
+   * Guarda una unidad vinculada (bodega/estacionamiento) sin toasts ni bitácora propia:
+   * sus errores se reportan agrupados junto al guardado del departamento.
+   */
+  onPersistUnitSilently?: (unit: RealEstateUnit) => Promise<{ ok: boolean; error?: string }>;
   allUnits?: RealEstateUnit[];
   currentUser: User;
   onSelectClient?: (clientId: string) => void;
@@ -222,7 +246,7 @@ const PercentInput = ({ value, onChange, disabled, className, max }: { value: nu
 
 
 export const UnitDetail: React.FC<UnitDetailProps> = ({
-  unit, client, onBack, onUpdate, allUnits = [], currentUser, onSelectClient,
+  unit, client, onBack, onUpdate, onPersistUnitSilently, allUnits = [], currentUser, onSelectClient,
   clients = [], users = [], onAssignClient, onUnassignClient, showToast,
   onUnsavedChangesUpdate, saveRef, proyectoTerminado,
 }) => {
@@ -240,17 +264,30 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   const [paymentPlans, setPaymentPlans] = useState<PaymentPlan[]>([]);
   const [selectedPlanId, setSelectedPlanId] = useState<string>('');
   const [cantidadCuotasPie, setCantidadCuotasPie] = useState(unit.pieCuotas ?? 36);
-  const [fpPromesaPct, setFpPromesaPct] = useState(PROMESA_PCT_MIN); // Bloque E: piso 3% por defecto
-  const [fpCuotasPct, setFpCuotasPct] = useState(20);
-  const [fpEscrituraPct, setFpEscrituraPct] = useState(10);
-  const [fpCreditoPct, setFpCreditoPct] = useState(80);
+  // ¿La unidad tiene una forma de pago declarada y guardada? Con valores persistidos,
+  // ESOS mandan: ni la cotización ni el default del proyecto los pisan al montar (mismo
+  // criterio que el "FIX 2" de unit.pieCuotas). Solo si nunca se declaró se cae al plan
+  // de la última cotización y después al default.
+  //
+  // `!= null` y no un booleano truthy: `false` es un valor DECLARADO (el usuario apagó la
+  // componente) y `0` también (Crédito Banco en 0). Solo null/undefined significan "nunca
+  // se declaró". Confundirlos haría que la cotización volviera a pisar lo que el usuario
+  // apagó a mano.
+  const hayFormaPagoPersistida =
+    unit.promesaPct != null || unit.cuotasPct != null ||
+    unit.escrituraPct != null || unit.creditoPct != null ||
+    unit.promesaOn != null || unit.cuotasOn != null || unit.escrituraOn != null;
+  const [fpPromesaPct, setFpPromesaPct] = useState(unit.promesaPct ?? PROMESA_PCT_MIN); // Bloque E: piso 3% por defecto
+  const [fpCuotasPct, setFpCuotasPct] = useState(unit.cuotasPct ?? 20);
+  const [fpEscrituraPct, setFpEscrituraPct] = useState(unit.escrituraPct ?? 10);
+  const [fpCreditoPct, setFpCreditoPct] = useState(unit.creditoPct ?? 80);
   // Bloque E: error inline al intentar bajar Promesa del piso 3% (patrón Bloque B).
   const [promesaError, setPromesaError] = useState<string | null>(null);
   // Componentes activables de la forma de pago. Apagar una la deja en 0 y su parte se
   // redistribuye sola entre las que quedan activas (ver calcFormaPagoFija).
-  const [fpPromesaOn, setFpPromesaOn] = useState(true);
-  const [fpCuotasOn, setFpCuotasOn] = useState(true);
-  const [fpEscrituraOn, setFpEscrituraOn] = useState(true);
+  const [fpPromesaOn, setFpPromesaOn] = useState(unit.promesaOn ?? true);
+  const [fpCuotasOn, setFpCuotasOn] = useState(unit.cuotasOn ?? true);
+  const [fpEscrituraOn, setFpEscrituraOn] = useState(unit.escrituraOn ?? true);
   // Bloque E: Promesa tiene piso 3% — se rechaza (no se clampea) cualquier intento de bajarlo.
   // El piso solo aplica con la componente activa: apagada aporta 0 y el piso no tiene sentido.
   const handlePromesaChange = (n: number) => {
@@ -273,6 +310,11 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   // ── Bono Pie ───────────────────────────────────────────────────────────────
   const [bonoPct, setBonoPct] = useState(0);
   const [hasBono, setHasBono] = useState(unit.aplicaBonoPie ?? false);
+  // El % de bono llega por fetch. Hasta que llegue, aplicaCompraSegura es false aunque la
+  // unidad tenga bono, así que la red de seguridad de los % NO puede correr todavía:
+  // normalizaría como porcentajes reales unos valores que en realidad son pesos, y para
+  // cuando llegara el bono ya estarían reescritos.
+  const [configProyectoCargada, setConfigProyectoCargada] = useState(false);
 
   // ── Forma de pago / modos descuento / UF hoy ──────────────────────────────
   const [includePaymentPlan, setIncludePaymentPlan] = useState(false);
@@ -321,7 +363,9 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
 
   useEffect(() => {
     const token = localStorage.getItem('dw_token');
-    if (!token || !unit.projectId) return;
+    // Sin token o sin proyecto no hay config que esperar: se destraba igual la red de
+    // seguridad, o los % se quedarían sin normalizar para siempre.
+    if (!token || !unit.projectId) { setConfigProyectoCargada(true); return; }
     fetch(`/api/projects/${unit.projectId}/config`, { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.ok ? r.json() : null)
       .then((d: { discountConfig?: { jefeMaxPct?: number; supervisorMaxPct?: number; bonoPiePct?: number }; cantidadCuotasPie?: number } | null) => {
@@ -339,8 +383,9 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
         if (unit.pieCuotas == null && d?.cantidadCuotasPie != null) {
           setCantidadCuotasPie(d.cantidadCuotasPie);
         }
+        setConfigProyectoCargada(true);
       })
-      .catch(() => {});
+      .catch(() => { setConfigProyectoCargada(true); });
   }, [unit.projectId, unit.pieCuotas]);
 
   useEffect(() => {
@@ -365,11 +410,18 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
         if (plans.length > 0) {
           const first = plans[0];
           setSelectedPlanId(first.id);
-          setFpPromesaPct(first.promesaPct);
-          setFpCuotasPct(first.cuotasPct);
-          setFpEscrituraPct(first.escrituraPct);
-          setFpCreditoPct(first.creditoPct);
-          if (first.cuotasN > 0) setCantidadCuotasPie(first.cuotasN);
+          // Precarga automática: solo cuando la unidad NUNCA declaró forma de pago. Si la
+          // tiene guardada, esta respuesta llega después del montaje y pisaría en silencio
+          // lo que el usuario guardó. Cargarla a mano sigue disponible con el botón
+          // "Cargar desde cotización" (cargarDesdeCotizacion) y con handleSelectPlan.
+          if (!hayFormaPagoPersistida) {
+            setFpPromesaPct(first.promesaPct);
+            setFpCuotasPct(first.cuotasPct);
+            setFpEscrituraPct(first.escrituraPct);
+            setFpCreditoPct(first.creditoPct);
+          }
+          // Mismo criterio que unit.pieCuotas en el efecto de config del proyecto.
+          if (first.cuotasN > 0 && unit.pieCuotas == null) setCantidadCuotasPie(first.cuotasN);
         }
       })
       .catch(() => {});
@@ -696,10 +748,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     const inputs: Record<string, string> = {};
     const bono: Record<string, boolean> = {};
     [...linkedAssets.storages, ...linkedAssets.parkings].forEach(u => {
-      const pm = (u.precioListaOriginal && u.precioLista && u.precioListaOriginal !== u.precioLista)
-        ? Math.round((1 - u.precioLista / u.precioListaOriginal) * 100 * 10) / 10
-        : 0;
-      const eff = (u.descuentoCliente != null && u.descuentoCliente > 0) ? u.descuentoCliente : pm;
+      const eff = descuentoVigenteUnidad(u);
       discounts[u.id] = eff;
       inputs[u.id] = String(eff);
       bono[u.id] = u.aplicaBonoPie ?? false;
@@ -819,10 +868,13 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   // No cicla: redistribuirPctReales es idempotente — aplicarla a un reparto ya coherente
   // devuelve los mismos números, y React corta el re-render al ver valores idénticos.
   useEffect(() => {
+    // Se espera al % de bono del proyecto: antes de que llegue no se sabe si los valores
+    // son porcentajes reales o pesos de una unidad con Compra Segura.
+    if (!configProyectoCargada) return;
     if (!aplicaCompraSegura) reajustarPctReales({});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aplicaCompraSegura, fpCreditoPct, fpPromesaPct, fpCuotasPct, fpEscrituraPct,
-      fpPromesaOn, fpCuotasOn, fpEscrituraOn]);
+  }, [configProyectoCargada, aplicaCompraSegura, fpCreditoPct, fpPromesaPct, fpCuotasPct,
+      fpEscrituraPct, fpPromesaOn, fpCuotasOn, fpEscrituraOn]);
 
   // Compra Segura como % del total de venta (0 si no hay bono)
   const compraSeguraPctOnTotal = () => {
@@ -857,6 +909,20 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   useEffect(() => {
     if (unit.pieCuotas != null) setCantidadCuotasPie(unit.pieCuotas);
   }, [unit.id, unit.pieCuotas]);
+
+  // Mismo criterio para la forma de pago: lo persistido manda. Cada campo se re-aplica
+  // solo si viene con valor; null/undefined es "nunca se declaró" y deja en pie lo que
+  // haya puesto la cotización o el default, sin pisarlo con un 0 inventado.
+  useEffect(() => {
+    if (unit.promesaPct != null) setFpPromesaPct(unit.promesaPct);
+    if (unit.cuotasPct != null) setFpCuotasPct(unit.cuotasPct);
+    if (unit.escrituraPct != null) setFpEscrituraPct(unit.escrituraPct);
+    if (unit.creditoPct != null) setFpCreditoPct(unit.creditoPct);
+    if (unit.promesaOn != null) setFpPromesaOn(unit.promesaOn);
+    if (unit.cuotasOn != null) setFpCuotasOn(unit.cuotasOn);
+    if (unit.escrituraOn != null) setFpEscrituraOn(unit.escrituraOn);
+  }, [unit.id, unit.promesaPct, unit.cuotasPct, unit.escrituraPct, unit.creditoPct,
+      unit.promesaOn, unit.cuotasOn, unit.escrituraOn]);
 
   const handleChange = (field: keyof RealEstateUnit, value: any) => {
     if (isReadOnly) return;
@@ -970,14 +1036,45 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   // server.ts debe incluir TODOS los campos editables. Nunca eliminar campos del
   // fieldMap sin verificar que no hay UI que los use. Verificar el modal
   // conservar/descartar después de cualquier cambio en el componente.
-  const performSave = () => {
+  /**
+   * Persiste el descuento y el bono de las bodegas/estacionamientos vinculados que el
+   * usuario tocó en el cuadro financiero. Vivían solo en estado local (linkedDiscounts /
+   * linkedBono): performSave manda formData, que es únicamente el departamento, así que
+   * al reabrir la ficha volvían al valor guardado en la BD.
+   *
+   * Devuelve la lista de errores (vacía si todo se guardó). Solo guarda lo que cambió y
+   * respeta canEditFinanciero, el mismo permiso que habilita los inputs.
+   */
+  const guardarUnidadesVinculadas = async (): Promise<string[]> => {
+    if (!canEditFinanciero || !onPersistUnitSilently) return [];
+    const errores: string[] = [];
+    for (const u of [...linkedAssets.storages, ...linkedAssets.parkings]) {
+      const vigente = descuentoVigenteUnidad(u);
+      const pct = linkedDiscounts[u.id] ?? vigente;
+      const bono = linkedBono[u.id] ?? (u.aplicaBonoPie ?? false);
+      // Tolerancia de centésima: el % puede venir derivado de un precio tipeado a mano
+      // (descuentoDesdePrecio no redondea) y una comparación exacta marcaría cambios
+      // fantasma en cada guardado.
+      const cambioPct = Math.abs(pct - vigente) > 0.0001;
+      const cambioBono = bono !== (u.aplicaBonoPie ?? false);
+      if (!cambioPct && !cambioBono) continue;
+      const r = await onPersistUnitSilently({
+        ...u, descuentoPct: pct, descuentoCliente: pct, aplicaBonoPie: bono,
+      });
+      if (!r.ok) errores.push(`${u.type} ${u.numero}: ${r.error || 'error desconocido'}`);
+    }
+    return errores;
+  };
+
+  /** Devuelve true solo si el backend confirmó el guardado. */
+  const performSave = async (): Promise<boolean> => {
     // Hitos: el orden de las fechas CBR se valida ANTES de cualquier otra cosa y aborta
     // el guardado completo. Se rechaza en vez de autocorregir; el backend lo revalida.
     const errorCBR = validarOrdenCBR(formData);
     if (errorCBR) {
       setCbrError(errorCBR);
       showToast?.(errorCBR.mensaje, 'error');
-      return;
+      return false;
     }
     setCbrError(null);
 
@@ -1056,33 +1153,79 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     // Hitos: con Contado, el bloque de crédito no aplica y tampoco se guarda con datos.
     // El backend lo normaliza igual (defensa en profundidad), pero limpiarlo acá deja el
     // formData coherente con lo que se acaba de enviar.
+    // El "Total Precio de Venta" del cuadro financiero es un valor DERIVADO
+    // (totalPrecioVentaNuevo = descuentos + bono pie + unidades vinculadas) que nunca
+    // volvía a formData: solo applyUnitDiscount y el efecto de arranque lo escribían, así
+    // que precio_venta se guardaba viejo cada vez que cambiaba el bono, un descuento o una
+    // unidad vinculada. Se persiste EXACTAMENTE el número que el usuario ve en pantalla,
+    // con el mismo fallback al precio de lista que usa generatePaymentSchedule.
+    const precioVentaFinal = totalPrecioVentaNuevo > 0 ? totalPrecioVentaNuevo : (unit.precioLista || 0);
+
     const aEnviar = {
       ...formData,
       planPagos: planPagosToSend,
       descuentoCliente: descuentoClienteValue as any,
+      precioVenta: precioVentaFinal,
       pieCuotas: cantidadCuotasPie,
       diaPago,
+      // Las columnas total_pagado y saldo_por_pagar existían y estaban en el fieldMap,
+      // pero nadie las recalculaba nunca desde el cronograma: quedaban en el 0 con que
+      // nace la unidad. Se derivan del mismo criterio que el pie del cronograma
+      // (Pagado = solo estado 'Pagado'), para que cualquier consumidor de la columna
+      // vea el mismo número que la pantalla.
+      totalPagado: totalPaidReal,
+      saldoPorPagar: Math.round((totalPlanificado - totalPaidReal) * 100) / 100,
+      // Forma de pago: hasta ahora vivía solo en estado local y al reabrir la unidad se
+      // volvía al default 3/20/10/80 o al de la última cotización.
+      promesaPct: fpPromesaPct,
+      cuotasPct: fpCuotasPct,
+      escrituraPct: fpEscrituraPct,
+      creditoPct: fpCreditoPct,
+      promesaOn: fpPromesaOn,
+      cuotasOn: fpCuotasOn,
+      escrituraOn: fpEscrituraOn,
       observaciones: finalObservaciones,
     };
-    const payload = aplicaCredito(formData.formaFinanciamiento) ? aEnviar : limpiarCamposCredito(aEnviar);
+    const payload = (aplicaCredito(formData.formaFinanciamiento) ? aEnviar : limpiarCamposCredito(aEnviar)) as RealEstateUnit;
 
     try {
-      onUpdate(payload as RealEstateUnit);
-      showToast?.('Cambios guardados');
+      const guardado = await onUpdate(payload);
+      // false = el backend rechazó el PATCH y el padre ya mostró el error real. No se
+      // marca nada como guardado: formData sigue como está y el modal de cambios
+      // pendientes los sigue considerando sin guardar.
+      if (guardado === false) return false;
+      // formData pasa a ser EXACTAMENTE lo guardado. Sin esto, los campos que solo
+      // existen en el payload (precio de venta, forma de pago, bitácora) dejarían la
+      // ficha marcada como "con cambios sin guardar" apenas termina de guardar.
+      setFormData(payload);
+      const errores = await guardarUnidadesVinculadas();
+      if (errores.length > 0) {
+        const cuales = errores.length === 1 ? 'una unidad vinculada' : `${errores.length} unidades vinculadas`;
+        showToast?.(`Cambios guardados, pero no se pudo guardar ${cuales}: ${errores.join(' · ')}`, 'error');
+      } else {
+        showToast?.('Cambios guardados');
+      }
+      return true;
     } catch {
       showToast?.('Error al guardar', 'error');
+      return false;
     }
   };
 
-  const handleSaveWithLog = () => {
+  /**
+   * Devuelve false tanto si el backend rechazó el guardado como si se abrió el modal de
+   * confirmación del descuento: en ninguno de los dos casos los cambios están guardados,
+   * y quien navega después de guardar tiene que poder distinguirlo.
+   */
+  const handleSaveWithLog = async (): Promise<boolean> => {
     // Si hay cliente y el descuento difiere del PM guardado, pedir confirmación
     const inputVal = parseFloat(discountInput);
     const savedValue = unit.descuentoCliente ?? descuentoPMDepto;
     if (hasClient && !isNaN(inputVal) && inputVal !== savedValue) {
       setShowSaveOverrideModal(true);
-      return;
+      return false;
     }
-    performSave();
+    return performSave();
   };
 
   // Fix 2: navegar atrás con check de cambios pendientes
@@ -1260,8 +1403,17 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
     showToast?.(`✓ ${nuevasCuotas.length} cuotas generadas en el cronograma`);
   };
 
-  const totalPaidReal = formData.planPagos.filter(p => p.status === 'Pagado').reduce((acc, curr) => acc + Number(curr.amount || 0), 0);
-  const totalPlanificado = formData.planPagos.reduce((acc, curr) => acc + Number(curr.amount || 0), 0);
+  // ── Totales del cronograma ─────────────────────────────────────────────────
+  // Total Pagado cuenta SOLO las filas en estado 'Pagado'; las Pendientes y las Atrasadas
+  // no suman. Usa sumarPagado (utils/analytics.ts), la misma función que el "Recaudado"
+  // del Resumen, así que las dos pantallas no pueden volver a discrepar: además descarta
+  // los montos que no parsean en vez de propagar NaN y envenenar el total.
+  const totalPaidReal = sumarPagado(formData.planPagos);
+  const cuotasPagadas = formData.planPagos.filter(p => p.status === 'Pagado').length;
+  // Total Comprometido: TODAS las filas del cronograma, sin importar el estado. Mismo
+  // parser tolerante que el pagado: si una mitad usa Number() y la otra parsearMonto, un
+  // monto pegado desde Excel da NaN en una y un número en la otra.
+  const totalPlanificado = sumarComprometido(formData.planPagos);
   const totalEstructuraFinanciera = (formData.reservaMonto || 0) + (formData.pie || 0);
   
   const percentPaid = totalPrecioVentaNuevo > 0 ? (totalPaidReal / totalPrecioVentaNuevo) * 100 : 0;
@@ -1293,6 +1445,16 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
   const escrituraPctDisplay   = formaDisplay.escrituraPct;
   const creditoPctDisplay     = formaDisplay.creditoPct;
 
+  // Componente derivada (plug): la que absorbe el saldo para cerrar el 100%. No se
+  // teclea — su valor es una resta — así que se muestra de solo lectura, con el mismo
+  // tratamiento visual que la fila de Compra Segura. Con bono pie devuelve null y los
+  // tres campos vuelven a ser pesos editables.
+  const plugForma = componentePlugForma({
+    cuotasActiva: fpCuotasOn,
+    escrituraActiva: fpEscrituraOn,
+    aplicaBonoPie: aplicaCompraSegura,
+  });
+
   const r2pct = (v: number) => Math.round(v * 100) / 100;
   // Bloque E: los % reales (sobre el precio de venta) siempre suman 100 cuando hay remanente.
   // Los fp*Pct crudos son ahora pesos (no suman 100), así que el totalizador usa los % reales.
@@ -1316,7 +1478,14 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
             </p>
             <div className="flex flex-col gap-2">
               <button
-                onClick={() => { handleSaveWithLog(); setShowUnsavedModal(false); onBack(); }}
+                onClick={async () => {
+                  // Se espera el resultado: si el backend rechaza (o se abre el modal de
+                  // confirmación del descuento) no se sale, o el usuario perdería los
+                  // cambios creyendo que quedaron guardados.
+                  const guardado = await handleSaveWithLog();
+                  setShowUnsavedModal(false);
+                  if (guardado) onBack();
+                }}
                 className="w-full py-2.5 bg-blue-600 text-white rounded-xl font-bold text-sm hover:bg-blue-700 transition-colors"
               >
                 Guardar y salir
@@ -1349,7 +1518,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
             </p>
             <div className="flex flex-col gap-2">
               <button
-                onClick={() => { setShowSaveOverrideModal(false); performSave(); }}
+                onClick={() => { setShowSaveOverrideModal(false); void performSave(); }}
                 className="w-full py-2.5 bg-blue-600 text-white rounded-xl font-bold text-sm hover:bg-blue-700 transition-colors"
               >
                 Confirmar y guardar
@@ -1429,7 +1598,7 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                 </select>
             </div>
             {!isReadOnly && (
-                <button onClick={handleSaveWithLog} className={`px-5 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 shadow-lg transition-all active:scale-95 ${hasUnsavedChanges ? 'bg-orange-500 hover:bg-orange-600 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white'}`}>
+                <button onClick={() => void handleSaveWithLog()} className={`px-5 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 shadow-lg transition-all active:scale-95 ${hasUnsavedChanges ? 'bg-orange-500 hover:bg-orange-600 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white'}`}>
                     <Save className="w-4 h-4" />
                     {hasUnsavedChanges ? '• Guardar Cambios' : 'Guardar Cambios'}
                 </button>
@@ -1732,8 +1901,14 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
               </div>
             )}
             <div className="bg-gray-50 px-6 py-3 border-t border-gray-100 flex justify-between items-center">
-                <div className="flex items-center gap-4">
-                    <div className="text-[10px] font-black text-gray-400 uppercase tracking-tighter">Total Planificado: <span className={`ml-1 ${Math.abs(totalPlanificado - totalEstructuraFinanciera) < 0.1 ? 'text-green-600' : 'text-orange-600'}`}>{formatValueStandard(totalPlanificado)} UF</span></div>
+                <div className="flex items-center gap-4 flex-wrap">
+                    {/* Comprometido = TODAS las filas del cronograma. El semáforo compara
+                        contra la estructura financiera (reserva + pie), igual que antes. */}
+                    <div className="text-[10px] font-black text-gray-400 uppercase tracking-tighter">Total Comprometido: <span className={`ml-1 ${Math.abs(totalPlanificado - totalEstructuraFinanciera) < 0.1 ? 'text-green-600' : 'text-orange-600'}`}>{formatValueStandard(totalPlanificado)} UF</span></div>
+                    {/* Pagado = SOLO las filas en estado Pagado. El conteo va al lado del
+                        monto porque el reclamo era justamente que el recuento no reflejaba
+                        lo efectivamente pagado. */}
+                    <div className="text-[10px] font-black text-gray-400 uppercase tracking-tighter">Total Pagado: <span className="ml-1 text-green-700">{formatValueStandard(totalPaidReal)} UF</span> <span className="ml-1 text-gray-500 normal-case">({cuotasPagadas} de {formData.planPagos.length} cuota{formData.planPagos.length === 1 ? '' : 's'})</span></div>
                     <div className="text-[10px] font-black text-gray-400 uppercase tracking-tighter">Total Estructura: <span className="ml-1 text-gray-700">{formatValueStandard(totalEstructuraFinanciera)} UF</span></div>
                 </div>
             </div>
@@ -2496,10 +2671,17 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                           onToggle={() => reajustarPctReales({ cuotasOn: !fpCuotasOn })}
                         />
                         <span className={`w-28 shrink-0 ${fpCuotasOn ? 'text-gray-600' : 'text-gray-400 line-through'}`}>Cuotas ({cantidadCuotasPie}x)</span>
-                        <PercentInput value={fpCuotasPct}
-                          onChange={n => reajustarPctReales({ cuotas: n }, 'cuotas')}
-                          disabled={!canEditFinanciero || !fpCuotasOn}
-                          className="w-14 p-1.5 border border-gray-200 rounded text-xs font-mono text-right outline-none disabled:opacity-50 disabled:bg-gray-100 disabled:cursor-not-allowed" />
+                        {plugForma === 'cuotas' ? (
+                          <div
+                            title="Se ajusta solo para cerrar el 100%: es lo que queda después del Crédito y la Promesa."
+                            className="w-14 p-1.5 bg-gray-50 border border-gray-200 rounded text-xs font-mono text-right text-gray-500"
+                          >{formatPct(fpCuotasPct)}</div>
+                        ) : (
+                          <PercentInput value={fpCuotasPct}
+                            onChange={n => reajustarPctReales({ cuotas: n }, 'cuotas')}
+                            disabled={!canEditFinanciero || !fpCuotasOn}
+                            className="w-14 p-1.5 border border-gray-200 rounded text-xs font-mono text-right outline-none disabled:opacity-50 disabled:bg-gray-100 disabled:cursor-not-allowed" />
+                        )}
                         <span className="text-gray-400">%</span>
                         {/* Badge dorado SOLO con bono pie: ahí el campo es un peso y el % real difiere.
                             Sin bono el campo YA es el % real y el badge no aportaría nada. */}
@@ -2520,15 +2702,27 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
                           onToggle={() => reajustarPctReales({ escrituraOn: !fpEscrituraOn })}
                         />
                         <span className={`w-28 shrink-0 ${fpEscrituraOn ? 'text-gray-600' : 'text-gray-400 line-through'}`}>Escritura</span>
-                        <PercentInput value={fpEscrituraPct}
-                          onChange={n => reajustarPctReales({ escritura: n }, 'escritura')}
-                          disabled={!canEditFinanciero || !fpEscrituraOn}
-                          className="w-14 p-1.5 border border-gray-200 rounded text-xs font-mono text-right outline-none disabled:opacity-50 disabled:bg-gray-100 disabled:cursor-not-allowed" />
+                        {plugForma === 'escritura' ? (
+                          <div
+                            title="Se ajusta solo para cerrar el 100%: es lo que queda después del Crédito, la Promesa y las Cuotas."
+                            className="w-14 p-1.5 bg-gray-50 border border-gray-200 rounded text-xs font-mono text-right text-gray-500"
+                          >{formatPct(fpEscrituraPct)}</div>
+                        ) : (
+                          <PercentInput value={fpEscrituraPct}
+                            onChange={n => reajustarPctReales({ escritura: n }, 'escritura')}
+                            disabled={!canEditFinanciero || !fpEscrituraOn}
+                            className="w-14 p-1.5 border border-gray-200 rounded text-xs font-mono text-right outline-none disabled:opacity-50 disabled:bg-gray-100 disabled:cursor-not-allowed" />
+                        )}
                         <span className="text-gray-400">%</span>
                         {/* Badge dorado SOLO con bono pie (ver Cuotas). */}
                         {aplicaCompraSegura && fpEscrituraOn && <span className="text-sm font-mono text-amber-800 bg-amber-200 border border-amber-400 px-2 py-0.5 rounded whitespace-nowrap">→ {formatPct(escrituraPctDisplay)}%</span>}
                         <span className={`ml-auto font-mono font-bold shrink-0 ${fpEscrituraOn ? 'text-gray-700' : 'text-gray-400'}`}>{formatValueStandard(ufEscrituraDisplay)} UF</span>
                       </div>
+                      {plugForma && (
+                        <div className="text-right text-[10px] text-gray-400 -mt-1">
+                          {plugForma === 'escritura' ? 'Escritura' : 'Cuotas'} se ajusta sola para cerrar el 100%
+                        </div>
+                      )}
                       {!fpCuotasOn && !fpEscrituraOn && formaDisplay.error && (
                         <p className="text-xs text-red-600 font-bold flex items-center gap-1 pt-1">
                           <AlertTriangle className="w-3 h-3 shrink-0" /> Cuotas y Escritura están las dos desactivadas: no queda dónde repartir el saldo. Activa al menos una.

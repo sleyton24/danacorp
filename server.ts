@@ -78,8 +78,8 @@ const passwordChangeLimiter = rateLimit({
 
 // ── Helper: upsert unit row ───────────────────────────────────────────────────
 async function upsertUnit(u: Record<string, unknown>, stableId: string, now: string) {
-  await db.prepare(`INSERT INTO units (id, project_id, type, numero, estado, superficie, terraza, orientacion, piso, dormitorios, banos, gasto_comun, gastos_operacionales, gastos_notariales, gastos_conservador, bodegas, estacionamientos, cliente_id, asignado_por, fecha_asignacion, precio_lista, precio_venta, pie, pie_forma_pago, pie_cuotas, bono_descuento, reserva_monto, reserva_forma_pago, reserva_cuotas, credito_hipotecario, tasa_financiamiento, total_pagado, saldo_por_pagar, canal_venta, intermediario, banco, notaria, repertorio, fecha_reserva, fecha_promesa, fecha_solicitud_credito, fecha_aprobacion_credito, fecha_escritura, fecha_termino_pago, fecha_alzamiento, fecha_entrega, fecha_pago, factura_numero, factura_fecha, recepcion_municipal_numero, recepcion_municipal_fecha, cbr_fojas, cbr_numero, cbr_ano, plan_pagos, observaciones, documents, descuento_pct, descuento_pendiente, descuento_solicitud_id, aplica_bono_pie, extras, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  await db.prepare(`INSERT INTO units (id, project_id, type, numero, estado, superficie, terraza, orientacion, piso, dormitorios, banos, gasto_comun, gastos_operacionales, gastos_notariales, gastos_conservador, bodegas, estacionamientos, cliente_id, asignado_por, fecha_asignacion, precio_lista, precio_venta, pie, pie_forma_pago, pie_cuotas, bono_descuento, reserva_monto, reserva_forma_pago, reserva_cuotas, credito_hipotecario, tasa_financiamiento, total_pagado, saldo_por_pagar, canal_venta, intermediario, banco, notaria, repertorio, fecha_reserva, fecha_promesa, fecha_solicitud_credito, fecha_aprobacion_credito, fecha_escritura, fecha_termino_pago, fecha_alzamiento, fecha_entrega, fecha_pago, factura_numero, factura_fecha, recepcion_municipal_numero, recepcion_municipal_fecha, cbr_fojas, cbr_numero, cbr_ano, plan_pagos, observaciones, documents, descuento_pct, descuento_pendiente, descuento_solicitud_id, aplica_bono_pie, dia_pago, promesa_pct, cuotas_pct, escritura_pct, credito_pct, promesa_on, cuotas_on, escritura_on, extras, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET estado = excluded.estado, precio_venta = excluded.precio_venta, cliente_id = excluded.cliente_id, asignado_por = excluded.asignado_por, fecha_asignacion = excluded.fecha_asignacion, descuento_pct = excluded.descuento_pct, descuento_pendiente = excluded.descuento_pendiente, descuento_solicitud_id = excluded.descuento_solicitud_id, updated_at = excluded.updated_at`
   ).run(
     stableId, (u.projectId as string | undefined) || '',
@@ -142,6 +142,16 @@ async function upsertUnit(u: Record<string, unknown>, stableId: string, now: str
     u.descuentoPendiente ? 1 : 0,
     (u.descuentoSolicitudId as string | undefined) ?? null,
     u.aplicaBonoPie ? 1 : 0,
+    (u.diaPago as number | undefined) ?? null,
+    // Forma de pago: `?? null` conserva el "nunca se declaró" de una unidad recién
+    // creada; el false de una componente apagada sí se guarda como false.
+    (u.promesaPct as number | undefined) ?? null,
+    (u.cuotasPct as number | undefined) ?? null,
+    (u.escrituraPct as number | undefined) ?? null,
+    (u.creditoPct as number | undefined) ?? null,
+    (u.promesaOn as boolean | undefined) ?? null,
+    (u.cuotasOn as boolean | undefined) ?? null,
+    (u.escrituraOn as boolean | undefined) ?? null,
     '{}', now, now
   );
 }
@@ -2641,6 +2651,15 @@ app.get('/api/units', requireAuth, async (req, res) => {
     pieFormaPago: r.pie_forma_pago,
     pieCuotas: r.pie_cuotas,
     diaPago: (r.dia_pago as number | null) ?? undefined,
+    // Forma de pago persistida. undefined (no null) para que UnitDetail distinga
+    // "nunca se declaró" y caiga al plan de la cotización / default del proyecto.
+    promesaPct: (r.promesa_pct as number | null) ?? undefined,
+    cuotasPct: (r.cuotas_pct as number | null) ?? undefined,
+    escrituraPct: (r.escritura_pct as number | null) ?? undefined,
+    creditoPct: (r.credito_pct as number | null) ?? undefined,
+    promesaOn: (r.promesa_on as boolean | null) ?? undefined,
+    cuotasOn: (r.cuotas_on as boolean | null) ?? undefined,
+    escrituraOn: (r.escritura_on as boolean | null) ?? undefined,
     bonoDescuento: r.bono_descuento,
     reservaMonto: r.reserva_monto,
     reservaFormaPago: r.reserva_forma_pago,
@@ -2790,6 +2809,52 @@ app.post('/api/units', requireAuth, requireRole('Admin'), bloquearSiTerminado(de
   res.json({ id, ...body });
 });
 
+// REGLA: todo cambio en UnitDetail debe pasar por performSave(). Este mapa debe incluir
+// TODOS los campos editables de la unidad: lo que no está acá se descarta EN SILENCIO
+// (el PATCH responde 200 y el dato nunca llega a la BD). Nunca eliminar campos del mapa
+// sin verificar que no hay UI que los use, y verificar el modal conservar/descartar
+// después de cualquier cambio en UnitDetail.
+//
+// Se exporta para que tests/unitFieldMap.test.ts pueda recorrerlo y verificar el
+// round-trip PATCH → GET de cada campo: el comentario de arriba dejó de ser la única
+// garantía de la regla.
+export const UNIT_PATCH_FIELD_MAP: Record<string, string> = {
+    estado: 'estado', precioLista: 'precio_lista', precioVenta: 'precio_venta',
+    pie: 'pie', pieFormaPago: 'pie_forma_pago', pieCuotas: 'pie_cuotas',
+    diaPago: 'dia_pago',
+    bonoDescuento: 'bono_descuento', reservaMonto: 'reserva_monto',
+    reservaFormaPago: 'reserva_forma_pago', reservaCuotas: 'reserva_cuotas',
+    creditoHipotecario: 'credito_hipotecario', tasaFinanciamiento: 'tasa_financiamiento',
+    totalPagado: 'total_pagado', saldoPorPagar: 'saldo_por_pagar',
+    canalVenta: 'canal_venta', intermediario: 'intermediario',
+    banco: 'banco', notaria: 'notaria', repertorio: 'repertorio',
+    fechaReserva: 'fecha_reserva', fechaPromesa: 'fecha_promesa',
+    fechaSolicitudCredito: 'fecha_solicitud_credito', fechaAprobacionCredito: 'fecha_aprobacion_credito',
+    fechaEscritura: 'fecha_escritura', fechaTerminoPago: 'fecha_termino_pago',
+    fechaAlzamiento: 'fecha_alzamiento', fechaEntrega: 'fecha_entrega', fechaPago: 'fecha_pago',
+    facturaNumero: 'factura_numero', facturaFecha: 'factura_fecha',
+    recepcionMunicipalNumero: 'recepcion_municipal_numero', recepcionMunicipalFecha: 'recepcion_municipal_fecha',
+    cbrFojas: 'cbr_fojas', cbrNumero: 'cbr_numero', cbrAno: 'cbr_ano',
+    formaFinanciamiento: 'forma_financiamiento', plazoCreditoAnios: 'plazo_credito_anios',
+    fechaIngresoCBR: 'fecha_ingreso_cbr', fechaInscripcionCBR: 'fecha_inscripcion_cbr',
+    observaciones: 'observaciones', descuentoPct: 'descuento_pct',
+    descuentoCliente: 'descuento_cliente',
+    descuentoSolicitudId: 'descuento_solicitud_id', clienteId: 'cliente_id',
+    asignadoPor: 'asignado_por', fechaAsignacion: 'fecha_asignacion',
+    ejecutivoId: 'ejecutivo_id',
+    // Gastos editables en el bloque Hitos de UnitDetail. Las columnas y el mapeo del GET
+    // existían desde el INSERT original, pero faltaban acá: el PATCH los descartaba en
+    // silencio y al reabrir la ficha volvían al valor viejo.
+    gastosOperacionales: 'gastos_operacionales',
+    gastosNotariales: 'gastos_notariales',
+    gastosConservador: 'gastos_conservador',
+    // Forma de pago del cuadro financiero (Distribución del Pago). null = "nunca se
+    // declaró": ahí UnitDetail cae al plan de la cotización y después al default.
+    promesaPct: 'promesa_pct', cuotasPct: 'cuotas_pct',
+    escrituraPct: 'escritura_pct', creditoPct: 'credito_pct',
+    promesaOn: 'promesa_on', cuotasOn: 'cuotas_on', escrituraOn: 'escritura_on',
+};
+
 app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Supervisor', 'Ventas'), bloquearSiTerminado(desdeTabla('units')), async (req, res) => {
   const body = req.body as Record<string, unknown>;
   const userId = (req as AuthenticatedRequest).userId;
@@ -2875,37 +2940,11 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
   }
 
   const updates: string[] = [];
-  const params: Array<string | number | null> = [];
+  // boolean además de string|number|null: las columnas *_on de la forma de pago son
+  // BOOLEAN en Postgres y node-postgres necesita recibir el booleano, no 1/0.
+  const params: Array<string | number | boolean | null> = [];
 
-  // REGLA: todo cambio en UnitDetail debe pasar por performSave(). El fieldMap aquí
-  // debe incluir TODOS los campos editables. Nunca eliminar campos del fieldMap sin
-  // verificar que no hay UI que los use. Verificar el modal conservar/descartar
-  // después de cualquier cambio en el componente.
-  const fieldMap: Record<string, string> = {
-    estado: 'estado', precioLista: 'precio_lista', precioVenta: 'precio_venta',
-    pie: 'pie', pieFormaPago: 'pie_forma_pago', pieCuotas: 'pie_cuotas',
-    diaPago: 'dia_pago',
-    bonoDescuento: 'bono_descuento', reservaMonto: 'reserva_monto',
-    reservaFormaPago: 'reserva_forma_pago', reservaCuotas: 'reserva_cuotas',
-    creditoHipotecario: 'credito_hipotecario', tasaFinanciamiento: 'tasa_financiamiento',
-    totalPagado: 'total_pagado', saldoPorPagar: 'saldo_por_pagar',
-    canalVenta: 'canal_venta', intermediario: 'intermediario',
-    banco: 'banco', notaria: 'notaria', repertorio: 'repertorio',
-    fechaReserva: 'fecha_reserva', fechaPromesa: 'fecha_promesa',
-    fechaSolicitudCredito: 'fecha_solicitud_credito', fechaAprobacionCredito: 'fecha_aprobacion_credito',
-    fechaEscritura: 'fecha_escritura', fechaTerminoPago: 'fecha_termino_pago',
-    fechaAlzamiento: 'fecha_alzamiento', fechaEntrega: 'fecha_entrega', fechaPago: 'fecha_pago',
-    facturaNumero: 'factura_numero', facturaFecha: 'factura_fecha',
-    recepcionMunicipalNumero: 'recepcion_municipal_numero', recepcionMunicipalFecha: 'recepcion_municipal_fecha',
-    cbrFojas: 'cbr_fojas', cbrNumero: 'cbr_numero', cbrAno: 'cbr_ano',
-    formaFinanciamiento: 'forma_financiamiento', plazoCreditoAnios: 'plazo_credito_anios',
-    fechaIngresoCBR: 'fecha_ingreso_cbr', fechaInscripcionCBR: 'fecha_inscripcion_cbr',
-    observaciones: 'observaciones', descuentoPct: 'descuento_pct',
-    descuentoCliente: 'descuento_cliente',
-    descuentoSolicitudId: 'descuento_solicitud_id', clienteId: 'cliente_id',
-    asignadoPor: 'asignado_por', fechaAsignacion: 'fecha_asignacion',
-    ejecutivoId: 'ejecutivo_id',
-  };
+  const fieldMap = UNIT_PATCH_FIELD_MAP;
 
   // REGLA: la limpieza de fechas SOLO ocurre en transiciones de estado (o al quitar el
   // cliente), NUNCA en un guardado normal — así un guardado que no cambia el estado
@@ -2921,6 +2960,13 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
     const hitoSqlCols = ['fecha_reserva', 'fecha_promesa', 'fecha_escritura', 'fecha_solicitud_credito',
       'fecha_aprobacion_credito', 'fecha_termino_pago', 'fecha_alzamiento', 'fecha_entrega', 'fecha_pago'];
     for (const col of hitoSqlCols) updates.push(`${col} = NULL`);
+    // Los datos de la reserva también mueren con la transición. UnitDetail ya los pone en
+    // undefined al pasar a Disponible, pero undefined se omite en JSON.stringify y no hay
+    // columna en el fieldMap, así que sin esto quedaban pegados: una reserva_expira vieja
+    // hace que el bloque de más abajo (`!existing.reserva_expira`) NO calcule una fecha de
+    // vencimiento nueva cuando la unidad se vuelve a reservar. Es el mismo barrido que
+    // hace liberarUnidad() cuando la reserva vence sola.
+    updates.push('reserva_vendedor_id = NULL', 'reserva_expira = NULL');
   } else if (clienteRemovido) {
     // Se quitó el cliente: limpiar fechas asociadas a la ocupación
     delete body.fechaReserva;
@@ -2982,7 +3028,9 @@ app.patch('/api/units/:id', requireAuth, requireRole('Admin', 'JefeSala', 'Super
   }
 
   for (const [jsKey, sqlCol] of Object.entries(fieldMap)) {
-    if (jsKey in body) { updates.push(`${sqlCol} = ?`); params.push((body[jsKey] as string | number | null) ?? null); }
+    // `?? null` y no `|| null`: false es un valor válido de las columnas *_on
+    // (componente apagada) y no debe degradarse a null ("nunca se declaró").
+    if (jsKey in body) { updates.push(`${sqlCol} = ?`); params.push((body[jsKey] as string | number | boolean | null | undefined) ?? null); }
   }
   if ('descuentoPendiente' in body) { updates.push('descuento_pendiente = ?'); params.push(body.descuentoPendiente ? 1 : 0); }
   if ('aplicaBonoPie' in body) { updates.push('aplica_bono_pie = ?'); params.push(body.aplicaBonoPie ? 1 : 0); }
@@ -3415,6 +3463,17 @@ if (isMain) {
       // que es la fecha que usaba el generador anterior. Así ninguna unidad ya cargada
       // cambia de comportamiento por la migración.
       await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS dia_pago INTEGER`).run();
+      // ── Forma de pago persistida por unidad ───────────────────────────────
+      // Mismo criterio que dia_pago: SIN DEFAULT. null = "nunca se declaró" y UnitDetail
+      // cae al plan de la última cotización y después al default del proyecto. Con un
+      // DEFAULT, toda unidad ya cargada quedaría con una forma de pago que nadie declaró.
+      await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS promesa_pct DOUBLE PRECISION`).run();
+      await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS cuotas_pct DOUBLE PRECISION`).run();
+      await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS escritura_pct DOUBLE PRECISION`).run();
+      await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS credito_pct DOUBLE PRECISION`).run();
+      await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS promesa_on BOOLEAN`).run();
+      await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS cuotas_on BOOLEAN`).run();
+      await db.prepare(`ALTER TABLE units ADD COLUMN IF NOT EXISTS escritura_on BOOLEAN`).run();
       // El descuento pasa a poder derivarse de un precio tipeado a mano, que puede dar
       // un porcentaje no representable en 2 decimales (16,666…%). NUMERIC(5,2) lo
       // truncaba y el precio no sobrevivía al guardar; DOUBLE PRECISION lo conserva,

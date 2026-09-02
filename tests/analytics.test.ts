@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   esEscriturado, esComprometido, estaTomado, esRolVendedor,
   sumarUF, contarPorEstado,
-  parsearMonto, sumarPagado,
+  parsearMonto, sumarPagado, sumarComprometido,
   parseFechaFlexible, bucketMes, enPeriodo,
   crearIndiceVinculos, estadoEfectivoUnidad, fechaHitoUnidad, departamentoPadre,
   vendedorAtribuidoId,
@@ -178,6 +178,29 @@ describe('sumarPagado', () => {
 
   it('un solo valor corrupto no rompe el total', () => {
     expect(sumarPagado([cuota('no es plata'), cuota('500')])).toBe(500);
+  });
+
+  // Par de sumarPagado: el "Total Comprometido" del pie del cronograma y la base del
+  // saldo por pagar de la Sábana de Datos. Mismo parser, distinto filtro.
+  it('sumarComprometido cuenta TODAS las filas, no solo las pagadas', () => {
+    const plan = [cuota('100', 'Pagado'), cuota('900', 'Pendiente'), cuota('50', 'Atrasado')];
+    expect(sumarComprometido(plan)).toBe(1050);
+    expect(sumarPagado(plan)).toBe(100);
+    // Saldo por pagar = comprometido − pagado, el criterio único de toda la app.
+    expect(sumarComprometido(plan) - sumarPagado(plan)).toBe(950);
+  });
+
+  it('sumarComprometido usa el mismo parser tolerante y nunca devuelve NaN', () => {
+    const plan = [cuota('1.234,5', 'Pendiente'), cuota('abc', 'Pendiente'), cuota(100, 'Pagado')];
+    const total = sumarComprometido(plan);
+    expect(Number.isNaN(total)).toBe(false);
+    expect(total).toBe(1334.5);
+  });
+
+  it('sumarComprometido con plan vacío, null o undefined suma 0', () => {
+    expect(sumarComprometido([])).toBe(0);
+    expect(sumarComprometido(null)).toBe(0);
+    expect(sumarComprometido(undefined)).toBe(0);
   });
 
   it('plan vacío, null o undefined suman 0', () => {

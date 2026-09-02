@@ -139,6 +139,26 @@ export function sumarPagado(planPagos: PaymentItem[] | null | undefined): number
   return total;
 }
 
+/**
+ * Suma TODAS las cuotas del plan, sin mirar el estado: es el "Total Comprometido" del pie
+ * del cronograma y la base del saldo por pagar (comprometido − pagado).
+ *
+ * Existe como par de sumarPagado para que las dos mitades del mismo número usen el mismo
+ * parser tolerante. Cuando el pie del cronograma sumaba con Number(amount) y el Resumen
+ * con parsearMonto, un monto pegado desde Excel ("1.234,5") daba NaN en una pantalla y
+ * 1234,5 en la otra.
+ */
+export function sumarComprometido(planPagos: PaymentItem[] | null | undefined): number {
+  if (!Array.isArray(planPagos)) return 0;
+  let total = 0;
+  for (const p of planPagos) {
+    if (!p) continue;
+    const monto = parsearMonto(p.amount);
+    if (monto !== null) total += monto;
+  }
+  return total;
+}
+
 // ── Fechas ────────────────────────────────────────────────────────────────────
 
 /**

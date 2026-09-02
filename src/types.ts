@@ -151,6 +151,27 @@ export interface RealEstateUnit {
    */
   diaPago?: number;
 
+  /**
+   * Forma de pago del cuadro financiero ("Distribución del Pago" de UnitDetail).
+   *
+   * Los cuatro porcentajes son los % REALES sobre el precio de venta cuando NO hay bono
+   * pie: Promesa + Cuotas + Escritura + Crédito suman 100. Con bono pie los tres primeros
+   * pasan a ser pesos y el % real se muestra aparte (ver calcFormaPagoFija).
+   *
+   * TODOS opcionales y nullables a propósito: undefined = "nunca se declaró", que es el
+   * estado de las unidades anteriores a estas columnas. Solo entonces UnitDetail cae al
+   * plan de la última cotización y después al default del proyecto; si hay valor
+   * persistido, ese manda. Mismo criterio que diaPago y formaFinanciamiento.
+   */
+  promesaPct?: number;
+  cuotasPct?: number;
+  escrituraPct?: number;
+  creditoPct?: number;
+  /** Componente activada. Apagada aporta 0 y queda fuera del reparto. */
+  promesaOn?: boolean;
+  cuotasOn?: boolean;
+  escrituraOn?: boolean;
+
   bonoDescuento: number;
   reservaMonto: number;
   

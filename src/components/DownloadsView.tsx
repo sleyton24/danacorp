@@ -2,6 +2,7 @@ import React from 'react';
 import { RealEstateUnit, Client, Project } from '../types';
 import { Download, FileSpreadsheet, Info, CheckCircle2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { sumarPagado, sumarComprometido } from '../utils/analytics';
 
 interface DownloadsViewProps {
   units: RealEstateUnit[];
@@ -34,6 +35,15 @@ export const DownloadsView: React.FC<DownloadsViewProps> = ({ units, clients, pr
       // Filtrar solo movimientos pagados para el desglose por columnas
       const paidMovements = unit.planPagos.filter(p => p.status === 'Pagado');
 
+      // Los totales se DERIVAN del cronograma, no se leen de unit.totalPagado /
+      // unit.saldoPorPagar: esas columnas solo se refrescan cuando alguien abre la ficha y
+      // guarda, así que la Sábana exportaba el 0 con que nace la unidad para todo el
+      // inventario que nadie volvió a tocar. Mismo criterio que el pie del cronograma y
+      // que el "Recaudado" del Resumen: pagado = solo las filas en estado 'Pagado'.
+      const totalPagado = sumarPagado(unit.planPagos);
+      const totalComprometido = sumarComprometido(unit.planPagos);
+      const saldoPorPagar = Math.round((totalComprometido - totalPagado) * 100) / 100;
+
       // Objeto base con datos generales y comerciales
       const row: any = {
         'ID Sistema': unit.id,
@@ -53,8 +63,9 @@ export const DownloadsView: React.FC<DownloadsViewProps> = ({ units, clients, pr
         'Monto Reserva (UF)': unit.reservaMonto,
         'Monto Pie (UF)': unit.pie,
         'Crédito Hipotecario (UF)': unit.creditoHipotecario,
-        'Total Pagado (UF)': unit.totalPagado,
-        'Saldo por Pagar (UF)': unit.saldoPorPagar,
+        'Total Comprometido (UF)': totalComprometido,
+        'Total Pagado (UF)': totalPagado,
+        'Saldo por Pagar (UF)': saldoPorPagar,
         
         'Banco': unit.banco || '-',
         'Notaría': unit.notaria || '-',

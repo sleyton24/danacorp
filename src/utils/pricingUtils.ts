@@ -287,17 +287,73 @@ export interface RepartoPctReales {
 type ClaveComponente = 'promesa' | 'cuotas' | 'escritura';
 
 /**
+ * Orden de prelación de la forma de pago, de mayor a menor prioridad:
+ *
+ *     Crédito Banco  >  Promesa (el "pie")  >  Cuotas  >  Escritura
+ *
+ * El Crédito no está en la lista porque no se reparte: sale del 100% antes que nada y
+ * define `disponible`. Las otras tres sí, y el orden es el que decide quién se mueve al
+ * editar una: las ANTERIORES a la editada no se tocan y las POSTERIORES absorben la
+ * diferencia en proporción a lo que tenían.
+ */
+const ORDEN_PRELACION: ClaveComponente[] = ['promesa', 'cuotas', 'escritura'];
+
+/**
+ * Componente que hace de PLUG: la última activa del orden de prelación, la que absorbe lo
+ * que dejan las de mayor prioridad para que la distribución cierre el 100%.
+ *
+ * El plug no tiene grados de libertad — su valor sale de una resta — así que la UI lo
+ * muestra DERIVADO y de solo lectura, igual que la fila de Compra Segura. Aceptar un
+ * número tecleado y reemplazarlo en silencio por otro es justo el tipo de comportamiento
+ * que se está sacando de esta pantalla.
+ *
+ * Devuelve null cuando no hay plug y todos los campos son editables:
+ *  · Con bono pie (Compra Segura) los campos son PESOS libres, no porcentajes reales: se
+ *    reparten el remanente que deja el bono y el % real se muestra en el badge dorado.
+ *    Ahí no hay nada derivado. Es el mismo short-circuit de reajustarPctReales().
+ *  · Con Cuotas y Escritura las dos apagadas no queda dónde repartir; la UI ya muestra su
+ *    propio error pidiendo activar al menos una.
+ */
+export function componentePlugForma(params: {
+  cuotasActiva: boolean;
+  escrituraActiva: boolean;
+  aplicaBonoPie: boolean;
+}): 'cuotas' | 'escritura' | null {
+  if (params.aplicaBonoPie) return null;
+  if (params.escrituraActiva) return 'escritura';
+  if (params.cuotasActiva) return 'cuotas';
+  return null;
+}
+
+/**
  * Devuelve el reparto coherente de Promesa / Cuotas / Escritura en porcentajes reales.
  *
- * - `disponible` = 100 − Crédito Banco. Las tres activas siempre suman exactamente eso.
+ * - `disponible` = 100 − Crédito Banco. Las activas siempre suman exactamente eso, para
+ *   que el certificador de 100% de la UI cierre al centésimo.
  * - Las componentes apagadas quedan en 0 y no participan del reparto.
- * - `fijada` es la que el usuario acaba de escribir a mano: se respeta su valor (recortado
- *   a lo que haya disponible) y las otras activas absorben el resto en proporción a lo que
- *   tenían. Sin `fijada` se reparte todo proporcionalmente (toggle o cambio de Crédito).
+ * - `fijada` es la que el usuario acaba de escribir a mano. Se respeta su valor y se
+ *   aplica el ORDEN DE PRELACIÓN: lo que va antes queda intacto y lo que va después
+ *   absorbe, en proporción a lo que tenía. En concreto:
+ *     · Promesa   → Cuotas y Escritura se reparten `disponible − promesa`.
+ *     · Cuotas    → Promesa no se mueve; solo Escritura absorbe.
+ *     · Escritura → es la última y nadie absorbe, así que se lleva el espacio libre
+ *       `disponible − promesa − cuotas` y ninguna otra componente se mueve. Desde la UI
+ *       ese caso ya no se alcanza: la componente plug se muestra derivada y de solo
+ *       lectura (ver componentePlugForma), justamente porque no tiene grados de libertad.
+ *       La rama se conserva igual — es el caso general "la editada es la última activa",
+ *       el mismo que aplica al editar Cuotas con Escritura apagada.
+ *   Sin `fijada` (toggle on/off, o cambio del Crédito) se reparte todo
+ *   proporcionalmente entre las activas, sin jerarquía: es el comportamiento anterior.
+ * - Si la componente que debería absorber está apagada, la editada se lleva el espacio
+ *   libre entero en vez de descuadrar el 100%: al editar Cuotas con Escritura apagada,
+ *   Cuotas queda en `disponible − promesa`.
  * - La Promesa conserva su piso de 3% mientras esté activa; si no cabe en lo disponible,
  *   se usa lo disponible.
- * - El residuo del redondeo a 2 decimales se lo lleva Escritura (o Cuotas si Escritura está
- *   apagada), igual que en calcFormaPagoFija, para que la suma cierre al centésimo.
+ * - El residuo del redondeo a 2 decimales se lo lleva la última componente activa del
+ *   orden, igual que en calcFormaPagoFija, para que la suma cierre al centésimo.
+ *
+ * PURA E IDEMPOTENTE: `f(f(x)) === f(x)`. El useEffect de red de seguridad de UnitDetail
+ * la vuelve a llamar en cada render; si no fuera idempotente, ciclaría.
  */
 export function redistribuirPctReales(params: {
   actual: RepartoPctReales;
@@ -320,7 +376,7 @@ export function redistribuirPctReales(params: {
 
   const disponible = r2(Math.max(0, 100 - creditoPct));
   const out: Record<ClaveComponente, number> = { promesa: 0, cuotas: 0, escritura: 0 };
-  const activas = (['promesa', 'cuotas', 'escritura'] as ClaveComponente[]).filter(k => activa[k]);
+  const activas = ORDEN_PRELACION.filter(k => activa[k]);
   if (activas.length === 0 || disponible <= 0) return { promesaPct: 0, cuotasPct: 0, escrituraPct: 0 };
 
   // El piso de la Promesa no puede exceder lo que hay para repartir.
@@ -348,14 +404,38 @@ export function redistribuirPctReales(params: {
   };
 
   if (fijada && activa[fijada]) {
-    // Al fijar Cuotas o Escritura hay que dejar libre el piso de la Promesa si sigue activa.
-    const reservaPiso = fijada !== 'promesa' && activa.promesa ? piso : 0;
-    const maximo = r2(Math.max(0, disponible - reservaPiso));
-    const minimo = fijada === 'promesa' ? piso : 0;
-    const v = r2(Math.min(Math.max(valor[fijada], minimo), maximo));
-    out[fijada] = v;
-    repartir(activas.filter(k => k !== fijada), r2(disponible - v));
+    const idx = ORDEN_PRELACION.indexOf(fijada);
+    // Anteriores: mayor prelación que la editada, NO se mueven. Conservan su valor tal
+    // cual (la Promesa, con su piso de 3%), y lo que ocupan sale del espacio disponible
+    // antes de repartir nada. El clamp a `disponible` cubre el caso degenerado en que el
+    // Crédito subió tanto que ya no caben: ahí se comen todo y no queda remanente.
+    const anteriores = ORDEN_PRELACION.slice(0, idx).filter(k => activa[k]);
+    let ocupado = 0;
+    for (const k of anteriores) {
+      const minimo = k === 'promesa' ? piso : 0;
+      const v = r2(Math.min(Math.max(valor[k], minimo), r2(disponible - ocupado)));
+      out[k] = v;
+      ocupado = r2(ocupado + v);
+    }
+
+    // Posteriores: menor prelación, absorben la diferencia en proporción a lo que tenían.
+    const posteriores = ORDEN_PRELACION.slice(idx + 1).filter(k => activa[k]);
+    const libre = r2(Math.max(0, disponible - ocupado));
+
+    if (posteriores.length === 0) {
+      // Nadie puede absorber (la editada es la última del orden, o las de atrás están
+      // apagadas): se lleva el espacio libre entero. Recortar hacia abajo dejaría la
+      // suma por debajo de 100 y el certificador nunca cerraría.
+      out[fijada] = libre;
+    } else {
+      const minimo = fijada === 'promesa' ? Math.min(piso, libre) : 0;
+      const v = r2(Math.min(Math.max(valor[fijada], minimo), libre));
+      out[fijada] = v;
+      repartir(posteriores, r2(libre - v));
+    }
   } else {
+    // Sin componente editada (toggle on/off o cambio del Crédito): reparto proporcional
+    // entre todas las activas, sin jerarquía. Es el comportamiento previo a la prelación.
     repartir(activas, disponible);
   }
 
