@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { useMediaQuery } from '../hooks/useMediaQuery';
 import { RealEstateUnit, Client, User } from '../types';
 import { formatUF } from '../utils/format';
 import {
@@ -21,6 +22,8 @@ export const UnitList: React.FC<UnitListProps> = ({ units, clients, currentUser,
   const [filterType, setFilterType] = useState<string>('Todos');
   const [searchTerm, setSearchTerm] = useState('');
   const [viewMode, setViewMode] = useState<'table' | 'grid'>('table');
+  const narrow = useMediaQuery('(max-width: 767px)');
+  const showGrid = narrow || viewMode === 'grid';
 
   // Estados de filtros avanzados (Igual que en Lista de Precios)
   const [filterOrientacion, setFilterOrientacion] = useState('');
@@ -230,20 +233,20 @@ export const UnitList: React.FC<UnitListProps> = ({ units, clients, currentUser,
                  const Icon = tab.icon;
                  const active = filterType === tab.id;
                  return (
-                     <button key={tab.id} onClick={() => { setFilterType(tab.id); if(tab.id !== 'Departamento' && tab.id !== 'Todos') clearFilters(); }} className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-colors whitespace-nowrap ${active ? 'bg-blue-600 text-white shadow-md' : 'bg-white text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
+                     <button key={tab.id} onClick={() => { setFilterType(tab.id); if(tab.id !== 'Departamento' && tab.id !== 'Todos') clearFilters(); }} className={`flex items-center gap-2 px-4 min-h-[44px] rounded-full text-sm font-medium transition-colors whitespace-nowrap ${active ? 'bg-blue-600 text-white shadow-md' : 'bg-white text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
                         <Icon className="w-4 h-4" /> {tab.label}
                     </button>
                  );
              })}
           </div>
-          <div className="flex bg-gray-100 dark:bg-gray-700 p-1 rounded-lg border border-gray-200 dark:border-gray-600">
-              <button onClick={() => setViewMode('grid')} className={`p-1.5 rounded-md transition-all ${viewMode === 'grid' ? 'bg-white dark:bg-gray-800 text-blue-600 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}><LayoutGrid className="w-4 h-4" /></button>
-              <button onClick={() => setViewMode('table')} className={`p-1.5 rounded-md transition-all ${viewMode === 'table' ? 'bg-white dark:bg-gray-800 text-blue-600 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}><List className="w-4 h-4" /></button>
+          <div className="hidden md:flex bg-gray-100 dark:bg-gray-700 p-1 rounded-lg border border-gray-200 dark:border-gray-600">
+              <button onClick={() => setViewMode('grid')} className={`min-w-[44px] min-h-[44px] flex items-center justify-center rounded-md transition-all ${viewMode === 'grid' ? 'bg-white dark:bg-gray-800 text-blue-600 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}><LayoutGrid className="w-4 h-4" /></button>
+              <button onClick={() => setViewMode('table')} className={`min-w-[44px] min-h-[44px] flex items-center justify-center rounded-md transition-all ${viewMode === 'table' ? 'bg-white dark:bg-gray-800 text-blue-600 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}><List className="w-4 h-4" /></button>
           </div>
       </div>
 
       {/* Buscador Estilo Lista de Precios con Filtros Avanzados */}
-      <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm space-y-4">
+      <div className="bg-white dark:bg-gray-800 p-4 md:p-6 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm space-y-4">
         <div className="relative">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 w-6 h-6" />
             <input 
@@ -296,15 +299,17 @@ export const UnitList: React.FC<UnitListProps> = ({ units, clients, currentUser,
         )}
       </div>
 
-      {viewMode === 'grid' ? (
+      {showGrid ? (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
             {filteredUnits.length === 0 ? (
                 <div className="col-span-full text-center py-12 text-gray-400 border-2 border-dashed border-gray-200 rounded-xl"><Filter className="w-10 h-10 mx-auto mb-2 opacity-20" /><p>No se encontraron unidades.</p></div>
             ) : filteredUnits.map((unit) => {
                 const owner = getUnitOwner(unit);
                 const effectiveStatus = getEffectiveStatus(unit);
+                const reservadaOtro = isReservadaOtroVendedor(unit);
+                const canLiberar = !proyectoTerminado && currentUser && ['Admin', 'Supervisor', 'JefeSala'].includes(currentUser.role) && unit.estado === 'Reservado';
                 return (
-                <div key={unit.id} onClick={() => onSelectUnit(unit)} className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6 transition-all cursor-pointer hover:shadow-md hover:border-blue-300 group">
+                <div key={unit.id} onClick={() => !reservadaOtro && onSelectUnit(unit)} className={`bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6 transition-all hover:shadow-md hover:border-blue-300 group ${reservadaOtro ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
                     <div className="flex justify-between items-start mb-4">
                         <div className="flex items-center gap-3">
                             <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${unit.type === 'Departamento' ? 'bg-blue-50 text-blue-600' : unit.type === 'Estacionamiento' ? 'bg-gray-100 text-gray-600' : 'bg-orange-50 text-orange-600'}`}>{getUnitIcon(unit.type)}</div>
@@ -332,7 +337,15 @@ export const UnitList: React.FC<UnitListProps> = ({ units, clients, currentUser,
                        <span className="text-[10px] text-gray-400 font-semibold">Precio Lista</span>
                        <span className="text-2xl font-bold text-blue-600 dark:text-blue-400">{formatPrice(unit.precioLista)} <small className="text-xs font-normal text-gray-400">UF</small></span>
                     </div>
-                    <button className="w-full py-2.5 text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-2 border border-blue-100 dark:border-blue-900 text-blue-600 dark:text-blue-400 hover:bg-blue-600 hover:text-white">Gestionar Unidad <ChevronRight className="w-4 h-4" /></button>
+                    {canLiberar && (
+                      <button
+                        onClick={(e) => handleLiberar(unit.id, e)}
+                        className="w-full min-h-[44px] mb-2 flex items-center justify-center gap-1 px-3 py-2 text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg"
+                      >
+                        <Unlock className="w-4 h-4" /> Liberar unidad
+                      </button>
+                    )}
+                    <button className="w-full min-h-[44px] py-2.5 text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-2 border border-blue-100 dark:border-blue-900 text-blue-600 dark:text-blue-400 hover:bg-blue-600 hover:text-white">Gestionar Unidad <ChevronRight className="w-4 h-4" /></button>
                 </div>
             )})}
         </div>

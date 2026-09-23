@@ -1671,37 +1671,37 @@ export const Quoter: React.FC<QuoterProps> = ({
 
     return (
       <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[min(85vh,100dvh-2rem)] flex flex-col overflow-hidden">
           {/* Header */}
           <div className="flex justify-between items-center px-6 py-4 border-b border-gray-100">
             <h3 className="text-lg font-bold text-gray-900">Borradores guardados</h3>
-            <button onClick={() => setShowDraftModal(false)} className="p-1 hover:bg-gray-100 rounded-lg">
+            <button onClick={() => setShowDraftModal(false)} className="min-w-[44px] min-h-[44px] flex items-center justify-center hover:bg-gray-100 rounded-lg">
               <X className="w-5 h-5 text-gray-500" />
             </button>
           </div>
           {/* Search + Sort bar */}
-          <div className="flex items-center gap-3 px-6 py-3 border-b border-gray-100 bg-gray-50">
+          <div className="flex flex-wrap items-center gap-2 px-4 sm:px-6 py-3 border-b border-gray-100 bg-gray-50">
             <input
               type="text"
               placeholder="Buscar por cotizante, N° o unidad..."
               value={draftSearchTerm}
               onChange={e => setDraftSearchTerm(e.target.value)}
-              className="flex-1 px-3 py-1.5 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-100"
+              className="flex-1 min-w-[140px] min-h-[44px] px-3 py-1.5 text-base border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-100"
             />
             <span className="text-xs text-gray-400 shrink-0">Ordenar:</span>
             <button
               onClick={() => setDraftSortOrder('fecha')}
-              className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${draftSortOrder === 'fecha' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'}`}>
+              className={`min-h-[44px] px-3 py-1.5 text-xs rounded-lg border transition-colors ${draftSortOrder === 'fecha' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'}`}>
               Fecha
             </button>
             <button
               onClick={() => setDraftSortOrder('cotizante')}
-              className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${draftSortOrder === 'cotizante' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'}`}>
+              className={`min-h-[44px] px-3 py-1.5 text-xs rounded-lg border transition-colors ${draftSortOrder === 'cotizante' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'}`}>
               Cotizante
             </button>
           </div>
           {/* Table */}
-          <div className="overflow-y-auto flex-1">
+          <div className="overflow-auto flex-1">
             {sorted.length === 0 ? (
               <p className="text-center text-gray-400 italic py-10">
                 {drafts.length === 0 ? 'Sin borradores guardados.' : 'Sin resultados para la búsqueda.'}
@@ -1732,11 +1732,11 @@ export const Quoter: React.FC<QuoterProps> = ({
                       <td className="px-4 py-3">
                         <div className="flex justify-end gap-2">
                           <button onClick={() => loadDraft(d)} disabled={isDraftLoading}
-                            className="px-3 py-1.5 text-xs bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                            className="min-h-[44px] px-3 py-1.5 text-xs bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">
                             Continuar
                           </button>
                           <button onClick={() => deleteDraft(d.id)}
-                            className="p-1.5 text-red-400 hover:bg-red-50 rounded-lg transition-colors">
+                            className="min-w-[44px] min-h-[44px] flex items-center justify-center text-red-400 hover:bg-red-50 rounded-lg transition-colors">
                             <Trash2 className="w-4 h-4" />
                           </button>
                         </div>
@@ -1787,64 +1787,66 @@ export const Quoter: React.FC<QuoterProps> = ({
       {showDraftModal && <DraftModal />}
 
       {/* ── Header ──────────────────────────────────────────────────────── */}
-      <div className="flex justify-between items-center print:hidden flex-wrap gap-3">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
-            <Calculator className="w-6 h-6 text-blue-600" /> Cotizador Comercial
-          </h2>
-          <p className="text-gray-500 mt-1 text-sm">Genera propuestas formales para prospectos.</p>
-        </div>
-        <div className="flex items-center gap-3 flex-wrap">
-          <button onClick={() => { loadDraftsList(); setShowDraftModal(true); }}
-            className="relative px-4 py-2 border border-gray-200 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-50 transition-all flex items-center gap-2">
-            <BookOpen className="w-4 h-4" /> Borradores
-            {drafts.length > 0 && (
-              <span className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-blue-600 text-white text-[10px] font-black rounded-full flex items-center justify-center">
-                {drafts.length}
+      <div className="flex flex-col gap-4 print:hidden">
+        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-3">
+          <div>
+            <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+              <Calculator className="w-6 h-6 text-blue-600" /> Cotizador Comercial
+            </h2>
+            <p className="text-gray-500 mt-1 text-sm">Genera propuestas formales para prospectos.</p>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button onClick={() => { loadDraftsList(); setShowDraftModal(true); }}
+              className="relative min-h-[44px] px-4 py-2 border border-gray-200 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-50 transition-all flex items-center gap-2">
+              <BookOpen className="w-4 h-4" /> Borradores
+              {drafts.length > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-blue-600 text-white text-[10px] font-black rounded-full flex items-center justify-center">
+                  {drafts.length}
+                </span>
+              )}
+            </button>
+            {isSavingDraft && (
+              <span className="text-xs text-gray-400 flex items-center gap-1">
+                <Loader2 className="w-3 h-3 animate-spin" /> Guardando…
               </span>
             )}
-          </button>
-          {isSavingDraft && (
-            <span className="text-xs text-gray-400 flex items-center gap-1">
-              <Loader2 className="w-3 h-3 animate-spin" /> Guardando…
-            </span>
-          )}
-          {draftId && !isSavingDraft && (
-            <span className="text-xs text-green-600 flex items-center gap-1">
-              <Check className="w-3 h-3" /> Borrador guardado
-            </span>
-          )}
-          <div className="text-xs text-gray-500 bg-gray-50 border border-gray-200 px-3 py-1.5 rounded-lg">
-            UF hoy: <span className="font-bold text-gray-800">{ufHoy ? formatCLP(ufHoy) : '—'}</span>
+            {draftId && !isSavingDraft && (
+              <span className="text-xs text-green-600 flex items-center gap-1">
+                <Check className="w-3 h-3" /> Borrador guardado
+              </span>
+            )}
+            <div className="text-xs text-gray-500 bg-gray-50 border border-gray-200 px-3 min-h-[44px] flex items-center rounded-lg">
+              UF hoy: <span className="font-bold text-gray-800 ml-1">{ufHoy ? formatCLP(ufHoy) : '—'}</span>
+            </div>
           </div>
-          <div className="flex items-center gap-2 text-sm font-medium">
-            {([1, 2, 3] as const).map((s, i) => (
-              <React.Fragment key={s}>
-                {i > 0 && <span className="text-gray-300">→</span>}
-                <span className={`px-3 py-1 rounded-full ${step === s ? 'bg-blue-600 text-white' : step > s ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
-                  {s}. {['Datos Cotizante', 'Unidades', 'Resumen'][i]}
-                </span>
-              </React.Fragment>
-            ))}
-          </div>
+        </div>
+        <div className="flex items-center gap-2 text-xs sm:text-sm font-medium overflow-x-auto pb-1">
+          {([1, 2, 3] as const).map((s, i) => (
+            <React.Fragment key={s}>
+              {i > 0 && <span className="text-gray-300 shrink-0">→</span>}
+              <span className={`shrink-0 px-3 min-h-[36px] inline-flex items-center rounded-full ${step === s ? 'bg-blue-600 text-white' : step > s ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                {s}. {['Datos Cotizante', 'Unidades', 'Resumen'][i]}
+              </span>
+            </React.Fragment>
+          ))}
         </div>
       </div>
 
       {/* ── STEP 1: DATOS COTIZANTE ─────────────────────────────────────── */}
       {step === 1 && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 space-y-8">
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 sm:p-8 space-y-8">
           <div className="pb-4 border-b border-gray-100">
             <h3 className="font-bold text-gray-800 text-lg">Datos Cotizante</h3>
             <p className="text-xs text-gray-400 mt-0.5">Escribe 3+ caracteres en Nombre o RUT para buscar clientes existentes y autocompletar.</p>
           </div>
 
             <div className="space-y-8">
-              <div className="flex items-center gap-4">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                 <label className="text-sm font-black text-gray-400 uppercase tracking-widest">Perfil Legal:</label>
                 <div className="flex gap-2 p-1 bg-gray-100 rounded-xl">
                   {(['Natural', 'Juridica'] as const).map(t => (
                     <button key={t} onClick={() => handleClientChange('tipoPersona', t)}
-                      className={`px-6 py-2 rounded-lg font-bold text-xs transition-all ${selectedClient.tipoPersona === t ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-400'}`}>
+                      className={`flex-1 sm:flex-none min-h-[44px] px-4 sm:px-6 py-2 rounded-lg font-bold text-xs transition-all ${selectedClient.tipoPersona === t ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-400'}`}>
                       {t === 'Natural' ? 'Persona Natural' : 'Persona Jurídica'}
                     </button>
                   ))}
@@ -1918,7 +1920,7 @@ export const Quoter: React.FC<QuoterProps> = ({
                   <label className="text-[10px] font-black text-gray-400 uppercase mb-1.5 block tracking-widest">Teléfono</label>
                   <div className="relative">
                     <RefreshCw className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300" />
-                    <input type="text" value={selectedClient.telefono || ''}
+                    <input type="tel" inputMode="tel" value={selectedClient.telefono || ''}
                       onChange={e => handleClientChange('telefono', e.target.value)}
                       className="w-full pl-10 p-3 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100" />
                   </div>
@@ -2016,11 +2018,11 @@ export const Quoter: React.FC<QuoterProps> = ({
               </div>
             </div>
 
-          <div className="flex justify-end pt-8 border-t border-gray-100">
+          <div className="flex justify-stretch sm:justify-end pt-8 border-t border-gray-100">
             <button
               disabled={!selectedClient.nombre?.trim() || !selectedClient.rut?.trim()}
               onClick={async () => { await saveImmediately(); setStep(2); }}
-              className="px-12 py-4 bg-blue-600 text-white font-black rounded-2xl disabled:opacity-50 hover:bg-blue-700 transition-all shadow-xl active:scale-95 uppercase tracking-widest text-xs">
+              className="w-full sm:w-auto min-h-[48px] px-8 sm:px-12 py-4 bg-blue-600 text-white font-black rounded-2xl disabled:opacity-50 hover:bg-blue-700 transition-all shadow-xl active:scale-95 uppercase tracking-widest text-xs">
               Continuar a Selección de Unidades
             </button>
           </div>
@@ -2039,7 +2041,7 @@ export const Quoter: React.FC<QuoterProps> = ({
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
                   <input type="text" placeholder="Filtrar…" value={unitFilter}
                     onChange={e => setUnitFilter(e.target.value)}
-                    className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-xl text-sm outline-none" />
+                    className="w-full pl-9 pr-4 min-h-[44px] py-2 border border-gray-300 rounded-xl text-base outline-none" />
                 </div>
                 <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
                   {availableUnits.map(unit => {
@@ -2047,7 +2049,7 @@ export const Quoter: React.FC<QuoterProps> = ({
                     const isOwnClient = !!selectedClient?.id && unit.clienteId === selectedClient.id;
                     return (
                       <button key={unit.id} onClick={() => toggleUnitSelection(unit)}
-                        className={`w-full p-3 text-left rounded-xl border transition-all ${isSel ? 'border-blue-500 bg-blue-50' : isOwnClient ? 'border-blue-200 bg-blue-50/30 hover:border-blue-300' : 'border-gray-100 hover:border-gray-200'}`}>
+                        className={`w-full min-h-[44px] p-3 text-left rounded-xl border transition-all ${isSel ? 'border-blue-500 bg-blue-50' : isOwnClient ? 'border-blue-200 bg-blue-50/30 hover:border-blue-300' : 'border-gray-100 hover:border-gray-200'}`}>
                         <div className="flex items-center justify-between gap-2">
                           <div className="font-bold text-sm">{unit.type} {unit.numero}</div>
                           {isOwnClient && (
@@ -2097,10 +2099,10 @@ export const Quoter: React.FC<QuoterProps> = ({
                 </div>
               ) : (
                 <div className="space-y-1">
-                  <div className="grid grid-cols-12 gap-2 text-[10px] font-black text-gray-400 uppercase tracking-widest px-2 pb-2 border-b border-gray-100">
+                  <div className="hidden sm:grid grid-cols-12 gap-2 text-[10px] font-black text-gray-400 uppercase tracking-widest px-2 pb-2 border-b border-gray-100">
                     <div className="col-span-3">Unidad</div>
                     <div className="col-span-2 text-right">P. Original</div>
-                    <div className="col-span-5">Ajuste</div>
+                    <div className="col-span-5">Ajuste / descuento</div>
                     <div className="col-span-2 text-right">P. Final</div>
                   </div>
 
@@ -2116,13 +2118,13 @@ export const Quoter: React.FC<QuoterProps> = ({
 
                     return (
                       <div key={unit.id}
-                        className={`grid grid-cols-12 gap-2 items-center py-2.5 px-2 rounded-lg ${unit.isAutoLoaded ? 'ml-4 bg-blue-50/40 border border-blue-100' : 'hover:bg-gray-50'}`}>
-                        <div className="col-span-3">
+                        className={`flex flex-col gap-2 py-3 px-3 rounded-xl border border-gray-100 sm:grid sm:grid-cols-12 sm:gap-2 sm:items-center sm:py-2.5 sm:px-2 sm:rounded-lg sm:border-transparent ${unit.isAutoLoaded ? 'sm:ml-4 bg-blue-50/40 sm:border sm:border-blue-100' : 'hover:bg-gray-50'}`}>
+                        <div className="sm:col-span-3">
                           <div className="flex items-center gap-1.5">
                             {unit.type === 'Departamento' ? <Building className="w-3.5 h-3.5 text-blue-500 shrink-0" /> :
                               unit.type === 'Estacionamiento' ? <Car className="w-3.5 h-3.5 text-gray-400 shrink-0" /> :
                                 <Package className="w-3.5 h-3.5 text-gray-400 shrink-0" />}
-                            <span className="font-bold text-xs text-gray-900 truncate">{unit.type} {unit.numero}</span>
+                            <span className="font-bold text-sm sm:text-xs text-gray-900 truncate">{unit.type} {unit.numero}</span>
                             {unit.isAutoLoaded && <span className="text-[8px] bg-blue-100 text-blue-600 px-1 py-0.5 rounded font-black uppercase shrink-0">Auto</span>}
                           </div>
                           {dr && (
@@ -2138,59 +2140,64 @@ export const Quoter: React.FC<QuoterProps> = ({
                           )}
                         </div>
 
-                        <div className="col-span-2 text-right">
-                          <span className="font-mono text-xs text-gray-500">{formatUF(unit.precioLista)}</span>
+                        <div className="flex items-center justify-between sm:block sm:col-span-2 sm:text-right">
+                          <span className="text-[10px] font-bold uppercase text-gray-400 sm:hidden">Precio original</span>
+                          <span className="font-mono text-sm sm:text-xs text-gray-500">{formatUF(unit.precioLista)}</span>
                         </div>
 
-                        <div className="col-span-5 flex items-center gap-1">
-                          <div className="flex rounded border border-gray-200 overflow-hidden text-[9px] font-bold">
+                        <div className="sm:col-span-5 flex items-center gap-1">
+                          <div className="flex rounded border border-gray-200 overflow-hidden text-[11px] sm:text-[9px] font-bold">
                             {(['%', 'UF'] as const).map(t => (
                               <button key={t}
                                 onClick={() => setAdjustDrafts(prev => ({ ...prev, [unit.id]: { type: t, rawValue: prev[unit.id]?.rawValue || '', applied: false } }))}
-                                className={`px-1.5 py-1 transition-colors ${(adj?.type || '%') === t ? 'bg-blue-600 text-white' : 'text-gray-500 hover:bg-gray-50'}`}>
+                                className={`min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 px-2 sm:px-1.5 py-1 transition-colors ${(adj?.type || '%') === t ? 'bg-blue-600 text-white' : 'text-gray-500 hover:bg-gray-50'}`}>
                                 {t}
                               </button>
                             ))}
                           </div>
                           <input type="number"
+                            inputMode="decimal"
                             min="0"
                             max={maxVal}
                             step={adj?.type === 'UF' ? '1' : '0.1'}
                             placeholder={adj?.type === 'UF' ? 'ej: 150' : 'ej: 3'}
                             value={adj?.rawValue || ''}
                             onChange={e => setAdjustDrafts(prev => ({ ...prev, [unit.id]: { type: prev[unit.id]?.type || '%', rawValue: e.target.value, applied: false } }))}
-                            className="w-16 px-1.5 py-1 text-xs border border-gray-200 rounded outline-none font-mono text-center" />
+                            className="min-h-[44px] sm:min-h-0 flex-1 sm:flex-none sm:w-16 px-2 sm:px-1.5 py-1 text-base sm:text-xs border border-gray-200 rounded outline-none font-mono text-center" />
                           <button onClick={() => applyAdjustment(unit.id)} disabled={!adj?.rawValue}
-                            className="px-1.5 py-1 text-[9px] bg-blue-600 text-white font-bold rounded disabled:opacity-40 hover:bg-blue-700">
+                            className="min-h-[44px] sm:min-h-0 px-3 sm:px-1.5 py-1 text-xs sm:text-[9px] bg-blue-600 text-white font-bold rounded disabled:opacity-40 hover:bg-blue-700">
                             OK
                           </button>
                           {adj?.applied && rawV > 0 && (
                             <>
-                              <button onClick={() => resetAdjustment(unit.id)} className="p-0.5 text-gray-400 hover:text-red-500">
-                                <X className="w-3 h-3" />
+                              <button onClick={() => resetAdjustment(unit.id)} className="min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center text-gray-400 hover:text-red-500">
+                                <X className="w-4 h-4 sm:w-3 sm:h-3" />
                               </button>
                               {/* Badge always red — always a discount (Paso 3) */}
-                              <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-red-100 text-red-700">
+                              <span className="text-[10px] sm:text-[8px] font-bold px-1.5 py-0.5 rounded bg-red-100 text-red-700">
                                 {adj.type === '%' ? `-${rawV}%` : `-${formatUF(rawV)} UF`}
                               </span>
                             </>
                           )}
                         </div>
                         {discountError[unit.id] && (
-                          <div className="col-span-12 mx-2 mt-1 px-2 py-1 bg-red-50 border border-red-100 rounded text-[9px] text-red-600 font-bold flex items-center gap-1">
+                          <div className="sm:col-span-12 mx-0 sm:mx-2 mt-1 px-2 py-1 bg-red-50 border border-red-100 rounded text-[11px] sm:text-[9px] text-red-600 font-bold flex items-center gap-1">
                             <AlertCircle className="w-3 h-3 shrink-0" /> {discountError[unit.id]}
                           </div>
                         )}
 
-                        <div className="col-span-2 flex items-center justify-end gap-0.5">
-                          <span className={`font-mono text-sm font-bold ${adj?.applied && rawV > 0 ? 'text-red-600' : 'text-gray-900'}`}>
-                            {formatUF(finalPrice)}
+                        <div className="flex items-center justify-between sm:col-span-2 sm:justify-end gap-1">
+                          <span className="text-[10px] font-bold uppercase text-gray-400 sm:hidden">Precio final</span>
+                          <span className="flex items-center gap-1">
+                            <span className={`font-mono text-sm font-bold ${adj?.applied && rawV > 0 ? 'text-red-600' : 'text-gray-900'}`}>
+                              {formatUF(finalPrice)}
+                            </span>
+                            {!unit.isAutoLoaded ? (
+                              <button onClick={() => toggleUnitSelection(unit)} className="min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center text-red-400 hover:bg-red-50 rounded"><Trash2 className="w-4 h-4 sm:w-3 sm:h-3" /></button>
+                            ) : (
+                              <button onClick={() => detachAccessory(unit.id)} className="min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center text-gray-300 hover:text-red-400 rounded"><X className="w-4 h-4 sm:w-3 sm:h-3" /></button>
+                            )}
                           </span>
-                          {!unit.isAutoLoaded ? (
-                            <button onClick={() => toggleUnitSelection(unit)} className="p-1 text-red-400 hover:bg-red-50 rounded ml-0.5"><Trash2 className="w-3 h-3" /></button>
-                          ) : (
-                            <button onClick={() => detachAccessory(unit.id)} className="p-1 text-gray-300 hover:text-red-400 rounded ml-0.5"><X className="w-3 h-3" /></button>
-                          )}
                         </div>
                       </div>
                     );
@@ -2235,7 +2242,7 @@ export const Quoter: React.FC<QuoterProps> = ({
                                   return next;
                                 });
                               }}
-                              className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                              className="w-5 h-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
                             <div className="flex-1 flex items-center justify-between">
                               <span className="text-sm font-medium text-gray-700">
                                 {u.type} {u.numero}
@@ -2265,7 +2272,7 @@ export const Quoter: React.FC<QuoterProps> = ({
                 </label>
 
                 {includePaymentPlan && (
-                  <div className="bg-white rounded-xl border border-gray-200 overflow-hidden ml-8">
+                  <div className="bg-white rounded-xl border border-gray-200 overflow-hidden sm:ml-8">
                     <div className="px-4 py-3 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
                       <span className="text-xs font-black text-gray-500 uppercase tracking-widest">Distribución del Pago</span>
                       {!formaCalc.error
@@ -2273,7 +2280,7 @@ export const Quoter: React.FC<QuoterProps> = ({
                         : <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full">Sin remanente ⚠️</span>
                       }
                     </div>
-                    <div className="p-4 space-y-1.5 text-xs">
+                    <div className="dc-pay-lines p-4 space-y-1.5 text-xs">
                       {/* Promesa */}
                       <div className="flex items-center gap-2">
                         <span className="w-44 shrink-0 text-gray-600">A la firma de Promesa</span>
@@ -2382,7 +2389,7 @@ export const Quoter: React.FC<QuoterProps> = ({
                 </label>
 
                 {includeMortgageSimulation && (
-                  <div className="bg-white rounded-xl border border-gray-200 overflow-hidden ml-8">
+                  <div className="bg-white rounded-xl border border-gray-200 overflow-hidden sm:ml-8">
                     {/* Tasa anual + % Financiamiento — DENTRO del simulador */}
                     <div className="px-4 py-3 bg-gray-50 border-b border-gray-100 flex flex-wrap items-center gap-4">
                       <div className="flex items-center gap-2">
@@ -2409,6 +2416,7 @@ export const Quoter: React.FC<QuoterProps> = ({
                         Base: {formatUF((includePaymentPlan ? creditoUF : precioVentaFinal * mortgageFinPct / 100))} UF
                       </span>
                     </div>
+                    <div className="overflow-x-auto">
                     <table className="min-w-full text-sm">
                       <thead>
                         <tr className="border-b border-gray-100 bg-gray-50/50">
@@ -2428,6 +2436,7 @@ export const Quoter: React.FC<QuoterProps> = ({
                         ))}
                       </tbody>
                     </table>
+                    </div>
                     <div className="px-4 py-2 bg-gray-50 border-t border-gray-100">
                       <p className="text-[9px] text-gray-400 italic">
                         Tasa {mortgageInputs.tasaAnual}% anual · Renta mín. = dividendo × 4{ufHoy ? ` · UF ${ufFecha}: ${formatCLP(ufHoy)}` : ''}
@@ -2449,17 +2458,17 @@ export const Quoter: React.FC<QuoterProps> = ({
                 />
               </div>
 
-              <div className="mt-6 pt-4 border-t border-gray-100 flex justify-between items-center">
-                <div className="text-lg font-bold text-gray-900">
+              <div className="mt-6 pt-4 border-t border-gray-100 flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center">
+                <div className="text-base sm:text-lg font-bold text-gray-900 break-words">
                   Total: {formatUF(totalFinal)} UF{ufHoy ? ` / ${formatCLP(totalFinal * ufHoy)}` : ''}
                 </div>
                 <div className="flex gap-3">
                   <button onClick={() => setStep(1)}
-                    className="px-6 py-3 border-2 border-gray-200 font-bold rounded-xl text-gray-500 hover:bg-gray-50 transition-all">
+                    className="flex-1 sm:flex-none min-h-[48px] px-6 py-3 border-2 border-gray-200 font-bold rounded-xl text-gray-500 hover:bg-gray-50 transition-all">
                     Atrás
                   </button>
                   <button disabled={selectedUnits.length === 0} onClick={() => setStep(3)}
-                    className="px-8 py-3 bg-blue-600 text-white font-bold rounded-xl disabled:opacity-50 hover:bg-blue-700 transition-all shadow-lg active:scale-95">
+                    className="flex-1 sm:flex-none min-h-[48px] px-8 py-3 bg-blue-600 text-white font-bold rounded-xl disabled:opacity-50 hover:bg-blue-700 transition-all shadow-lg active:scale-95">
                     Vista Previa
                   </button>
                 </div>
@@ -2481,25 +2490,26 @@ export const Quoter: React.FC<QuoterProps> = ({
             </div>
           )}
 
-          <div className="flex gap-3 justify-end print:hidden flex-wrap">
+          <div className="flex flex-col sm:flex-row gap-3 sm:justify-end print:hidden">
             {toastMsg && (
               <span className="px-4 py-3 text-green-700 bg-green-50 border border-green-200 font-bold flex items-center gap-2 text-sm rounded-xl">
                 {toastMsg}
               </span>
             )}
             <button onClick={handleDownloadPDF} disabled={hasPendingDiscount || isReadOnly}
-              className="px-6 py-3 bg-white border border-gray-200 text-gray-700 font-bold rounded-xl flex items-center gap-2 hover:bg-gray-50 transition-all shadow-sm disabled:opacity-50">
+              className="w-full sm:w-auto min-h-[48px] justify-center px-6 py-3 bg-white border border-gray-200 text-gray-700 font-bold rounded-xl flex items-center gap-2 hover:bg-gray-50 transition-all shadow-sm disabled:opacity-50">
               <Download className="w-4 h-4" /> Descargar PDF
             </button>
             <button onClick={handleSendEmail} disabled={isEmailSending || hasPendingDiscount || !selectedClient.email || isReadOnly}
-              className="px-6 py-3 bg-white border border-blue-200 text-blue-600 font-bold rounded-xl flex items-center gap-2 hover:bg-blue-50 transition-all shadow-sm disabled:opacity-50">
+              className="w-full sm:w-auto min-h-[48px] justify-center px-6 py-3 bg-white border border-blue-200 text-blue-600 font-bold rounded-xl flex items-center gap-2 hover:bg-blue-50 transition-all shadow-sm disabled:opacity-50">
               {isEmailSending ? <Loader2 className="w-4 h-4 animate-spin" /> : emailSent ? <Check className="w-4 h-4 text-green-600" /> : <Mail className="w-4 h-4" />}
               {isEmailSending ? 'Enviando…' : emailSent ? 'Enviado' : 'Enviar por Correo'}
             </button>
           </div>
 
           {/* ── Vista previa — estructura SSilva ──────────────────────────────── */}
-          <div className="bg-white rounded-xl border border-gray-200 max-w-4xl mx-auto shadow-2xl overflow-hidden quotation-document" style={{ fontFamily: 'Helvetica, Arial, sans-serif' }}>
+          <div className="overflow-x-auto rounded-xl">
+          <div className="bg-white rounded-xl border border-gray-200 max-w-4xl mx-auto shadow-2xl overflow-hidden quotation-document min-w-[720px]" style={{ fontFamily: 'Helvetica, Arial, sans-serif' }}>
 
             {/* HEADER: Logo blanco izquierda + azul derecha con COTIZACIÓN */}
             <div className="flex overflow-hidden" style={{ height: '72px' }}>
@@ -2747,14 +2757,15 @@ export const Quoter: React.FC<QuoterProps> = ({
               </div>
             </div>
           </div>
+          </div>
 
-          <div className="flex justify-between gap-4 max-w-4xl mx-auto print:hidden">
+          <div className="flex flex-col-reverse sm:flex-row sm:justify-between gap-3 max-w-4xl mx-auto print:hidden">
             <button onClick={() => setStep(2)}
-              className="px-8 py-4 border-2 border-gray-200 font-black rounded-2xl text-gray-500 hover:bg-gray-50 transition-all uppercase tracking-widest text-xs">
+              className="w-full sm:w-auto min-h-[48px] px-8 py-4 border-2 border-gray-200 font-black rounded-2xl text-gray-500 hover:bg-gray-50 transition-all uppercase tracking-widest text-xs">
               Regresar
             </button>
             <button onClick={handleFinalizeAndSave} disabled={hasPendingDiscount || isReadOnly}
-              className="px-12 py-4 bg-green-600 text-white font-black rounded-2xl shadow-xl hover:bg-green-700 transition-all active:scale-95 flex items-center gap-3 uppercase tracking-widest text-xs disabled:opacity-50">
+              className="w-full sm:w-auto min-h-[48px] justify-center px-8 sm:px-12 py-4 bg-green-600 text-white font-black rounded-2xl shadow-xl hover:bg-green-700 transition-all active:scale-95 flex items-center gap-3 uppercase tracking-widest text-xs disabled:opacity-50">
               <Save className="w-5 h-5" /> Finalizar y Guardar en Ficha
             </button>
           </div>

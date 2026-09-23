@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { useMediaQuery } from '../hooks/useMediaQuery';
 import { RealEstateUnit, User } from '../types';
 import { Search, Edit2, Check, X, ArrowUp, ArrowDown, Filter, Compass, Layers, Bed, Bath, Car, Package, Home, LayoutGrid, Lock, Ruler, Tag, List, Link as LinkIcon, TrendingDown, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react';
 import { formatUF } from '../utils/format';
@@ -18,6 +19,8 @@ export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit,
   const [tempPrice, setTempPrice] = useState<string>('');
   const [filterType, setFilterType] = useState<string>('Todos');
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('table');
+  const narrow = useMediaQuery('(max-width: 767px)');
+  const showGrid = narrow || viewMode === 'grid';
 
   // ── Descuento masivo ──────────────────────────────────────────────────────
   const [bulkExpanded, setBulkExpanded] = useState(false);
@@ -276,15 +279,15 @@ export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit,
                  const Icon = tab.icon;
                  const active = filterType === tab.id;
                  return (
-                     <button key={tab.id} onClick={() => { setFilterType(tab.id); if(tab.id !== 'Departamento' && tab.id !== 'Todos') clearFilters(); }} className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-colors whitespace-nowrap ${active ? 'bg-blue-600 text-white shadow-md' : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'}`}>
+                     <button key={tab.id} onClick={() => { setFilterType(tab.id); if(tab.id !== 'Departamento' && tab.id !== 'Todos') clearFilters(); }} className={`flex items-center gap-2 px-4 min-h-[44px] rounded-full text-sm font-medium transition-colors whitespace-nowrap ${active ? 'bg-blue-600 text-white shadow-md' : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'}`}>
                          <Icon className="w-4 h-4" /> {tab.label}
                      </button>
                  );
              })}
           </div>
-          <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200">
-              <button onClick={() => setViewMode('grid')} className={`p-1.5 rounded-md transition-all ${viewMode === 'grid' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}><LayoutGrid className="w-4 h-4" /></button>
-              <button onClick={() => setViewMode('table')} className={`p-1.5 rounded-md transition-all ${viewMode === 'table' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}><List className="w-4 h-4" /></button>
+          <div className="hidden md:flex bg-gray-100 p-1 rounded-lg border border-gray-200">
+              <button onClick={() => setViewMode('grid')} className={`min-w-[44px] min-h-[44px] flex items-center justify-center rounded-md transition-all ${viewMode === 'grid' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}><LayoutGrid className="w-4 h-4" /></button>
+              <button onClick={() => setViewMode('table')} className={`min-w-[44px] min-h-[44px] flex items-center justify-center rounded-md transition-all ${viewMode === 'table' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}><List className="w-4 h-4" /></button>
           </div>
       </div>
 
@@ -442,7 +445,7 @@ export const PriceManager: React.FC<PriceManagerProps> = ({ units, onUpdateUnit,
         </div>
       )}
 
-      {viewMode === 'grid' ? (
+      {showGrid ? (
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
         {filteredUnits.length === 0 ? (
           <div className="col-span-full text-center py-12 text-gray-400 border-2 border-dashed border-gray-200 rounded-xl"><Filter className="w-12 h-12 mx-auto mb-2 opacity-20" /><p>No se encontraron unidades con estos filtros.</p></div>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Client, RealEstateUnit, Project, User, AuditLogEntry, Notification as AppNotification } from './types';
 import { Sidebar } from './components/Sidebar';
+import { MobileNav } from './components/MobileNav';
 import { LoginScreen } from './components/LoginScreen';
 import { ForcePasswordChange } from './components/ForcePasswordChange';
 import { ClientList } from './components/ClientList';
@@ -785,7 +786,7 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className={`flex min-h-screen ${darkMode ? 'dark' : ''}`}>
+    <div className={`flex min-h-screen overflow-x-hidden ${darkMode ? 'dark' : ''}`}>
       {/* BUG 4: Draft navigation modal */}
       {pendingNavigation && (
         <div className="fixed inset-0 bg-black/50 z-[9998] flex items-center justify-center p-4">
@@ -927,8 +928,19 @@ const App: React.FC = () => {
         pendingApprovalsCount={pendingApprovalsCount}
         onLogout={handleLogout}
       />
+      <MobileNav
+        currentView={currentView}
+        onChangeView={handleChangeView}
+        projects={projects}
+        currentProjectId={currentProjectId}
+        onSelectProject={handleSelectProject}
+        currentUser={currentUser}
+        unreadNotificationsCount={notifications.filter(n => !n.read).length}
+        pendingApprovalsCount={pendingApprovalsCount}
+        onLogout={handleLogout}
+      />
       
-      <main className="flex-1 ml-64 p-8 bg-gray-50 dark:bg-gray-900 min-h-screen overflow-auto">
+      <main className="flex-1 min-w-0 w-full md:ml-64 px-4 pt-[calc(3.75rem+env(safe-area-inset-top))] pb-[calc(5.25rem+env(safe-area-inset-bottom))] md:p-8 bg-gray-50 dark:bg-gray-900 min-h-screen overflow-auto">
         {/* Banner de solo lectura: una sola vez en el layout, no dentro de cada vista, para
             que nadie se pregunte por qué los botones no responden. */}
         {proyectoTerminado && (

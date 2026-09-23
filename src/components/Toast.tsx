@@ -107,7 +107,7 @@ export const ToastContainer: React.FC<ToastContainerProps> = ({ toasts, onRemove
   return (
     <div
       aria-label="Notificaciones"
-      className="fixed bottom-6 right-6 z-[9997] flex flex-col gap-2 items-end pointer-events-none"
+      className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-4 left-4 md:bottom-6 md:right-6 md:left-auto z-[60] flex flex-col gap-2 items-stretch md:items-end pointer-events-none"
     >
       {toasts.map(toast => (
         <div key={toast.id} className="pointer-events-auto">

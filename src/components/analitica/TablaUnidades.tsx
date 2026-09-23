@@ -37,8 +37,8 @@ export const TablaUnidades: React.FC<TablaUnidadesProps> = ({ units, total, onSe
       {visibles.length === 0 ? (
         <p className="px-4 py-6 text-xs text-gray-400">{vacio || 'La selección no tiene unidades.'}</p>
       ) : (
-        <div className="max-h-96 overflow-y-auto">
-          <table className="w-full">
+        <div className="max-h-96 overflow-auto">
+          <table className="w-full min-w-[520px]">
             <thead className="bg-gray-50 sticky top-0">
               <tr>
                 {['Unidad', 'Tipo', 'Piso', 'Tipología', 'm²', 'Estado'].map(h => (

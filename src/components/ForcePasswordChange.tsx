@@ -62,8 +62,8 @@ export const ForcePasswordChange: React.FC<ForcePasswordChangeProps> = ({ curren
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-xl border border-gray-100 p-10 w-full max-w-md">
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))]">
+      <div className="bg-white rounded-2xl shadow-xl border border-gray-100 p-6 sm:p-10 w-full max-w-md">
         <h2 className="text-2xl font-bold text-gray-800 mb-1">Cambia tu contraseña</h2>
         <p className="text-gray-500 text-sm mb-8">
           Tu cuenta tiene una clave provisoria. Debes cambiarla antes de continuar,
@@ -82,7 +82,7 @@ export const ForcePasswordChange: React.FC<ForcePasswordChangeProps> = ({ curren
               placeholder="••••••••"
               required
               autoFocus
-              className="w-full p-3 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all text-gray-900"
+              className="w-full min-h-[48px] p-3 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all text-gray-900 text-base"
             />
           </div>
 
@@ -96,7 +96,7 @@ export const ForcePasswordChange: React.FC<ForcePasswordChangeProps> = ({ curren
               onChange={e => setPasswordNueva(e.target.value)}
               placeholder="Mínimo 8 caracteres"
               required
-              className="w-full p-3 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all text-gray-900"
+              className="w-full min-h-[48px] p-3 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all text-gray-900 text-base"
             />
           </div>
 
@@ -110,7 +110,7 @@ export const ForcePasswordChange: React.FC<ForcePasswordChangeProps> = ({ curren
               onChange={e => setPasswordConfirm(e.target.value)}
               placeholder="Repite la nueva contraseña"
               required
-              className="w-full p-3 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all text-gray-900"
+              className="w-full min-h-[48px] p-3 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all text-gray-900 text-base"
             />
           </div>
 
@@ -123,7 +123,7 @@ export const ForcePasswordChange: React.FC<ForcePasswordChangeProps> = ({ curren
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 disabled:opacity-50 transition-all shadow-lg shadow-blue-100 active:scale-95"
+            className="w-full min-h-[48px] py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 disabled:opacity-50 transition-all shadow-lg shadow-blue-100 active:scale-95"
           >
             {loading ? 'Guardando...' : 'Cambiar contraseña'}
           </button>
@@ -131,7 +131,7 @@ export const ForcePasswordChange: React.FC<ForcePasswordChangeProps> = ({ curren
           <button
             type="button"
             onClick={onLogout}
-            className="w-full py-3 border border-gray-200 text-gray-600 font-medium rounded-xl hover:bg-gray-50 transition-all"
+            className="w-full min-h-[48px] py-3 border border-gray-200 text-gray-600 font-medium rounded-xl hover:bg-gray-50 transition-all"
           >
             Cerrar sesión
           </button>

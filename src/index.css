@@ -1,3 +1,53 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Teléfono: 16px evita el zoom automático de iOS al enfocar un campo. */
+@media (max-width: 767px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  /* Tabla de clientes → filas apiladas. Solo los hijos directos, para no
+     romper la tabla de cotizaciones que vive dentro del detalle expandido. */
+  .dc-stack-table,
+  .dc-stack-table > tbody {
+    display: block;
+    width: 100%;
+  }
+  .dc-stack-table > thead {
+    display: none;
+  }
+  .dc-stack-table > tbody > tr {
+    display: block;
+    margin: 0.75rem;
+    border: 1px solid #e5e7eb;
+    border-radius: 1rem;
+    overflow: visible;
+    background: #fff;
+  }
+  .dc-stack-table > tbody > tr > td {
+    display: block;
+    width: 100%;
+    text-align: left !important;
+    padding: 0.45rem 1rem;
+  }
+  .dc-stack-table > tbody > tr > td .justify-end {
+    justify-content: flex-start;
+  }
+
+  /* Forma de pago del cotizador: la etiqueta ocupa la fila y el número queda tocable. */
+  .dc-pay-lines > .flex {
+    flex-wrap: wrap;
+    row-gap: 0.35rem;
+  }
+  .dc-pay-lines > .flex > .w-44 {
+    width: 100%;
+  }
+  .dc-pay-lines input[type="number"] {
+    min-height: 44px;
+    width: 5.5rem;
+  }
+}

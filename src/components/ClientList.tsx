@@ -455,14 +455,14 @@ export const ClientList: React.FC<ClientListProps> = ({
           <h2 className="text-2xl font-bold text-gray-800">Cartera de Clientes</h2>
           <p className="text-gray-500 text-sm mt-1">Gestión de prospectos y clientes activos.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
             {!isReadOnly && (<>
             <button
                 onClick={() => {
                     setBulkParsedClients([]);
                     setIsBulkModalOpen(true);
                 }}
-                className="bg-white border border-gray-200 text-gray-700 px-4 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2 shadow-sm hover:bg-gray-50"
+                className="bg-white border border-gray-200 text-gray-700 px-4 min-h-[44px] rounded-lg text-sm font-medium flex items-center justify-center gap-2 shadow-sm hover:bg-gray-50"
             >
                 <FileSpreadsheet className="w-4 h-4 text-green-600" /> Carga Masiva
             </button>
@@ -471,7 +471,7 @@ export const ClientList: React.FC<ClientListProps> = ({
                     setEditingClient({ tipoPersona: 'Natural', estado: 'Prospecto', nacionalidad: 'Chilena' });
                     setIsClientModalOpen(true);
                 }}
-                className="bg-blue-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2 shadow-lg hover:bg-blue-700"
+                className="bg-blue-600 text-white px-4 min-h-[44px] rounded-lg text-sm font-medium flex items-center justify-center gap-2 shadow-lg hover:bg-blue-700"
             >
                 <Plus className="w-4 h-4" /> Nuevo Prospecto
             </button>
@@ -487,15 +487,15 @@ export const ClientList: React.FC<ClientListProps> = ({
             placeholder="Buscar por nombre, RUT o unidad..." 
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-10 pr-4 py-3 bg-white border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-100 transition-all"
+          className="w-full pl-10 pr-4 min-h-[48px] py-3 bg-white border border-gray-200 rounded-xl text-base outline-none focus:ring-2 focus:ring-blue-100 transition-all"
           />
         </div>
-        <div className="flex bg-white p-1 rounded-xl border border-gray-200">
+        <div className="flex bg-white p-1 rounded-xl border border-gray-200 overflow-x-auto max-w-full">
           {['Todos', 'Activo', 'Prospecto', 'Cerrado', 'Desistido'].map(status => (
             <button
               key={status}
               onClick={() => setFilterStatus(status)}
-              className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${filterStatus === status ? 'bg-blue-600 text-white shadow-md' : 'text-gray-500 hover:text-gray-700'}`}
+              className={`shrink-0 px-4 min-h-[44px] rounded-lg text-xs font-bold transition-all ${filterStatus === status ? 'bg-blue-600 text-white shadow-md' : 'text-gray-500 hover:text-gray-700'}`}
             >
               {status}
             </button>
@@ -505,7 +505,7 @@ export const ClientList: React.FC<ClientListProps> = ({
 
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm">
         <div className="overflow-visible">
-          <table className="min-w-full text-left text-sm">
+          <table className="dc-stack-table min-w-full text-left text-sm">
             <thead className="bg-gray-50/50 border-b border-gray-100">
               <tr className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
                 <th className="px-6 py-4">Cliente</th>
@@ -568,7 +568,7 @@ export const ClientList: React.FC<ClientListProps> = ({
                           <div className="relative" ref={isMenuOpen ? menuRef : null}>
                             <button
                               onClick={() => handleToggleMenu(client.id)}
-                              className={`p-2 rounded-lg transition-all ${isMenuOpen ? 'bg-blue-100 text-blue-600 shadow-sm' : 'text-gray-400 hover:bg-gray-100'}`}
+                              className={`min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg transition-all ${isMenuOpen ? 'bg-blue-100 text-blue-600 shadow-sm' : 'text-gray-400 hover:bg-gray-100'}`}
                             >
                               <MoreVertical className="w-5 h-5" />
                             </button>
@@ -611,7 +611,7 @@ export const ClientList: React.FC<ClientListProps> = ({
 
                           <button
                             onClick={() => setExpandedClientId(isExpanded ? null : client.id)}
-                            className={`p-2 rounded-lg transition-all ${isExpanded ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:bg-gray-100'}`}
+                            className={`min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg transition-all ${isExpanded ? 'bg-blue-600 text-white shadow-md' : 'text-gray-400 hover:bg-gray-100'}`}
                           >
                             {isExpanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
                           </button>
@@ -621,7 +621,7 @@ export const ClientList: React.FC<ClientListProps> = ({
                     
                     {isExpanded && (
                       <tr className="bg-white">
-                        <td colSpan={5} className="px-8 py-8 border-b border-blue-100/50">
+                        <td colSpan={5} className="px-4 py-6 md:px-8 md:py-8 border-b border-blue-100/50">
                           <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
                             <div className="space-y-6">
                               <div>
@@ -644,7 +644,7 @@ export const ClientList: React.FC<ClientListProps> = ({
                                         <div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><FileText className="w-4 h-4" /></div>
                                         <div><p className="text-xs font-bold text-gray-800 truncate w-32">{doc.name}</p><p className="text-[9px] text-gray-400 font-bold uppercase tracking-tight">{doc.date} • {doc.size}</p></div>
                                       </div>
-                                      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                      <div className="flex gap-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                                         <button onClick={() => handleDownloadDoc(doc)} className="p-1.5 text-gray-400 hover:text-blue-600 transition-colors"><Download className="w-4 h-4" /></button>
                                         {!isReadOnly && <button onClick={() => openDeleteModal(doc.id, doc.name, 'client', client.id)} className="p-1.5 text-gray-400 hover:text-red-500 transition-colors"><Trash2 className="w-4 h-4" /></button>}
                                       </div>
@@ -919,7 +919,7 @@ export const ClientList: React.FC<ClientListProps> = ({
       {/* Modal Ficha Cliente — Puntos 4+5: formulario completo iguales al Cotizador */}
       {isClientModalOpen && (
         <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-white rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+          <div className="bg-white rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[min(90vh,100dvh-1rem)]">
             <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50">
               <h3 className="text-xl font-bold text-gray-900">{editingClient?.id ? 'Editar Ficha' : 'Nuevo Prospecto'}</h3>
               <button onClick={() => setIsClientModalOpen(false)} className="p-2 hover:bg-gray-100 rounded-full transition-colors"><X className="w-6 h-6" /></button>
@@ -927,7 +927,7 @@ export const ClientList: React.FC<ClientListProps> = ({
             <form onSubmit={handleSaveClient} className="p-6 space-y-5 overflow-y-auto">
 
               {/* Perfil legal + Estado */}
-              <div className="flex gap-4 items-start">
+              <div className="flex flex-col sm:flex-row gap-4 items-stretch sm:items-start">
                 <div className="flex-1">
                   <label className="text-[10px] font-black text-gray-400 uppercase block mb-1.5 tracking-widest">Perfil Legal</label>
                   <div className="flex gap-2 p-1 bg-gray-100 rounded-xl">
@@ -940,7 +940,7 @@ export const ClientList: React.FC<ClientListProps> = ({
                     ))}
                   </div>
                 </div>
-                <div className="w-40">
+                <div className="w-full sm:w-40">
                   <label className="text-[10px] font-black text-gray-400 uppercase block mb-1.5 tracking-widest">Estado</label>
                   <select value={editingClient?.estado || 'Prospecto'}
                     onChange={e => setEditingClient({...editingClient, estado: e.target.value as Client['estado']})}
@@ -994,7 +994,7 @@ export const ClientList: React.FC<ClientListProps> = ({
                   <label className="text-[10px] font-black text-gray-400 uppercase block mb-1.5 tracking-widest">Teléfono *</label>
                   <div className="relative">
                     <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-300" />
-                    <input required type="text" value={editingClient?.telefono || ''}
+                    <input required type="tel" inputMode="tel" value={editingClient?.telefono || ''}
                       onChange={e => setEditingClient({...editingClient, telefono: e.target.value})}
                       className="w-full pl-8 p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-mono outline-none focus:ring-2 focus:ring-blue-100" />
                   </div>
