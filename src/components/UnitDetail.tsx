@@ -1577,30 +1577,32 @@ export const UnitDetail: React.FC<UnitDetailProps> = ({
       )}
 
       {/* Cabecera Principal */}
-      <div className="mb-6 pb-6 border-b border-gray-200">
-        <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-                <button onClick={handleBack} className="p-2 hover:bg-gray-100 rounded-full transition-colors"><ArrowLeft className="w-5 h-5 text-gray-500" /></button>
-                <div>
-                    <h1 className="text-2xl font-bold text-gray-900">{formData.type} {formData.numero}</h1>
+      <div className="mb-6 pb-4 border-b border-gray-200 sticky top-[calc(3.5rem+env(safe-area-inset-top))] md:static z-20 bg-gray-50/95 backdrop-blur md:bg-transparent md:backdrop-blur-none -mx-4 px-4 md:mx-0 md:px-0">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-2 min-w-0">
+                <button onClick={handleBack} className="min-w-[44px] min-h-[44px] flex items-center justify-center hover:bg-gray-100 rounded-full transition-colors shrink-0"><ArrowLeft className="w-5 h-5 text-gray-500" /></button>
+                <div className="min-w-0 pt-1">
+                    <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate">{formData.type} {formData.numero}</h1>
                     <p className="text-xs text-gray-500 font-medium tracking-wide uppercase">Expediente de Transacción</p>
                 </div>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
                 <select
                     disabled={isReadOnly}
                     value={formData.estado}
                     onChange={(e) => handleChange('estado', e.target.value)}
                     title={isReadOnly ? 'El proyecto está terminado: el estado no se puede cambiar' : 'Cambiar estado de la unidad'}
-                    className={`ml-4 px-4 py-2 rounded-lg text-base font-semibold border-2 shadow-sm outline-none focus:ring-2 focus:ring-offset-1 ${isReadOnly ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'} ${estadoStyles[formData.estado] ?? estadoStyles.Disponible}`}
+                    className={`w-full sm:w-auto min-h-[44px] px-4 py-2 rounded-lg text-base font-semibold border-2 shadow-sm outline-none focus:ring-2 focus:ring-offset-1 ${isReadOnly ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'} ${estadoStyles[formData.estado] ?? estadoStyles.Disponible}`}
                 >
                     {['Disponible', 'Reservado', 'Promesado', 'Escriturado'].map(s => <option key={s} value={s}>● {s}</option>)}
                 </select>
+                {!isReadOnly && (
+                    <button onClick={() => void handleSaveWithLog()} className={`w-full sm:w-auto min-h-[44px] px-5 py-2.5 rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg transition-all active:scale-95 ${hasUnsavedChanges ? 'bg-orange-500 hover:bg-orange-600 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white'}`}>
+                        <Save className="w-4 h-4" />
+                        {hasUnsavedChanges ? '• Guardar Cambios' : 'Guardar Cambios'}
+                    </button>
+                )}
             </div>
-            {!isReadOnly && (
-                <button onClick={() => void handleSaveWithLog()} className={`px-5 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 shadow-lg transition-all active:scale-95 ${hasUnsavedChanges ? 'bg-orange-500 hover:bg-orange-600 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white'}`}>
-                    <Save className="w-4 h-4" />
-                    {hasUnsavedChanges ? '• Guardar Cambios' : 'Guardar Cambios'}
-                </button>
-            )}
         </div>
       </div>
 

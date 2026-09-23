@@ -45,7 +45,7 @@ export const TablaDensa: React.FC<TablaDensaProps> = ({
     {filas.length === 0 ? (
       <p className="px-4 py-6 text-[11px] text-gray-400">{vacio || 'Sin datos en la selección.'}</p>
     ) : (
-      <div className="max-h-72 overflow-y-auto">
+      <div className="max-h-72 overflow-auto">
         <table className="w-full">
           <tbody>
             {filas.map(f => {

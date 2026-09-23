@@ -38,8 +38,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-xl border border-gray-100 p-10 w-full max-w-md">
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))]">
+      <div className="bg-white rounded-2xl shadow-xl border border-gray-100 p-6 sm:p-10 w-full max-w-md">
 
         <div className="flex items-center justify-center bg-white rounded-lg w-full h-24 px-3 py-2 overflow-hidden mb-6">
           <img
@@ -70,7 +70,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
               placeholder="tu@danacorp.cl"
               required
               autoFocus
-              className="w-full p-3 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all text-gray-900"
+              className="w-full min-h-[48px] p-3 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all text-gray-900 text-base"
             />
           </div>
 
@@ -84,7 +84,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
               onChange={e => setPassword(e.target.value)}
               placeholder="••••••••"
               required
-              className="w-full p-3 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all text-gray-900"
+              autoComplete="current-password"
+              className="w-full min-h-[48px] p-3 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all text-gray-900 text-base"
             />
           </div>
 
@@ -97,7 +98,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 disabled:opacity-50 transition-all shadow-lg shadow-blue-100 active:scale-95"
+            className="w-full min-h-[48px] py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 disabled:opacity-50 transition-all shadow-lg shadow-blue-100 active:scale-95"
           >
             {loading ? 'Ingresando...' : 'Ingresar'}
           </button>
